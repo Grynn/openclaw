@@ -82,12 +82,6 @@ export type CreateChannelIngressDrainOptions<
   ) => boolean;
   ownerId?: string;
   adoptionStallTimeoutMs?: number;
-  /**
-   * Bounded wait for an aborted pre-adoption dispatch to exit before its claim
-   * is released for retry. Prevents a re-claim from racing an abort-ignoring
-   * callback. Defaults to DEFAULT_INGRESS_STALL_QUIESCE_MS.
-   */
-  stallQuiesceMs?: number;
   claimLeaseMs?: number;
   /**
    * Whether a claimed event keeps occupying its ingress serialization lane after
@@ -388,7 +382,6 @@ export function createChannelIngressDrain<
   const armStallWatchdog = (state: ActiveHandlerState<TPayload, TMetadata>) => {
     armIngressStallWatchdog(state, {
       adoptionStallTimeoutMs,
-      stallQuiesceMs: options.stallQuiesceMs,
       retryPolicy: options.retryPolicy,
       now,
       log,

@@ -36,8 +36,6 @@ const DEFAULT_INGRESS_STALL_QUIESCE_MS = 10_000;
 
 type IngressStallWatchdogDeps<TPayload, TMetadata> = {
   adoptionStallTimeoutMs: number;
-  /** Bounded fence wait; defaults to DEFAULT_INGRESS_STALL_QUIESCE_MS. */
-  stallQuiesceMs?: number;
   retryPolicy?: IngressRetryPolicyConfig;
   now: () => number;
   log: (message: string) => void;
@@ -135,7 +133,7 @@ export function armIngressStallWatchdog<TPayload, TMetadata>(
       // concurrently with an abort-ignoring callback or deferred participant.
       const quiesced = await waitForDispatchQuiesce(
         state.quiescence.task,
-        deps.stallQuiesceMs ?? DEFAULT_INGRESS_STALL_QUIESCE_MS,
+        DEFAULT_INGRESS_STALL_QUIESCE_MS,
       );
       if (!quiesced) {
         deps.log(

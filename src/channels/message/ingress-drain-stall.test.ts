@@ -33,7 +33,6 @@ describe("channel ingress drain: pre-adoption stall watchdog", () => {
         queue,
         now: () => clock,
         adoptionStallTimeoutMs: 5_000,
-        stallQuiesceMs: 1_000,
         // No retryPolicy override: defaults must preserve the inbound message.
         dispatchClaimedEvent: async (_event, lifecycle) => {
           dispatches += 1;
@@ -51,8 +50,6 @@ describe("channel ingress drain: pre-adoption stall watchdog", () => {
       await drain.drainOnce();
       clock += 5_000;
       await vi.advanceTimersByTimeAsync(5_000);
-      // Let the cancellation fence observe the exited dispatch.
-      await vi.advanceTimersByTimeAsync(1_000);
       await drain.waitForIdle();
 
       // The stalled event must NOT be dead-lettered: it was never handled, so
@@ -83,7 +80,6 @@ describe("channel ingress drain: pre-adoption stall watchdog", () => {
         queue,
         now: () => clock,
         adoptionStallTimeoutMs: 5_000,
-        stallQuiesceMs: 1_000,
         dispatchClaimedEvent: async (_event, lifecycle) => {
           dispatches += 1;
           if (dispatches === 1) {
@@ -98,7 +94,8 @@ describe("channel ingress drain: pre-adoption stall watchdog", () => {
       await drain.drainOnce();
       clock += 5_000;
       await vi.advanceTimersByTimeAsync(5_000);
-      await vi.advanceTimersByTimeAsync(1_000);
+      clock += 10_000;
+      await vi.advanceTimersByTimeAsync(10_000);
 
       // Fence expired without the dispatch exiting: ownership is retained rather
       // than released into a concurrent re-dispatch. Wedged beats duplicated.
@@ -136,7 +133,6 @@ describe("channel ingress drain: pre-adoption stall watchdog", () => {
         queue,
         now: () => clock,
         adoptionStallTimeoutMs: 5_000,
-        stallQuiesceMs: 1_000,
         dispatchClaimedEvent: async (_event, lifecycle) => {
           dispatches += 1;
           if (dispatches === 1) {
@@ -153,8 +149,8 @@ describe("channel ingress drain: pre-adoption stall watchdog", () => {
       await vi.waitFor(() => expect(dispatches).toBe(1));
       clock += 5_000;
       await vi.advanceTimersByTimeAsync(5_000);
-      clock += 1_000;
-      await vi.advanceTimersByTimeAsync(1_000);
+      clock += 10_000;
+      await vi.advanceTimersByTimeAsync(10_000);
 
       // The dispatcher promise returned "deferred", but its registered
       // participant is still live. A second pump must remain fenced.
@@ -189,7 +185,6 @@ describe("channel ingress drain: pre-adoption stall watchdog", () => {
         now: () => clock,
         claimLeaseMs,
         adoptionStallTimeoutMs: 100,
-        stallQuiesceMs: 50,
         dispatchClaimedEvent: async () => {
           await dispatchGate;
         },
@@ -198,8 +193,8 @@ describe("channel ingress drain: pre-adoption stall watchdog", () => {
       await drain.drainOnce();
       clock += 100;
       await vi.advanceTimersByTimeAsync(100);
-      clock += 50;
-      await vi.advanceTimersByTimeAsync(50);
+      clock += 10_000;
+      await vi.advanceTimersByTimeAsync(10_000);
 
       // Stay held for several lease windows. The watchdog guillotine must not
       // stop refreshClaim, or another process can recover and double-dispatch.
