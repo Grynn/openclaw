@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { validateJsonSchemaValue } from "../plugins/schema-validator.js";
 import { wrapToolMemoryFlushAppendOnlyWrite } from "./agent-tools.read.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
-import { createWriteTool } from "./sessions/index.js";
+import { createWriteTool } from "./sessions/tools/index.js";
 
 const RELATIVE_PATH = "memory/2026-08-08.md";
 
