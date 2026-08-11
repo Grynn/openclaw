@@ -4,6 +4,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { createChannelIngressDrain } from "./ingress-drain.js";
+import {
+  createTestIngressQueue,
+  type IngressDrainTestPayload,
+  withTempState,
+} from "./ingress-drain.test-helpers.js";
 import { createChannelIngressMonitor } from "./ingress-monitor.js";
 import { createChannelIngressQueue } from "./ingress-queue.js";
 
@@ -32,7 +38,6 @@ describe("channel ingress monitor: stalled transport runtime proof", () => {
       releaseFirstDispatch = resolve;
     });
 
-    const claimLeaseMs = 300;
     const monitor = createChannelIngressMonitor<RuntimeEvent, string, StoredEvent>({
       queue,
       inspect: (raw) => ({ eventId: raw.id, laneKey: `lane:${raw.lane}` }),
@@ -47,7 +52,6 @@ describe("channel ingress monitor: stalled transport runtime proof", () => {
       retention: { pruneIntervalMs: 60_000 },
       drain: {
         adoptionStallTimeoutMs: 100,
-        claimLeaseMs,
         retryPolicy: {
           baseMs: 25,
           maxMs: 25,
@@ -58,6 +62,7 @@ describe("channel ingress monitor: stalled transport runtime proof", () => {
       },
       deliver: async (_raw, lifecycle) => {
         dispatchStartedAt.push(Date.now());
+        let result: { kind: "completed" } | undefined;
         if (dispatchStartedAt.length === 1) {
           // Model an abort-ignoring transport handoff. It exits only when the
           // external participant eventually returns, after the real 10s fence.
@@ -69,10 +74,11 @@ describe("channel ingress monitor: stalled transport runtime proof", () => {
             { once: true },
           );
           await firstDispatchGate;
-          return;
+        } else {
+          await lifecycle.onAdopted();
+          result = { kind: "completed" };
         }
-        await lifecycle.onAdopted();
-        return { kind: "completed" };
+        return result;
       },
     });
 
@@ -99,12 +105,8 @@ describe("channel ingress monitor: stalled transport runtime proof", () => {
     expect(await queue.listClaims()).toHaveLength(1);
     const deadLettersBeforeRelease = (await queue.listFailed?.()) ?? [];
     expect(deadLettersBeforeRelease).toEqual([]);
-    const recoveredClaims = await queue.recoverStaleClaims({
-      staleMs: claimLeaseMs,
-      now: Date.now(),
-      shouldRecover: () => true,
-    });
-    expect(recoveredClaims).toBe(0);
+    const heldClaims = await queue.listClaims();
+    expect(heldClaims).toHaveLength(1);
 
     releaseFirstDispatch();
     await expect.poll(() => dispatchStartedAt.length, { timeout: 3_000, interval: 20 }).toBe(2);
@@ -123,7 +125,7 @@ describe("channel ingress monitor: stalled transport runtime proof", () => {
       timers: "wall-clock",
       transportAdmission: admission.kind,
       abortObserved,
-      leaseRetainedPastFence: recoveredClaims === 0,
+      claimHeldPastFence: heldClaims.length === 1,
       concurrentRedispatchPrevented: dispatchesBeforeQuiescence === 1,
       delayedQuiescenceObserved: logs.some((line) => line.includes("eventually quiesced")),
       retryDispatches: dispatchStartedAt.length,
@@ -133,5 +135,49 @@ describe("channel ingress monitor: stalled transport runtime proof", () => {
     console.log(`INGRESS_STALL_RUNTIME_VERDICT ${JSON.stringify(verdict)}`);
 
     await monitor.stop();
+  }, 20_000);
+
+  // The pre-existing short-lease coverage in ingress-drain-stall.test.ts runs on
+  // fake timers. This drives the same claim-heartbeat contract on a wall clock,
+  // through the drain seam that actually accepts a claimLeaseMs override.
+  it("refreshes a guillotined held claim past a short lease on a real clock", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createTestIngressQueue(stateDir);
+      await queue.enqueue("evt-real-held-lease", { text: "user message" }, { laneKey: "l1" });
+
+      let releaseDispatch!: () => void;
+      const dispatchGate = new Promise<void>((resolve) => {
+        releaseDispatch = resolve;
+      });
+      const claimLeaseMs = 300;
+      const drain = createChannelIngressDrain<IngressDrainTestPayload>({
+        queue,
+        claimLeaseMs,
+        adoptionStallTimeoutMs: 100,
+        dispatchClaimedEvent: async () => {
+          await dispatchGate;
+        },
+      });
+
+      await drain.drainOnce();
+
+      // Outlive several real lease windows while the dispatch is still held.
+      await expect
+        .poll(
+          async () =>
+            await queue.recoverStaleClaims({
+              staleMs: claimLeaseMs,
+              now: Date.now(),
+              shouldRecover: () => true,
+            }),
+          { timeout: 4_000, interval: 100 },
+        )
+        .toBe(0);
+      expect(await queue.listClaims()).toHaveLength(1);
+
+      releaseDispatch();
+      await drain.waitForIdle();
+      drain.dispose();
+    });
   }, 20_000);
 });
