@@ -1,11 +1,7 @@
 import { resolveAgentSessionDirs } from "../../agents/session-dirs.js";
 import { migrateOrphanedSessionKeys } from "../../infra/state-migrations.session-store.js";
 import type { PreparedLegacySessionSurfaces } from "../../plugins/legacy-session-surfaces.types.js";
-import {
-  closeOpenClawAgentDatabaseByPath,
-  isOpenClawAgentDatabaseOpen,
-  openOpenClawAgentDatabase,
-} from "../../state/openclaw-agent-db.js";
+import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { resolveStateDir } from "../paths.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { setCanonicalSqliteSessionMainKey } from "./session-canonical-key.js";
@@ -86,12 +82,8 @@ export async function runSessionStartupMigration(params: {
         agentId: target.agentId,
         env: params.env,
       }).path;
-      const alreadyOpen = isOpenClawAgentDatabaseOpen(path);
       const database = openOpenClawAgentDatabase({ agentId: target.agentId, path });
       setCanonicalSqliteSessionMainKey(database, params.cfg.session?.mainKey);
-      if (!alreadyOpen) {
-        closeOpenClawAgentDatabaseByPath(path);
-      }
       removedFiles += await sweepTemps({ storePath: target.storePath });
     }
     if (removedFiles > 0) {
