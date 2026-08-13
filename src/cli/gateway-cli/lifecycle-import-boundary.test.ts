@@ -27,6 +27,15 @@ describe("gateway lifecycle hub import boundaries", () => {
     expect(hub).not.toContain(
       'from "../../agents/main-session-recovery/main-session-restart-recovery.js"',
     );
+
+    // The scheduler imports the task registry, transcript runtime, and context
+    // engine graph. Lifecycle priming only needs its lightweight control plane.
+    expect(hub).toContain(
+      'from "../../agents/embedded-agent-runner/context-engine-maintenance-control.js"',
+    );
+    expect(hub).not.toContain(
+      'from "../../agents/embedded-agent-runner/context-engine-maintenance.js"',
+    );
   });
 
   it("still primes the hub eagerly so signal handlers survive dist chunk rotation", () => {

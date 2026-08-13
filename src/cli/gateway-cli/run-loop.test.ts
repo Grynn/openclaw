@@ -116,6 +116,11 @@ const waitForGatewayActiveWork = vi.fn(
     return { drained: snapshot.idle, snapshot };
   },
 );
+const abortDeferredTurnMaintenanceForLifecycleRestart = vi.fn(async () => ({
+  active: 0,
+  drained: true,
+}));
+const resetAllLanes = vi.fn();
 const advanceCronActiveJobGeneration = vi.fn();
 const resetCronActiveJobs = vi.fn();
 const abortActiveCronTaskRuns = vi.fn((_reason?: string) => 0);
@@ -234,6 +239,19 @@ vi.mock("../../infra/gateway-active-work.js", () => ({
     options?: { onSnapshot?: (snapshot: GatewayActiveWorkSnapshot) => void },
   ) => waitForGatewayActiveWork(timeoutMs, options),
 }));
+
+vi.mock("./lifecycle.runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./lifecycle.runtime.js")>();
+  return {
+    ...actual,
+    abortDeferredTurnMaintenanceForLifecycleRestart: () =>
+      abortDeferredTurnMaintenanceForLifecycleRestart(),
+    resetAllLanes: () => {
+      resetAllLanes();
+      actual.resetAllLanes();
+    },
+  };
+});
 
 vi.mock("../../cron/active-jobs.js", () => ({
   advanceCronActiveJobGeneration: () => advanceCronActiveJobGeneration(),
@@ -503,7 +521,9 @@ beforeEach(async () => {
     mode: "disabled",
     detail: "OPENCLAW_NO_RESPAWN",
   });
-
+  abortDeferredTurnMaintenanceForLifecycleRestart.mockReset();
+  abortDeferredTurnMaintenanceForLifecycleRestart.mockResolvedValue({ active: 0, drained: true });
+  resetAllLanes.mockClear();
   gatewayWorkAdmissionActual = await vi.importActual("../../process/gateway-work-admission.js");
   gatewayWorkAdmissionActual.resetGatewayWorkAdmission();
   createGatewayActiveWorkSnapshot.mockReset();
@@ -1298,6 +1318,11 @@ describe("runGatewayLoop", () => {
       );
       expectRestartCloseCall(closeFirst, DEFAULT_RESTART_DEFERRAL_TIMEOUT_MS);
       expect(markGatewaySigusr1RestartHandled).toHaveBeenCalledTimes(1);
+      expect(abortDeferredTurnMaintenanceForLifecycleRestart).toHaveBeenCalledTimes(1);
+      expect(resetAllLanes).toHaveBeenCalledTimes(1);
+      expect(
+        abortDeferredTurnMaintenanceForLifecycleRestart.mock.invocationCallOrder[0] ?? Infinity,
+      ).toBeLessThan(resetAllLanes.mock.invocationCallOrder[0] ?? Infinity);
       expect(abortActiveCronTaskRuns).toHaveBeenCalledWith("Gateway restarting.");
       expect(waitForActiveCronTaskRuns).toHaveBeenCalledWith(1_000);
       expect(waitForActiveCronJobs).toHaveBeenCalledWith(1_000);
@@ -1351,6 +1376,72 @@ describe("runGatewayLoop", () => {
         reason: "gateway stopping",
         restartExpectedMs: null,
       });
+    });
+  });
+
+  it("awaits deferred context maintenance settlement before resetting lanes", async () => {
+    vi.clearAllMocks();
+    peekGatewaySigusr1RestartReason.mockReturnValue(undefined);
+    respawnGatewayProcessForUpdate.mockReturnValue({
+      mode: "disabled",
+      detail: "OPENCLAW_NO_RESPAWN",
+    });
+    let releaseMaintenanceDrain!: () => void;
+    const maintenanceDrain = new Promise<void>((resolve) => {
+      releaseMaintenanceDrain = resolve;
+    });
+    abortDeferredTurnMaintenanceForLifecycleRestart.mockImplementationOnce(async () => {
+      await maintenanceDrain;
+      return { active: 0, drained: true };
+    });
+
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const { start, exited } = await createSignaledLoopHarness();
+      const sigusr1 = captureSignal("SIGUSR1");
+      const sigint = captureSignal("SIGINT");
+
+      sigusr1();
+      await waitForLoopCondition(
+        () => abortDeferredTurnMaintenanceForLifecycleRestart.mock.calls.length === 1,
+        "expected restart lifecycle to begin deferred maintenance drain",
+      );
+      expect(resetAllLanes).not.toHaveBeenCalled();
+      expect(start).toHaveBeenCalledTimes(1);
+
+      releaseMaintenanceDrain();
+      await waitForLoopCondition(
+        () => start.mock.calls.length === 2,
+        "expected gateway restart after deferred maintenance settled",
+      );
+      expect(resetAllLanes).toHaveBeenCalledOnce();
+
+      sigint();
+      await expect(exited).resolves.toBe(0);
+    });
+  });
+
+  it("exits for supervisor recovery instead of resetting lanes after maintenance drain timeout", async () => {
+    vi.clearAllMocks();
+    peekGatewaySigusr1RestartReason.mockReturnValue(undefined);
+    respawnGatewayProcessForUpdate.mockReturnValue({
+      mode: "disabled",
+      detail: "OPENCLAW_NO_RESPAWN",
+    });
+    abortDeferredTurnMaintenanceForLifecycleRestart.mockResolvedValueOnce({
+      active: 1,
+      drained: false,
+    });
+
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const { start, exited } = await createSignaledLoopHarness();
+      captureSignal("SIGUSR1")();
+
+      await expect(exited).resolves.toBe(1);
+      expect(resetAllLanes).not.toHaveBeenCalled();
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(gatewayLog.error).toHaveBeenCalledWith(
+        "deferred context-engine maintenance did not stop before lifecycle reset; 1 worker(s) still active; exiting for supervisor recovery",
+      );
     });
   });
 

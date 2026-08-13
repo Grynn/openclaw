@@ -9,6 +9,7 @@ import { enqueueCommandInLane, markGatewayDraining } from "../../process/command
 import * as commandQueueModule from "../../process/command-queue.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import { onSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
+import { CONTEXT_ENGINE_TURN_MAINTENANCE_TASK_KIND } from "../../tasks/context-engine-maintenance-task-contract.js";
 import { createQueuedTaskRunCore as createQueuedTaskRunOrNull } from "../../tasks/task-executor.js";
 import { getTaskFlowById } from "../../tasks/task-flow-registry.js";
 import { getTaskById, listTasksForOwnerKey } from "../../tasks/task-registry.js";
@@ -20,6 +21,10 @@ import {
 } from "../../tasks/task-runtime.test-helpers.js";
 import { withStateDirEnv } from "../../test-helpers/state-dir-env.js";
 import { castAgentMessage } from "../test-helpers/agent-message-fixtures.js";
+import {
+  abortDeferredTurnMaintenanceForLifecycleRestart,
+  isContextEngineTurnMaintenanceRunActive,
+} from "./context-engine-maintenance-control.js";
 import { resolveSessionLane } from "./lanes.js";
 
 const rewriteTranscriptEntriesInSessionManagerMock = vi.fn((_params?: unknown) => ({
@@ -51,9 +56,7 @@ function createQueuedTaskRunCore(
   return task;
 }
 let runContextEngineMaintenance: typeof import("./context-engine-maintenance.js").runContextEngineMaintenance;
-// Keep this literal aligned with the production module; tests use dynamic
-// import reloading, so they cannot safely import the constant directly.
-const TURN_MAINTENANCE_TASK_KIND = "context_engine_turn_maintenance";
+const TURN_MAINTENANCE_TASK_KIND = CONTEXT_ENGINE_TURN_MAINTENANCE_TASK_KIND;
 
 async function flushAsyncWork(times = 4): Promise<void> {
   for (let index = 0; index < times; index += 1) {
@@ -853,6 +856,228 @@ describe("runContextEngineMaintenance", () => {
     });
   });
 
+  it("cancels queued restart work and disposes both the queued engine and discarded rerun", async () => {
+    await withStateDirEnv("openclaw-turn-maintenance-restart-queued-", async () => {
+      resetCommandQueueStateForTest();
+      resetTaskRegistryForTests({ persist: false });
+      resetTaskFlowRegistryForTests({ persist: false });
+
+      const sessionKey = "agent:main:session-restart-queued";
+      const lane = `context-engine-turn-maintenance:${sessionKey}`;
+      let releaseBlocker!: () => void;
+      const blocker = enqueueCommandInLane(lane, async () => {
+        await new Promise<void>((resolve) => {
+          releaseBlocker = resolve;
+        });
+      });
+      await flushAsyncWork();
+
+      const createBackgroundEngine = (id: string) => {
+        const maintain = vi.fn(async () => ({
+          changed: false,
+          bytesFreed: 0,
+          rewrittenEntries: 0,
+        }));
+        const dispose = vi.fn(async () => {});
+        const contextEngine = {
+          info: {
+            id,
+            name: `Test Engine ${id}`,
+            turnMaintenanceMode: "background" as const,
+          },
+          ingest: async () => ({ ingested: true }),
+          assemble: async ({ messages }: { messages: unknown[] }) => ({
+            messages,
+            estimatedTokens: 0,
+          }),
+          compact: async () => ({ ok: true, compacted: false }),
+          maintain,
+          dispose,
+        } as NonNullable<Parameters<typeof runContextEngineMaintenance>[0]["contextEngine"]>;
+        return { contextEngine, dispose, maintain };
+      };
+      const firstEngine = createBackgroundEngine("first-queued");
+      const rerunEngine = createBackgroundEngine("rerun-queued");
+
+      await runContextEngineMaintenance({
+        contextEngine: firstEngine.contextEngine,
+        sessionId: "session-restart-queued",
+        sessionKey,
+        sessionFile: "/tmp/session-restart-queued.jsonl",
+        reason: "turn",
+        disposeDeferredContextEngineAfterMaintenance: true,
+      });
+      await runContextEngineMaintenance({
+        contextEngine: rerunEngine.contextEngine,
+        sessionId: "session-restart-queued",
+        sessionKey,
+        sessionFile: "/tmp/session-restart-queued.jsonl",
+        reason: "turn",
+        disposeDeferredContextEngineAfterMaintenance: true,
+      });
+      const task = expectDefined(
+        listTasksForOwnerKey(sessionKey).find(
+          (candidate) => candidate.taskKind === TURN_MAINTENANCE_TASK_KIND,
+        ),
+        "queued maintenance task",
+      );
+
+      await expect(abortDeferredTurnMaintenanceForLifecycleRestart()).resolves.toEqual({
+        active: 0,
+        drained: true,
+      });
+
+      expect(firstEngine.maintain).not.toHaveBeenCalled();
+      expect(rerunEngine.maintain).not.toHaveBeenCalled();
+      expect(firstEngine.dispose).toHaveBeenCalledOnce();
+      expect(rerunEngine.dispose).toHaveBeenCalledOnce();
+      expect(getTaskById(task.taskId)?.status).toBe("cancelled");
+      expect(getTaskById(task.taskId)?.parentFlowId).toBeUndefined();
+      expect(isContextEngineTurnMaintenanceRunActive({ runId: task.runId, sessionKey })).toBe(
+        false,
+      );
+
+      releaseBlocker();
+      await blocker;
+    });
+  });
+
+  it("waits for abort-insensitive maintenance and keeps its visible task flow cancelled", async () => {
+    await withStateDirEnv("openclaw-turn-maintenance-restart-active-", async () => {
+      vi.useFakeTimers();
+      try {
+        resetCommandQueueStateForTest();
+        resetTaskRegistryForTests({ persist: false });
+        resetTaskFlowRegistryForTests({ persist: false });
+        const sessionKey = "agent:main:session-restart-active";
+        let releaseMaintenance!: () => void;
+        const maintain = vi.fn(async () => {
+          await new Promise<void>((resolve) => {
+            releaseMaintenance = resolve;
+          });
+          return { changed: false, bytesFreed: 0, rewrittenEntries: 0 };
+        });
+        const backgroundEngine = {
+          info: {
+            id: "restart-active",
+            name: "Restart Active Engine",
+            turnMaintenanceMode: "background" as const,
+          },
+          ingest: async () => ({ ingested: true }),
+          assemble: async ({ messages }: { messages: unknown[] }) => ({
+            messages,
+            estimatedTokens: 0,
+          }),
+          compact: async () => ({ ok: true, compacted: false }),
+          maintain,
+        } as NonNullable<Parameters<typeof runContextEngineMaintenance>[0]["contextEngine"]>;
+
+        await runContextEngineMaintenance({
+          contextEngine: backgroundEngine,
+          sessionId: "session-restart-active",
+          sessionKey,
+          sessionFile: "/tmp/session-restart-active.jsonl",
+          reason: "turn",
+        });
+        await waitForAssertion(() => expect(maintain).toHaveBeenCalledOnce());
+        await vi.advanceTimersByTimeAsync(11_000);
+        const task = expectDefined(
+          listTasksForOwnerKey(sessionKey).find(
+            (candidate) => candidate.taskKind === TURN_MAINTENANCE_TASK_KIND,
+          ),
+          "active maintenance task",
+        );
+        const flowId = expectDefined(task.parentFlowId, "active maintenance flow");
+        expect(getTaskFlowById(flowId)?.status).toBe("running");
+
+        let restartSettled = false;
+        const restart = abortDeferredTurnMaintenanceForLifecycleRestart().then((result) => {
+          restartSettled = true;
+          return result;
+        });
+        await flushAsyncWork();
+        expect(restartSettled).toBe(false);
+        expect(getTaskById(task.taskId)?.status).toBe("cancelled");
+        expect(getTaskFlowById(flowId)?.status).toBe("cancelled");
+
+        releaseMaintenance();
+        await expect(restart).resolves.toEqual({ active: 0, drained: true });
+        expect(getTaskById(task.taskId)?.status).toBe("cancelled");
+        expect(getTaskFlowById(flowId)?.status).toBe("cancelled");
+        expect(isContextEngineTurnMaintenanceRunActive({ runId: task.runId, sessionKey })).toBe(
+          false,
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("does not overwrite successful task state while restart waits for engine disposal", async () => {
+    await withStateDirEnv("openclaw-turn-maintenance-restart-dispose-", async () => {
+      resetCommandQueueStateForTest();
+      resetTaskRegistryForTests({ persist: false });
+      resetTaskFlowRegistryForTests({ persist: false });
+      const sessionKey = "agent:main:session-restart-dispose";
+      let releaseDispose!: () => void;
+      let markDisposeStarted!: () => void;
+      const disposeStarted = new Promise<void>((resolve) => {
+        markDisposeStarted = resolve;
+      });
+      const backgroundEngine = {
+        info: {
+          id: "restart-dispose",
+          name: "Restart Dispose Engine",
+          turnMaintenanceMode: "background" as const,
+        },
+        ingest: async () => ({ ingested: true }),
+        assemble: async ({ messages }: { messages: unknown[] }) => ({
+          messages,
+          estimatedTokens: 0,
+        }),
+        compact: async () => ({ ok: true, compacted: false }),
+        maintain: async () => ({ changed: false, bytesFreed: 0, rewrittenEntries: 0 }),
+        dispose: vi.fn(async () => {
+          markDisposeStarted();
+          await new Promise<void>((resolve) => {
+            releaseDispose = resolve;
+          });
+        }),
+      } as NonNullable<Parameters<typeof runContextEngineMaintenance>[0]["contextEngine"]>;
+
+      await runContextEngineMaintenance({
+        contextEngine: backgroundEngine,
+        sessionId: "session-restart-dispose",
+        sessionKey,
+        sessionFile: "/tmp/session-restart-dispose.jsonl",
+        reason: "turn",
+        disposeDeferredContextEngineAfterMaintenance: true,
+      });
+
+      await disposeStarted;
+      const task = expectDefined(
+        listTasksForOwnerKey(sessionKey).find(
+          (candidate) => candidate.taskKind === TURN_MAINTENANCE_TASK_KIND,
+        ),
+        "disposing maintenance task",
+      );
+      expect(getTaskById(task.taskId)?.status).toBe("succeeded");
+
+      let restartSettled = false;
+      const restart = abortDeferredTurnMaintenanceForLifecycleRestart().then((result) => {
+        restartSettled = true;
+        return result;
+      });
+      await flushAsyncWork();
+      expect(restartSettled).toBe(false);
+      expect(getTaskById(task.taskId)?.status).toBe("succeeded");
+
+      releaseDispose();
+      await expect(restart).resolves.toEqual({ active: 0, drained: true });
+      expect(getTaskById(task.taskId)?.status).toBe("succeeded");
+    });
+  });
+
   it("reports deferred maintenance schedule failure while gateway is draining", async () => {
     await withStateDirEnv("openclaw-turn-maintenance-draining-", async () => {
       resetCommandQueueStateForTest();
@@ -1057,6 +1282,69 @@ describe("runContextEngineMaintenance", () => {
             (task) => typeof task.runId === "string" && task.runId.startsWith("turn-maint:"),
           ),
         ).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("replaces restored maintenance tasks instead of reusing an orphaned run id", async () => {
+    await withStateDirEnv("openclaw-turn-maintenance-", async () => {
+      vi.useFakeTimers();
+      try {
+        resetCommandQueueStateForTest();
+        resetTaskRegistryForTests({ persist: false });
+        resetTaskFlowRegistryForTests({ persist: false });
+
+        const sessionKey = "agent:main:session-restored";
+        const restoredTask = createQueuedTaskRunCore({
+          runtime: "acp",
+          taskKind: TURN_MAINTENANCE_TASK_KIND,
+          sourceId: TURN_MAINTENANCE_TASK_KIND,
+          requesterSessionKey: sessionKey,
+          ownerKey: sessionKey,
+          scopeKind: "session",
+          runId: "turn-maint:restored",
+          label: "Context engine turn maintenance",
+          task: "Deferred context-engine maintenance after turn.",
+          notifyPolicy: "silent",
+          deliveryStatus: "pending",
+          preferMetadata: true,
+        });
+        const maintain = vi.fn(async () => ({
+          changed: false,
+          bytesFreed: 0,
+          rewrittenEntries: 0,
+        }));
+
+        await runContextEngineMaintenance({
+          contextEngine: {
+            info: {
+              id: "test",
+              name: "Test Engine",
+              turnMaintenanceMode: "background",
+            },
+            ingest: async () => ({ ingested: true }),
+            assemble: async ({ messages }) => ({ messages, estimatedTokens: 0 }),
+            compact: async () => ({ ok: true, compacted: false }),
+            maintain,
+          },
+          sessionId: "session-restored",
+          sessionKey,
+          sessionFile: "/tmp/session-restored.jsonl",
+          reason: "turn",
+        });
+
+        await waitForAssertion(() => expect(maintain).toHaveBeenCalledTimes(1));
+        await waitForDeferredTurnMaintenanceForSession(sessionKey);
+        const tasks = listTasksForOwnerKey(sessionKey).filter(
+          (task) => task.taskKind === TURN_MAINTENANCE_TASK_KIND,
+        );
+        expect(tasks).toHaveLength(2);
+        expect(getTaskById(restoredTask.taskId)?.status).toBe("cancelled");
+        const replacement = tasks.find((task) => task.taskId !== restoredTask.taskId);
+        expect(replacement?.runId).toMatch(/^turn-maint:/u);
+        expect(replacement?.runId).not.toBe(restoredTask.runId);
       } finally {
         vi.useRealTimers();
       }
@@ -1440,6 +1728,12 @@ describe("runContextEngineMaintenance", () => {
         const task = listTasksForOwnerKey(sessionKey).find(
           (candidate) => candidate.taskKind === TURN_MAINTENANCE_TASK_KIND,
         );
+        expect(
+          isContextEngineTurnMaintenanceRunActive({
+            runId: task?.runId,
+            sessionKey,
+          }),
+        ).toBe(true);
         const parentFlowId = task?.parentFlowId;
         if (!parentFlowId) {
           throw new Error("Expected visible maintenance to have a task flow");
@@ -1457,6 +1751,14 @@ describe("runContextEngineMaintenance", () => {
           ),
         );
         expect(getTaskFlowById(parentFlowId)?.status).toBe("succeeded");
+        await waitForAssertion(() =>
+          expect(
+            isContextEngineTurnMaintenanceRunActive({
+              runId: task?.runId,
+              sessionKey,
+            }),
+          ).toBe(false),
+        );
       } finally {
         vi.useRealTimers();
       }

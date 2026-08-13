@@ -1,4 +1,5 @@
 import "./context-engine-maintenance.js";
+import { resetContextEngineTurnMaintenanceRunsForTests } from "./context-engine-maintenance-control.test-support.js";
 
 type DeferredTurnMaintenanceProcessLike = Pick<NodeJS.Process, "on" | "off"> &
   Partial<Pick<NodeJS.Process, "listenerCount" | "kill" | "pid">> & {
@@ -32,4 +33,5 @@ export function createDeferredTurnMaintenanceAbortSignal(params?: {
 
 export function resetDeferredTurnMaintenanceStateForTest(): void {
   getTestApi().resetDeferredTurnMaintenanceStateForTest();
+  resetContextEngineTurnMaintenanceRunsForTests();
 }

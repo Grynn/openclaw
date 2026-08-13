@@ -8,6 +8,7 @@ import {
   type AcpSessionStoreEntry,
 } from "../acp/runtime/session-meta.js";
 import { isBackgroundExecSessionActive } from "../agents/bash-process-control.js";
+import { isContextEngineTurnMaintenanceRunActive } from "../agents/embedded-agent-runner/context-engine-maintenance-control.js";
 import {
   formatSubagentRecoveryWedgedReason,
   isSubagentRecoveryWedgedEntry,
@@ -32,6 +33,7 @@ import {
   type SessionKeyChatType,
 } from "../sessions/session-chat-type-shared.js";
 import { isBackgroundExecTask } from "./background-exec-task-contract.js";
+import { isContextEngineTurnMaintenanceTask } from "./context-engine-maintenance-task-contract.js";
 import {
   collectCronHistoryOverflowTaskIds,
   shouldPruneTerminalTask,
@@ -103,6 +105,7 @@ type TaskRegistryMaintenanceRuntime = {
   isCronJobActive: typeof isCronJobActive;
   getAgentRunContext: typeof getAgentRunContext;
   isBackgroundExecSessionActive?: typeof isBackgroundExecSessionActive;
+  isContextEngineTurnMaintenanceRunActive: typeof isContextEngineTurnMaintenanceRunActive;
   hasActiveAcpTurn: (sessionKey: string) => boolean;
   parseAgentSessionKey: typeof parseAgentSessionKey;
   hasActiveTaskForChildSessionKey: typeof hasActiveTaskForChildSessionKey;
@@ -142,6 +145,7 @@ const defaultTaskRegistryMaintenanceRuntime: TaskRegistryMaintenanceRuntime = {
   isCronJobActive,
   getAgentRunContext,
   isBackgroundExecSessionActive,
+  isContextEngineTurnMaintenanceRunActive,
   hasActiveAcpTurn: isAcpTurnActive,
   parseAgentSessionKey,
   hasActiveTaskForChildSessionKey,
@@ -409,6 +413,15 @@ function hasBackingSession(task: TaskRecord, context?: BackingSessionLookupConte
       taskRegistryMaintenanceRuntime.isBackgroundExecSessionActive?.(processSessionId),
     );
   }
+  if (isContextEngineTurnMaintenanceTask(task)) {
+    if (!taskRegistryMaintenanceRuntime.isRuntimeAuthoritative()) {
+      return true;
+    }
+    return taskRegistryMaintenanceRuntime.isContextEngineTurnMaintenanceRunActive({
+      runId: task.runId,
+      sessionKey: task.ownerKey,
+    });
+  }
   if (task.runtime === "cli" && hasActiveCliRun(task)) {
     return true;
   }
@@ -447,6 +460,9 @@ function hasBackingSession(task: TaskRecord, context?: BackingSessionLookupConte
 }
 
 function resolveTaskLostError(task: TaskRecord, context?: BackingSessionLookupContext): string {
+  if (isContextEngineTurnMaintenanceTask(task)) {
+    return "context-engine maintenance owner missing";
+  }
   if (isHarnessOwnedSubagentTask(task)) {
     return "Native subagent stopped reporting progress";
   }

@@ -38,6 +38,10 @@ type KillSubagentRunAdmin = (params: {
 
 export type TaskRegistryControlRuntime = {
   cancelBackgroundExecSession?: (sessionId: string) => boolean;
+  isContextEngineTurnMaintenanceRunActive?: (params: {
+    runId: string | undefined;
+    sessionKey: string | undefined;
+  }) => boolean;
   cancelActiveCronTaskRun: (params: { runId: string | undefined; reason?: string }) => boolean;
   getAcpSessionManager: () => {
     cancelSession: CancelAcpSessionAdmin;

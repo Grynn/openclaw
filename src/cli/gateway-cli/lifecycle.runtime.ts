@@ -3,6 +3,7 @@
 // must target the module that defines the symbol rather than a re-export facade;
 // a facade also evaluates its siblings and drags their graphs onto cold start.
 export { abortEmbeddedAgentRun } from "../../agents/embedded-agent-runner/runs.js";
+export { abortDeferredTurnMaintenanceForLifecycleRestart } from "../../agents/embedded-agent-runner/context-engine-maintenance-control.js";
 export {
   respawnGatewayProcessForUpdate,
   restartGatewayProcessWithFreshPid,

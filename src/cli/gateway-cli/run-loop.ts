@@ -977,6 +977,7 @@ export async function runGatewayLoop(params: {
       // deferral timers and reloads the task registry from durable state so
       // cancelled/completed work is not kept alive by old in-memory maps.
       const {
+        abortDeferredTurnMaintenanceForLifecycleRestart,
         abortActiveCronTaskRuns,
         advanceCronActiveJobGeneration,
         reloadTaskRuntimeStateFromStore,
@@ -991,6 +992,18 @@ export async function runGatewayLoop(params: {
       } = await loadGatewayLifecycleRuntimeModule();
       // Rotation aborts rootless stale owners before reset pumps preserved queues.
       rotateAgentEventLifecycleGeneration();
+      const maintenanceDrain = await abortDeferredTurnMaintenanceForLifecycleRestart();
+      if (!maintenanceDrain.drained) {
+        gatewayLog.error(
+          `deferred context-engine maintenance did not stop before lifecycle reset; ${maintenanceDrain.active} worker(s) still active; exiting for supervisor recovery`,
+        );
+        await writeStabilityBundle("gateway.restart_context_maintenance_drain_timeout");
+        completeForcedStop("gateway.restart_context_maintenance_drain_timeout");
+        await exitProcessAfterLogFlush(1);
+        // RuntimeEnv.exit terminates production processes. Keep test/custom
+        // runtimes from advancing to resetAllLanes after a non-terminating exit.
+        return await new Promise<void>(() => {});
+      }
       advanceCronActiveJobGeneration();
       abortActiveCronTaskRuns("Gateway restarting.");
       const cronTaskDrain = await waitForActiveCronTaskRuns(1_000);

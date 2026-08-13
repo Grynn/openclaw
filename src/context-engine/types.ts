@@ -379,6 +379,8 @@ export interface ContextEngine {
     sessionFile: string;
     runtimeSettings?: ContextEngineRuntimeSettings;
     runtimeContext?: ContextEngineRuntimeContext;
+    /** Optional host lifecycle signal; engines should stop promptly when aborted. */
+    abortSignal?: AbortSignal;
   }): Promise<ContextEngineMaintenanceResult>;
 
   /**
