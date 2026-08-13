@@ -886,6 +886,27 @@ describe("sanitizeAssistantVisibleText", () => {
     expect(sanitizeAssistantVisibleText(input)).toBe("Visible answer");
   });
 
+  it("strips incident-shaped doubled full-width DeepSeek DSML tool blocks", () => {
+    const input = [
+      "Checking now.",
+      '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="exec"><｜｜DSML｜｜parameter name="cmd">bird thread 123</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>',
+      "Visible answer.",
+    ].join("\n");
+
+    expect(sanitizeAssistantVisibleText(input)).toBe("Checking now.\n\nVisible answer.");
+  });
+
+  it("preserves doubled full-width DeepSeek DSML examples inside fenced code", () => {
+    const input = [
+      "Example:",
+      "```xml",
+      "<｜｜DSML｜｜tool_calls>payload</｜｜DSML｜｜tool_calls>",
+      "```",
+    ].join("\n");
+
+    expect(sanitizeAssistantVisibleText(input)).toBe(input);
+  });
+
   it("strips adjacent plural function-call XML on the delivery path", () => {
     const input = [
       '<function_calls><invoke name="exec">internal</invoke></function_calls><function_response>',

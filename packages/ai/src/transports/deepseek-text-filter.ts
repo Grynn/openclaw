@@ -4,7 +4,10 @@
  * across streamed chunks.
  */
 const DSML_KINDS = ["tool_use_error", "tool_calls", "tool_call", "function_calls"] as const;
-const DSML_BARS = ["|", "｜"] as const;
+// DeepSeek normally uses one pipe around DSML, but recovery turns can emit a
+// doubled ASCII/full-width variant (for example `<｜｜DSML｜｜tool_calls>`).
+// Keep longest variants first so equal-index token searches select the full tag.
+const DSML_BARS = ["||", "｜｜", "|", "｜"] as const;
 
 const DSML_OPEN_TOKENS = DSML_BARS.flatMap((bar) =>
   DSML_KINDS.map((kind) => `<${bar}DSML${bar}${kind}>`),

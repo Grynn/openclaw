@@ -25,6 +25,11 @@ describe("createDeepSeekTextFilter", () => {
       expected: "before  after",
     },
     {
+      name: "split doubled full-width open token",
+      chunks: ["before ", "<｜｜DS", "ML｜｜tool_calls>body</｜｜DSML｜｜tool_calls>", " after"],
+      expected: "before  after",
+    },
+    {
       name: "singular tool_call close",
       chunks: ["<|DSML|tool_call>read</|DSML|tool_call> visible"],
       expected: " visible",

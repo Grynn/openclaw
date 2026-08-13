@@ -245,7 +245,7 @@ describe("openai completions DSML", () => {
         makeCompletionsChunk(
           {
             content:
-              '<｜DSML｜tool_calls>\n<｜DSML｜invoke name="session_status">\n<｜DSML｜parameter name="sessionKey" string="true">current</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>',
+              '<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name="session_status">\n<｜｜DSML｜｜parameter name="sessionKey" string="true">current</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>',
           },
           "stop",
         ),
