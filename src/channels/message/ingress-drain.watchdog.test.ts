@@ -27,6 +27,7 @@ describe("channel ingress drain watchdog", () => {
         queue,
         now: () => clock,
         adoptionStallTimeoutMs: 5_000,
+        retryPolicy: { maxAttempts: 1, deadLetterMinAgeMs: 0 },
         dispatchClaimedEvent: async () => {
           // Never adopt, never return -- stall until watchdog.
           await new Promise(() => {});
@@ -57,6 +58,7 @@ describe("channel ingress drain watchdog", () => {
         queue,
         now: () => clock,
         adoptionStallTimeoutMs: 5_000,
+        retryPolicy: { maxAttempts: 1, deadLetterMinAgeMs: 0 },
         dispatchClaimedEvent: async (_event, lifecycle) => {
           lifecycle.onDeferred();
           // Stay deferred without adoption -- watchdog must still fire.
