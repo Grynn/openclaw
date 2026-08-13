@@ -230,6 +230,28 @@ describe("bundled static model catalog snapshot cache", () => {
     expect(manifestMocks.loadPluginManifest).not.toHaveBeenCalled();
   });
 
+  it("pins one-shot lifecycle lookups to the supplied plugin generation", () => {
+    const cfg = {};
+    const capturedPlugin = createMistralManifestPlugin();
+    const capturedSnapshot = {
+      plugins: [capturedPlugin],
+      manifestRegistry: { plugins: [capturedPlugin] },
+    } as unknown as PluginMetadataSnapshot;
+    setCurrentManifestPlugins([]);
+
+    expect(
+      resolveBundledStaticCatalogModel({
+        provider: "mistral",
+        modelId: "mistral-medium-3-5",
+        cfg,
+        metadataSnapshot: capturedSnapshot,
+      })?.id,
+    ).toBe("mistral-medium-3-5");
+    expect(manifestMocks.getCurrentPluginMetadataSnapshot).not.toHaveBeenCalled();
+    expect(manifestMocks.listOpenClawPluginManifestMetadata).not.toHaveBeenCalled();
+    expect(manifestMocks.loadPluginManifest).not.toHaveBeenCalled();
+  });
+
   it("uses the matching configured workspace snapshot", () => {
     const cfg = {};
     const workspaceDir = "/configured-workspace";

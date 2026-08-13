@@ -1108,6 +1108,55 @@ describe("resolveModel", () => {
     expect(resolveBundledProviderStaticCatalogModelMock).not.toHaveBeenCalled();
   });
 
+  it("uses the prepared manifest generation for model ref and configured catalog matching", async () => {
+    const cfg = makeProviderConfig("deepseek", {
+      api: "openai-completions",
+      models: [{ id: "deepseek-v4-pro", name: "Configured DeepSeek" }],
+    });
+    const preparedModelRuntime = {
+      agentDir: "/tmp/agent",
+      activeProjectKeys: [],
+      allowGatewaySubagentBinding: false,
+      config: cfg,
+      authModes: {},
+      metadataSnapshot: {
+        plugins: [
+          {
+            modelIdNormalization: {
+              providers: { deepseek: { aliases: { latest: "deepseek-v4-pro" } } },
+            },
+          },
+        ],
+      } as never,
+      modelCatalog: { entries: [], routeVariants: [] },
+      configuredRuntimeModels: [
+        {
+          provider: "deepseek",
+          modelId: "deepseek-v4-pro",
+          model: makeDeepSeekCatalogModel(),
+        },
+      ],
+      inlineProviderModels: buildInlineProviderModels(cfg.models?.providers ?? {}),
+      createStores: () => ({ authStorage: {} as never, modelRegistry: {} as never }),
+    } satisfies PreparedModelRuntimeSnapshot;
+
+    const result = await resolveModelAsync("deepseek", "latest", "/tmp/agent", cfg, {
+      authStorage: { mocked: true } as never,
+      modelRegistry: { find: vi.fn(() => null) } as never,
+      preparedModelRuntime,
+      runtimeHooks: createRuntimeHooks(),
+      skipAgentDiscovery: true,
+      allowBundledStaticCatalogFallback: true,
+    });
+
+    expectRecordFields(expectResolvedModel(result), {
+      name: "Configured DeepSeek",
+      api: "openai-completions",
+    });
+    expect(resolveBundledStaticCatalogModelMock).not.toHaveBeenCalled();
+    expect(resolveBundledProviderStaticCatalogModelMock).not.toHaveBeenCalled();
+  });
+
   it("falls back when an opaque prepared handle has no model facts", async () => {
     resolveBundledStaticCatalogModelMock.mockReturnValueOnce(
       makeMistralCatalogModel({ input: ["text"] }),

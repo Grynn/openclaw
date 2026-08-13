@@ -11,14 +11,16 @@ import {
   toAgentStoreSessionKey,
 } from "../../routing/session-key.js";
 import { runQueuedStoreWrite } from "../../shared/store-writer-queue.js";
+import type {
+  OpenClawAgentDatabase,
+  OpenClawAgentDatabaseOptions,
+} from "../../state/openclaw-agent-db-contract.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import {
   resolveIncognitoOpenClawAgentSqlitePath,
   resolveOpenClawAgentSqlitePath,
-  type OpenClawAgentDatabase,
-  type OpenClawAgentDatabaseOptions,
-} from "../../state/openclaw-agent-db.js";
+} from "../../state/openclaw-agent-db.paths.js";
 import { formatSqliteSessionFileMarker } from "./legacy-sqlite-marker.js";
 import type {
   SessionAccessScope,

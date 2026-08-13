@@ -209,6 +209,9 @@ export function resolveDynamicModelAuthProfile(params: {
   authProfileMode?: AuthProfileCredential["type"] | "aws-sdk";
 } {
   const explicitProfileId = params.authProfileId?.trim() || undefined;
+  if (explicitProfileId && params.authProfileMode) {
+    return { authProfileId: explicitProfileId, authProfileMode: params.authProfileMode };
+  }
   const store = ensureAuthProfileStore(params.agentDir, { allowKeychainPrompt: false });
   if (explicitProfileId) {
     const credential = store.profiles[explicitProfileId];

@@ -849,9 +849,11 @@ function updateUsageStatsEntry(
   store.usageStats[profileId] = updater(store.usageStats[profileId]);
 }
 
-function notifyAuthProfileFailureSafely(): void {
+function notifyAuthProfileFailureSafely(
+  event: Parameters<typeof notifyAuthProfileFailureHook>[0],
+): void {
   try {
-    notifyAuthProfileFailureHook();
+    notifyAuthProfileFailureHook(event);
   } catch (err) {
     // Hook errors must not break failure recording; log and continue.
     authProfileUsageLog.warn("auth profile failure hook threw", {
@@ -1070,7 +1072,7 @@ export async function markAuthProfileFailure(params: {
         now: updateTime,
       });
     }
-    notifyAuthProfileFailureSafely();
+    notifyAuthProfileFailureSafely({ reason, source: "profile" });
     return;
   }
   if (updated === null) {
@@ -1238,7 +1240,7 @@ export async function markInlineProviderApiKeyFailure(params: {
         now: updateTime,
       });
     }
-    notifyAuthProfileFailureSafely();
+    notifyAuthProfileFailureSafely({ reason, source: "inline-provider-api-key" });
     return;
   }
   if (updated === null) {

@@ -3,11 +3,7 @@ import { resolveAgentSessionDirs } from "../../agents/session-dirs.js";
 import { migrateOrphanedSessionKeys } from "../../infra/state-migrations.session-store.js";
 import type { PreparedLegacySessionSurfaces } from "../../plugins/legacy-session-surfaces.types.js";
 import { listOpenClawRegisteredAgentDatabases } from "../../state/openclaw-agent-db-registry.js";
-import {
-  closeOpenClawAgentDatabaseByPath,
-  isOpenClawAgentDatabaseOpen,
-  openOpenClawAgentDatabase,
-} from "../../state/openclaw-agent-db.js";
+import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { resolveStateDir } from "../paths.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { migrateLegacyMainSessionKeys } from "./legacy-main-session-migration.js";
@@ -152,7 +148,6 @@ export async function runSessionStartupMigration(params: {
         removedFiles += await sweepTemps({ storePath: target.storePath });
         continue;
       }
-      const alreadyOpen = isOpenClawAgentDatabaseOpen(path);
       const isRegistered = registeredDatabases.has(`${target.agentId}\0${path}`);
       if (
         !isRegistered ||
@@ -178,9 +173,6 @@ export async function runSessionStartupMigration(params: {
         params.log.warn(
           `session: managed-worktree workspace migration failed for ${target.agentId}; continuing: ${String(error)}`,
         );
-      }
-      if (!alreadyOpen && isOpenClawAgentDatabaseOpen(path)) {
-        closeOpenClawAgentDatabaseByPath(path);
       }
       removedFiles += await sweepTemps({ storePath: target.storePath });
     }
