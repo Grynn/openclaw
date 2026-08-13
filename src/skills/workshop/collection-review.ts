@@ -28,6 +28,7 @@ import {
 import { listWritableSkillCollection } from "./collection-reconcile.js";
 import {
   isSkillCollectionReviewDue,
+  recordSkillCollectionReviewFailure,
   withSkillCollectionReviewClaim,
 } from "./collection-review-state.js";
 import { resolveSkillWorkshopConfig } from "./config.js";
@@ -204,6 +205,18 @@ export async function runScheduledSkillCollectionReviews(params: {
         stateOptions,
       );
     } catch (error) {
+      try {
+        recordSkillCollectionReviewFailure(workspaceDir, Date.now(), error, stateOptions);
+      } catch (recordError) {
+        reportError(
+          new AggregateError(
+            [error, recordError],
+            `Skill collection review failed and its retry backoff could not be recorded for ${workspaceDir}.`,
+          ),
+          workspaceDir,
+        );
+        continue;
+      }
       reportError(error, workspaceDir);
     }
   }
