@@ -152,6 +152,21 @@ describe("embedded run retry dispatch", () => {
     expect(mocks.settleRequesterAfterSessionSpawns).not.toHaveBeenCalled();
   });
 
+  it("forwards a per-run context budget without requiring a context engine", async () => {
+    const input = makeDispatchInput({}, createEmbeddedRunReplayState());
+    input.runtime.contextTokenBudget = 64_000;
+    input.runtime.contextWindowInfo = { tokens: 200_000, source: "model" };
+
+    const result = await dispatchEmbeddedRunAttempt(input);
+
+    expect(result.preparedAttempt.contextEngine).toBeUndefined();
+    expect(result.preparedAttempt.contextTokenBudget).toBe(64_000);
+    expect(result.preparedAttempt.contextWindowInfo).toEqual({
+      tokens: 200_000,
+      source: "model",
+    });
+  });
+
   it.each([true, false])(
     "settles accepted spawns before a late post-compaction abort (yielded: %s)",
     async (yieldDetected) => {

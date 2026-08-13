@@ -68,14 +68,20 @@ Runtime-heavy surfaces have their own explicit caps under
 `agents.defaults.contextLimits` (per-agent overrides under
 `agents.entries.*.contextLimits`):
 
-| Key                      | Purpose                                                                  |
-| ------------------------ | ------------------------------------------------------------------------ |
-| `memoryGetMaxChars`      | Max characters `memory_get` returns before truncation.                   |
-| `postCompactionMaxChars` | Max characters retained from `AGENTS.md` during post-compaction refresh. |
+| Key                         | Purpose                                                                                 |
+| --------------------------- | --------------------------------------------------------------------------------------- |
+| `contextProjectionMaxChars` | Upper bound for Codex continuity projection characters; never widens the derived limit. |
+| `memoryGetMaxChars`         | Max characters `memory_get` returns before truncation.                                  |
+| `postCompactionMaxChars`    | Max characters retained from `AGENTS.md` during post-compaction refresh.                |
 
 These are bounded runtime excerpts and injected runtime-owned blocks,
 separate from bootstrap limits, startup-context limits, and skills prompt
 limits.
+
+`contextProjectionMaxChars` is independent of the model context window and
+compaction policy. It limits only the assembled conversation text that
+OpenClaw renders into fresh, stale-resume, and context-engine Codex continuity
+prompts.
 
 OpenClaw derives the live tool-result cap from the effective model context
 window: `16000` chars below

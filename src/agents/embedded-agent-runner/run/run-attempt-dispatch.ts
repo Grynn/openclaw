@@ -285,13 +285,11 @@ export async function dispatchEmbeddedRunAttempt(input: {
     config: params.config,
     toolOverrides: params.toolOverrides,
     allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
-    ...(runtime.contextEngine
-      ? {
-          contextEngine: runtime.contextEngine,
-          contextTokenBudget: runtime.contextTokenBudget,
-          contextWindowInfo: runtime.contextWindowInfo,
-        }
+    ...(runtime.contextEngine ? { contextEngine: runtime.contextEngine } : {}),
+    ...(runtime.contextTokenBudget !== undefined
+      ? { contextTokenBudget: runtime.contextTokenBudget }
       : {}),
+    ...(runtime.contextWindowInfo ? { contextWindowInfo: runtime.contextWindowInfo } : {}),
     skillsSnapshot: params.skillsSnapshot,
     prompt: pluginHarnessPrompt ?? preparedExecApprovalContinuation.prompt,
     transcriptPrompt:

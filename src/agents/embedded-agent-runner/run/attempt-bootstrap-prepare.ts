@@ -36,6 +36,7 @@ export async function prepareEmbeddedAttemptBootstrap(params: {
   const suppressAmbientContext =
     params.isRawModelRun || attempt.operation === "settled-tool-finalization";
   const contextInjectionMode = resolveContextInjectionMode(attempt.config, params.sessionAgentId);
+  const isPrimaryRun = isPrimaryBootstrapRun(attempt.sessionKey);
   const bootstrapWarn = makeBootstrapWarn({
     sessionLabel: params.sessionLabel,
     workspaceDir: params.resolvedWorkspace,
@@ -53,7 +54,7 @@ export async function prepareEmbeddedAttemptBootstrap(params: {
       bootstrapContextRunKind: attempt.bootstrapContextRunKind,
       trigger: attempt.trigger,
       sessionKey: attempt.sessionKey,
-      isPrimaryRun: isPrimaryBootstrapRun(attempt.sessionKey),
+      isPrimaryRun,
       isCanonicalWorkspace: attempt.isCanonicalWorkspace,
       effectiveWorkspace: params.effectiveWorkspace,
       resolvedWorkspace: params.resolvedWorkspace,
@@ -100,6 +101,7 @@ export async function prepareEmbeddedAttemptBootstrap(params: {
     bootstrapContextMode: attempt.bootstrapContextMode,
     bootstrapContextRunKind: attempt.bootstrapContextRunKind ?? "default",
     bootstrapMode,
+    isPrimaryRun,
     hasCompletedBootstrapTurn: hasCompletedBootstrapTurnForAttempt,
     resolveBootstrapContextForRun: async () => {
       const bootstrapFiles =
@@ -115,25 +117,25 @@ export async function prepareEmbeddedAttemptBootstrap(params: {
           contextMode: attempt.bootstrapContextMode,
           runKind: attempt.bootstrapContextRunKind,
         }));
+      const contextFiles = buildBootstrapContextForFiles(bootstrapFiles, {
+        config: attempt.config,
+        agentId: params.sessionAgentId,
+        warn: bootstrapWarn,
+      });
       return {
         bootstrapFiles,
-        contextFiles: buildBootstrapContextForFiles(bootstrapFiles, {
-          config: attempt.config,
-          agentId: params.sessionAgentId,
-          warn: bootstrapWarn,
-        }),
+        contextFiles: bootstrapRouting.includeBootstrapInSystemContext
+          ? contextFiles
+          : contextFiles.filter((file) => !/(^|[\\/])BOOTSTRAP\.md$/iu.test(file.path.trim())),
       };
     },
   });
   params.markStage("bootstrap-context");
-  const remappedContextFiles = remapInjectedContextFilesToWorkspace({
+  const contextFiles = remapInjectedContextFilesToWorkspace({
     files: resolvedContextFiles,
     sourceWorkspaceDir: params.resolvedWorkspace,
     targetWorkspaceDir: params.effectiveWorkspace,
   });
-  const contextFiles = bootstrapRouting.includeBootstrapInSystemContext
-    ? remappedContextFiles
-    : remappedContextFiles.filter((file) => !/(^|[\\/])BOOTSTRAP\.md$/iu.test(file.path.trim()));
   const bootstrapFilesForInjectionStats = bootstrapRouting.includeBootstrapInSystemContext
     ? hookAdjustedBootstrapFiles
     : hookAdjustedBootstrapFiles.filter((file) => file.name !== DEFAULT_BOOTSTRAP_FILENAME);

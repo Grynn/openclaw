@@ -24,6 +24,16 @@ describe("buildMemoryFlushPlan", () => {
     expect(plan?.relativePath).toBe("memory/2026-05-30.md");
   });
 
+  it("requires reading and deduplicating the daily target before appending", () => {
+    const plan = buildMemoryFlushPlan({ nowMs: Date.UTC(2026, 6, 28, 12, 0, 0) });
+
+    expect(plan?.prompt).toContain("Read the target daily memory file before writing");
+    expect(plan?.prompt).toContain("do not repeat or restate existing entries");
+    expect(plan?.prompt).toContain("trust that receipt and do not reread");
+    expect(plan?.systemPrompt).toContain("Read the target daily memory file before writing");
+    expect(plan?.systemPrompt).toContain("trust that receipt and do not reread");
+  });
+
   it("records mixed trusted and untrusted writes as untrusted for the whole file", async () => {
     const workspaceDir = await createTempWorkspace("openclaw-flush-provenance-");
     const plan = buildMemoryFlushPlan({ nowMs: Date.UTC(2026, 6, 28, 12, 0, 0) });

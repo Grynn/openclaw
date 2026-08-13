@@ -13,6 +13,7 @@ import type {
   SessionTranscriptReadScope,
   TranscriptEvent,
 } from "./session-accessor.sqlite-contract.js";
+import { readActiveTranscriptContextByteSize } from "./session-accessor.sqlite-replay-stats.js";
 import {
   readTranscriptProjectionGeneration,
   readVisibleMessageRange,
@@ -178,6 +179,67 @@ export function readSessionTranscriptActiveStats(scope: SessionTranscriptReadSco
     return {
       eventCount: row?.event_count ?? 0,
       sizeBytes: row?.size_bytes ?? 0,
+    };
+  });
+}
+
+/**
+ * Reads the JSONL byte size that the latest compaction/reset boundary can replay.
+ *
+ * Durable SQLite history intentionally remains queryable after compaction, so the
+ * full active-path size is not a valid preflight-compaction fuse. Measure only the
+ * latest semantic replay window while leaving UI-visible history unchanged.
+ */
+export function readSessionTranscriptContextByteSize(scope: SessionTranscriptReadScope): number {
+  return withCurrentProjectionSnapshot(scope, (projection) =>
+    readActiveTranscriptContextByteSize(projection.database, projection.resolved.sessionId),
+  );
+}
+
+/** Reads logical visible-message count and JSONL byte size across reset boundaries. */
+export function readSessionTranscriptVisibleStats(scope: SessionTranscriptReadScope): {
+  eventCount: number;
+  sizeBytes: number;
+} {
+  return withCurrentProjectionSnapshot(scope, (projection) => {
+    const visible = resolveVisibleMessagePositions(projection);
+    if (visible.total === 0) {
+      return { eventCount: 0, sizeBytes: 0 };
+    }
+    const db = getActiveTranscriptKysely(projection.database);
+    const buildStatsQuery = () =>
+      db
+        .selectFrom("session_transcript_active_events as active")
+        .innerJoin("transcript_events as event", (join) =>
+          join
+            .onRef("event.session_id", "=", "active.session_id")
+            .onRef("event.seq", "=", "active.event_seq"),
+        )
+        .select((eb) => [
+          eb.fn.count<number>("active.event_seq").as("event_count"),
+          /* kysely-allow-raw: Replay size excludes private Codex prompt provenance and includes one terminating newline per event. */
+          sql<number>`COALESCE(SUM(LENGTH(CAST(json_remove(
+            event.event_json,
+            '$.message.__openclaw.upstreamUserText'
+          ) AS BLOB))), 0)
+            + COUNT(*)`.as("size_bytes"),
+        ])
+        .where("active.session_id", "=", projection.resolved.sessionId)
+        .where("active.message_position", "is not", null);
+    const postBoundary = executeSqliteQueryTakeFirstSync(
+      projection.database.db,
+      buildStatsQuery().where("active.message_position", ">=", visible.postStart),
+    );
+    const kept =
+      visible.kept.length > 0
+        ? executeSqliteQueryTakeFirstSync(
+            projection.database.db,
+            buildStatsQuery().where("active.message_position", "in", visible.kept),
+          )
+        : undefined;
+    return {
+      eventCount: (postBoundary?.event_count ?? 0) + (kept?.event_count ?? 0),
+      sizeBytes: (postBoundary?.size_bytes ?? 0) + (kept?.size_bytes ?? 0),
     };
   });
 }

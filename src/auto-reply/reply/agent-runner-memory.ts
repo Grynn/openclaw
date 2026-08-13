@@ -42,7 +42,7 @@ import {
 } from "../../config/sessions.js";
 import {
   readRecentSessionTranscriptActiveEvents,
-  readSessionTranscriptActiveStats,
+  readSessionTranscriptContextByteSize,
   updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
@@ -93,6 +93,11 @@ type UpdateSessionEntryParams = {
 const MAX_VISIBLE_MEMORY_FLUSH_ERROR_CHARS = 600;
 const MAX_FLUSH_FAILURES = 3;
 const MAX_FLUSH_ERROR_LENGTH = 200;
+// Memory flushes only need a bounded recent transcript tail plus the durable
+// memory target. Letting them inherit a very large conversational window turns
+// a small append-only checkpoint into a full-context agent run immediately
+// before compaction, which delays the user turn the checkpoint is protecting.
+const MEMORY_FLUSH_CONTEXT_TOKEN_BUDGET = 64_000;
 
 const embeddedAgentRuntimeLoader = createLazyImportLoader<EmbeddedAgentRuntime>(
   () => import("../../agents/embedded-agent.js"),
@@ -486,7 +491,7 @@ function readSqliteSessionLogSnapshot(
   const snapshot: SessionLogSnapshot = {};
   try {
     if (options.includeByteSize) {
-      snapshot.byteSize = readSessionTranscriptActiveStats(scope).sizeBytes;
+      snapshot.byteSize = readSessionTranscriptContextByteSize(scope);
     }
     if (options.includeUsage || options.includeTurnTaint) {
       const events = readRecentSessionTranscriptActiveEvents(scope, SQLITE_USAGE_TAIL_MAX_EVENTS);
@@ -1420,6 +1425,8 @@ export async function runMemoryFlushIfNeeded(params: {
           ...embeddedContext,
           ...senderContext,
           ...runBaseParams,
+          contextTokenBudget: MEMORY_FLUSH_CONTEXT_TOKEN_BUDGET,
+          bootstrapContextMode: "lightweight",
           agentHarnessId: sessionRuntimeOverride,
           agentHarnessRuntimeOverride: sessionRuntimeOverride,
           sandboxSessionKey: params.runtimePolicySessionKey,

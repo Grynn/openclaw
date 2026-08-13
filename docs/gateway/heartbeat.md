@@ -36,6 +36,8 @@ Troubleshooting: [Automations](/automation/cron-jobs#troubleshooting)
   <Step title="Optional tuning">
     - Use lightweight bootstrap context if heartbeat runs only need the monitor scratch.
     - Enable isolated sessions to avoid sending full conversation history each heartbeat.
+    - Limit the skills catalog to only the skills heartbeat work needs.
+    - Limit runtime tools to only the actions heartbeat work needs.
     - Restrict heartbeats to active hours (local time).
 
   </Step>
@@ -56,6 +58,8 @@ Example config:
         directPolicy: "allow", // default: allow direct/DM targets; set "block" to suppress
         lightContext: true, // optional: skip workspace bootstrap files for heartbeat runs
         isolatedSession: true, // optional: fresh session each run (no conversation history)
+        skills: ["gmail", "todo"], // optional: heartbeat-only skill allowlist
+        tools: ["exec"], // optional: heartbeat-only runtime tool allowlist
         // activeHours: { start: "08:00", end: "24:00" },
       },
     },
@@ -122,6 +126,8 @@ Outside heartbeats, stray `HEARTBEAT_OK` at the start/end of a message is stripp
         model: "anthropic/claude-opus-4-6",
         lightContext: false, // default: false; true skips workspace bootstrap files for heartbeat runs
         isolatedSession: false, // default: false; true runs each heartbeat in a fresh session (no conversation history)
+        skills: ["gmail", "todo"], // optional; [] exposes no skills during heartbeat turns
+        tools: ["exec"], // optional; [] removes optional runtime tools during heartbeat turns
         target: "owner", // default | options: last | none | <channel id>
         accountId: "ops-bot", // optional multi-account channel id
         prompt: "Follow the heartbeat monitor scratch context when provided. Recurring tasks are automations; create or change their schedules with the automations tool, not heartbeat scratch. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.",
@@ -135,6 +141,8 @@ Outside heartbeats, stray `HEARTBEAT_OK` at the start/end of a message is stripp
 
 - `agents.defaults.heartbeat` sets global heartbeat behavior.
 - `agents.entries.*.heartbeat` merges on top; if any agent has a `heartbeat` block, **only those agents** run heartbeats.
+- An explicit per-agent `heartbeat.skills` list replaces the default heartbeat skill list, then intersects with the agent's normal skill allowlist.
+- An explicit per-agent `heartbeat.tools` list replaces the default heartbeat tool list, then intersects with every normal tool-policy layer.
 - `channels.defaults.heartbeatVisibility` sets visibility defaults for all channels.
 - `channels.<channel>.heartbeatVisibility` overrides channel defaults.
 - `channels.<channel>.accounts.<id>.heartbeatVisibility` (multi-account channels) overrides per-channel settings.
@@ -247,6 +255,12 @@ Use `accountId` to target a specific account on multi-account channels like Tele
 </ParamField>
 <ParamField path="isolatedSession" type="boolean" default="false">
   When true, each heartbeat runs in a fresh session with no prior conversation history. Uses the same isolation pattern as automation jobs with `sessionTarget: "isolated"`. Dramatically reduces per-heartbeat token cost. Combine with `lightContext: true` for maximum savings. Delivery routing still uses the main session context.
+</ParamField>
+<ParamField path="skills" type="string[]">
+  Optional allowlist applied only to heartbeat turns. Omit it to use the agent's normal skill set, or set `[]` to expose no skills during heartbeats. The list intersects with `agents.defaults.skills` or `agents.entries.*.skills`, so it cannot widen the agent's skill access. This controls skill discovery and prompt visibility, not shell-time authorization.
+</ParamField>
+<ParamField path="tools" type="string[]">
+  Optional runtime tool allowlist applied only to heartbeat turns. Omit it to use the agent's normal tool surface, or set `[]` to remove optional runtime tools. The list is an additional narrowing cap: global, provider, agent, channel, sender, sandbox, and inherited tool policy still apply, so this field cannot re-enable a tool denied elsewhere. Host-required `heartbeat_respond` and delivery tools may remain available so the turn can complete its response contract.
 </ParamField>
 <ParamField path="session" type="string">
   Optional session key for heartbeat runs.
@@ -470,6 +484,8 @@ Heartbeats run full agent turns. Shorter intervals burn more tokens. To reduce c
 
 - Use `isolatedSession: true` to avoid sending full conversation history (~100K tokens down to ~2-5K per run).
 - Use `lightContext: true` to skip workspace bootstrap files for heartbeat runs.
+- Use `skills` to include only the skill catalog entries heartbeat work needs.
+- Use `tools` to include only the runtime actions heartbeat work needs.
 - Set a cheaper `model` (e.g. `ollama/llama3.2:1b`).
 - Keep the monitor scratch small.
 - Set `target: "none"` explicitly if you only want internal state updates.

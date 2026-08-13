@@ -328,6 +328,14 @@ export const AUTOMATION_FIELD_HELP: Record<string, string> = {
     'Controls whether heartbeat delivery may target direct/DM chats: "allow" (default) permits DM delivery and "block" suppresses direct-target sends.',
   "agents.entries.*.heartbeat.directPolicy":
     'Per-agent override for heartbeat direct/DM delivery policy; use "block" for agents that should only send heartbeat alerts to non-DM destinations.',
+  "agents.defaults.heartbeat.skills":
+    "Optional heartbeat-only skill allowlist. Omit it to use the agent's normal skills, or set an empty list to expose no skills during heartbeat turns. The list is intersected with the agent allowlist and cannot widen access.",
+  "agents.entries.*.heartbeat.skills":
+    "Per-agent heartbeat-only skill allowlist. An explicit list replaces agents.defaults.heartbeat.skills for this agent, then intersects with the agent's normal skill allowlist.",
+  "agents.defaults.heartbeat.tools":
+    "Optional heartbeat-only runtime tool allowlist. Omit it to use the agent's normal tool surface, or set an empty list to remove optional tools. This is a narrowing cap and cannot override other tool policy; required heartbeat response and delivery tools may remain available.",
+  "agents.entries.*.heartbeat.tools":
+    "Per-agent heartbeat-only runtime tool allowlist. An explicit list replaces agents.defaults.heartbeat.tools for this agent, then remains intersected with the agent's normal tool policy.",
   "channels.mattermost.configWrites":
     "Allow Mattermost to write config in response to channel events/commands (default: true).",
   "channels.modelByChannel":

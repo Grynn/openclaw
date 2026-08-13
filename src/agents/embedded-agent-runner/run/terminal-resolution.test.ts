@@ -181,6 +181,51 @@ describe("terminal resolution", () => {
     expect(activateInternalPrompt).not.toHaveBeenCalled();
   });
 
+  it("completes an explicitly expected silent post-tool reply without finalization", async () => {
+    const assistant = buildEmbeddedRunnerAssistant({
+      content: [{ type: "text", text: SILENT_REPLY_TOKEN }],
+    });
+    const attempt = makeEmbeddedRunnerAttempt({
+      assistantTexts: [SILENT_REPLY_TOKEN],
+      toolMetas: [{ toolName: "write", replaySafe: false }],
+      itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+    });
+    const activateInternalPrompt = vi.fn();
+    const input = makeTerminalInput({
+      attempt,
+      attemptAssistant: assistant,
+      runParams: { silentExpected: true },
+      activateInternalPrompt,
+    });
+
+    const resolved = await resolveEmbeddedRunTerminal(input);
+
+    expect(resolved.action).toBe("complete");
+    if (resolved.action !== "complete") {
+      return;
+    }
+    expect(resolved.result.payloads).toEqual([{ text: SILENT_REPLY_TOKEN }]);
+    expect(resolved.result.meta.error).toBeUndefined();
+    expect(resolved.result.meta.terminalReplyKind).toBe("silent-empty");
+    expect(activateInternalPrompt).not.toHaveBeenCalled();
+    expect(
+      resolveSettledTurnFinalizationRequest({
+        runParams: input.runParams,
+        attempt,
+        activeErrorContext: input.activeErrorContext,
+        modelApi: input.modelApi,
+        executionContract: input.executionContract,
+        payloadsWithToolMedia: [],
+        hasTerminalToolPresentation: false,
+        terminalState: input.terminalState,
+        settledTurnFinalizationAvailable: true,
+      }),
+    ).toBeNull();
+  });
+
   it("completes a cron turn from a trailing silent tool result", async () => {
     const assistant = emptyAssistant();
     const attempt = makeEmbeddedRunnerAttempt({

@@ -103,9 +103,10 @@ function shouldSkipNonVisibleTurnRetry(params: {
   );
 }
 
-/** Allows configured silent handling for replay-safe empty, reasoning-only, or explicit silent turns. */
+/** Allows declared exact silence or configured handling for eligible non-visible turns. */
 export function shouldTreatEmptyAssistantReplyAsSilent(params: {
   allowEmptyAssistantReplyAsSilent?: boolean;
+  silentExpected?: boolean;
   onlyExplicitSilentReply?: boolean;
   terminalReplyExpectation?: "required" | "optional";
   payloadCount: number;
@@ -118,9 +119,14 @@ export function shouldTreatEmptyAssistantReplyAsSilent(params: {
   // tools is intentional there; retry is replay-unsafe, so erroring would mark
   // successful tool-only runs as failures.
   const terminalReplyOptional = params.terminalReplyExpectation === "optional";
+  const expectedExplicitSilence =
+    params.silentExpected === true && hasOnlySilentAssistantReply(params.attempt.assistantTexts);
   if (
-    !params.allowEmptyAssistantReplyAsSilent ||
-    shouldSkipNonVisibleTurnRetry({ ...params, tolerateSideEffects: terminalReplyOptional })
+    (!params.allowEmptyAssistantReplyAsSilent && !expectedExplicitSilence) ||
+    shouldSkipNonVisibleTurnRetry({
+      ...params,
+      tolerateSideEffects: terminalReplyOptional || expectedExplicitSilence,
+    })
   ) {
     return false;
   }

@@ -14,6 +14,7 @@ import { attemptTerminal, type EmbeddedRunAttemptResult } from "./attempt-termin
 import { flattenCodexDynamicToolFunctions } from "./protocol.js";
 import { readCodexRateLimitsRevision, readRecentCodexRateLimits } from "./rate-limit-cache.js";
 import type { CodexAttemptActiveTurn } from "./run-attempt-active-turn.js";
+import { persistCodexCompletedBootstrapTurnAfterMirror } from "./run-attempt-bootstrap-persistence.js";
 import type { CodexAttemptLifecycleController } from "./run-attempt-lifecycle-controller.js";
 import {
   emitCodexAppServerEvent,
@@ -30,7 +31,10 @@ import {
 } from "./run-attempt-state.js";
 import type { prepareCodexAttemptTurnRequest } from "./run-attempt-turn-request.js";
 import type { CodexAttemptTurnState } from "./run-attempt-turn-state.js";
-import { captureCodexSettledTurnFinalizationContext } from "./settled-turn-context.js";
+import {
+  captureCodexSettledTurnFinalizationContext,
+  shouldCaptureCodexSettledTurnFinalizationContext,
+} from "./settled-turn-context.js";
 import { normalizeCodexTrajectoryError, recordCodexTrajectoryCompletion } from "./trajectory.js";
 import { codexTranscriptMirrorRuntime } from "./transcript-mirror.js";
 import {
@@ -50,7 +54,8 @@ export async function finalizeCodexAttempt(
 ): Promise<EmbeddedRunAttemptResult> {
   const { prompt, state: resourceState, trajectoryRecorder, markTrajectoryEndRecorded } = resources;
   const { context, systemPromptReport } = prompt;
-  const { runtime, attemptTools, activeTranscriptTarget, hookContext } = context;
+  const { runtime, attemptTools, activeTranscriptTarget, hookContext, workspaceBootstrapContext } =
+    context;
   const { hookContextWindowFields, hookRunner } = context;
   const { connection, preparedAuthBinding } = runtime;
   const { effectiveRuntimeProviderId, effectiveRuntimeModelId } = runtime;
@@ -320,11 +325,21 @@ export async function finalizeCodexAttempt(
     threadId: resourceState.thread.threadId,
     turnId: activeTurnId,
   });
+  await persistCodexCompletedBootstrapTurnAfterMirror({
+    attemptSucceeded,
+    ...(result.compactionCount !== undefined ? { compactionCount: result.compactionCount } : {}),
+    mirroredMessageCount: mirrorOutcome.mirroredMessages.length,
+    runId: params.runId,
+    ...(params.sessionTarget ? { sessionTarget: params.sessionTarget } : {}),
+    shouldRecordCompletedBootstrapTurn:
+      workspaceBootstrapContext.shouldRecordCompletedBootstrapTurn === true,
+  });
   const { assistantTranscriptOwned, assistantTranscriptIdempotencyKey, terminalAnchor } =
     mirrorOutcome;
   const shouldCaptureSettledTurnFinalizationContext =
-    result.assistantTexts.every((text) => !text.trim()) &&
-    result.messagesSnapshot.some((message) => message.role === "toolResult") &&
+    shouldCaptureCodexSettledTurnFinalizationContext(result, {
+      silentExpected: params.silentExpected,
+    }) &&
     (!finalPromptError || activeProjector.settledTurnFailureFinalizationAllowed);
   const settledTurnFinalizationContext = shouldCaptureSettledTurnFinalizationContext
     ? await captureCodexSettledTurnFinalizationContext({

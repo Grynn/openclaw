@@ -18,6 +18,7 @@ async function resolveBootstrapContext(params: {
   bootstrapContextMode?: string;
   bootstrapContextRunKind?: BootstrapContextRunKind;
   bootstrapMode?: "full" | "limited" | "none";
+  isPrimaryRun?: boolean;
   completed?: boolean;
   resolver?: () => Promise<{ bootstrapFiles: unknown[]; contextFiles: unknown[] }>;
 }) {
@@ -36,6 +37,7 @@ async function resolveBootstrapContext(params: {
     bootstrapContextMode: params.bootstrapContextMode ?? "full",
     bootstrapContextRunKind: params.bootstrapContextRunKind ?? "default",
     bootstrapMode: params.bootstrapMode ?? "none",
+    isPrimaryRun: params.isPrimaryRun ?? true,
     hasCompletedBootstrapTurn,
     resolveBootstrapContextForRun,
   });
@@ -178,18 +180,66 @@ describe("embedded attempt context injection", () => {
     expect(result.bootstrapFiles).toEqual([{ name: "AGENTS.md", content: "bootstrap context" }]);
   });
 
-  it.each(["heartbeat"] as const)(
+  it("seeds continuation state for an established workspace after full-context injection", async () => {
+    const { result } = await resolveBootstrapContext({
+      contextInjectionMode: "continuation-skip",
+      bootstrapMode: "none",
+      resolver: async () => ({
+        bootstrapFiles: [{ name: "AGENTS.md" }],
+        contextFiles: [{ path: "AGENTS.md" }],
+      }),
+    });
+
+    expect(result.shouldRecordCompletedBootstrapTurn).toBe(true);
+  });
+
+  it("does not write continuation markers for established always-injection turns", async () => {
+    const { result } = await resolveBootstrapContext({
+      bootstrapMode: "none",
+      resolver: async () => ({
+        bootstrapFiles: [{ name: "AGENTS.md" }],
+        contextFiles: [{ path: "AGENTS.md" }],
+      }),
+    });
+
+    expect(result.shouldRecordCompletedBootstrapTurn).toBe(false);
+  });
+
+  it.each(["heartbeat", "cron"] as const)(
     "does not record full bootstrap completion for %s runs",
     async (bootstrapContextRunKind) => {
       const { result } = await resolveBootstrapContext({
-        bootstrapContextMode: "lightweight",
+        bootstrapContextMode: "full",
         bootstrapContextRunKind,
-        bootstrapMode: "none",
+        bootstrapMode: "full",
+        resolver: async () => ({
+          bootstrapFiles: [{ name: "AGENTS.md" }],
+          contextFiles: [{ path: "AGENTS.md" }],
+        }),
       });
 
       expect(result.shouldRecordCompletedBootstrapTurn).toBe(false);
     },
   );
+
+  it("does not record full bootstrap completion for subagent runs", async () => {
+    const { result } = await resolveBootstrapContext({
+      bootstrapMode: "full",
+      isPrimaryRun: false,
+      resolver: async () => ({
+        bootstrapFiles: [{ name: "AGENTS.md" }],
+        contextFiles: [{ path: "AGENTS.md" }],
+      }),
+    });
+
+    expect(result.shouldRecordCompletedBootstrapTurn).toBe(false);
+  });
+
+  it("does not record full bootstrap completion when no context was injected", async () => {
+    const { result } = await resolveBootstrapContext({ bootstrapMode: "full" });
+
+    expect(result.shouldRecordCompletedBootstrapTurn).toBe(false);
+  });
 
   it("allows continuation skip again for limited bootstrap mode", async () => {
     const { result, hasCompletedBootstrapTurn, resolveBootstrapContextForRun } =

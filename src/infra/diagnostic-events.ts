@@ -647,7 +647,12 @@ type DiagnosticModelCallBaseEvent = DiagnosticBaseEvent & {
   /** Defaults to request for emitters created before turn-level CLI diagnostics. */
   observationUnit?: "request" | "turn";
   contextTokenBudget?: number;
-  contextWindowSource?: "model" | "modelsConfig" | "agentContextTokens" | "default";
+  contextWindowSource?:
+    | "model"
+    | "modelsConfig"
+    | "agentContextTokens"
+    | "runContextTokenBudget"
+    | "default";
   contextWindowReferenceTokens?: number;
   upstreamRequestIdHash?: string;
   promptStats?: DiagnosticModelCallPromptStats;

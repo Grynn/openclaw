@@ -5,6 +5,14 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import {
+  hasCompletedBootstrapTurn,
+  isPrimaryBootstrapRun,
+  isWorkspaceBootstrapPending,
+  resolveAttemptBootstrapContext,
+  resolveContextInjectionMode,
+  resolveWorkspaceBootstrapRouting,
+} from "openclaw/plugin-sdk/agent-bootstrap-runtime";
+import {
   buildBootstrapContextForFiles,
   buildWatchedSessionsHarnessContext,
   embeddedAgentLog,
@@ -26,6 +34,7 @@ import type {
 } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { readNonBlankString as readNonEmptyString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { EmbeddedRunAttemptResult } from "./attempt-terminal.js";
+import { isCodexMemoryFlushRun } from "./memory-flush-run.js";
 import type { CodexDynamicToolFunctionSpec, CodexDynamicToolSpec, JsonValue } from "./protocol.js";
 import { flattenCodexDynamicToolFunctions } from "./protocol.js";
 import { isJsonObject } from "./protocol.js";
@@ -75,6 +84,7 @@ type CodexWorkspaceBootstrapContext = CodexBootstrapContext & {
   promptContext?: string;
   turnScopedDeveloperInstructions?: string;
   memoryCollaborationInstructions?: string;
+  shouldRecordCompletedBootstrapTurn?: boolean;
 };
 
 /** Reads mirrored Codex session history for harness hooks. */
@@ -173,29 +183,122 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
   sessionKey: string;
   sessionAgentId: string;
   memoryToolNames: readonly string[];
+  hasBootstrapFileAccess?: boolean;
   sandboxed?: boolean;
 }): Promise<CodexWorkspaceBootstrapContext> {
   try {
+    const agentId = params.params.agentId ?? params.sessionAgentId;
+    const contextInjectionMode = resolveContextInjectionMode(params.params.config, agentId);
     const memoryToolsAvailable =
       params.memoryToolNames.length > 0 &&
       canRouteCodexWorkspaceMemoryThroughTools({
         config: params.params.config,
-        agentId: params.params.agentId ?? params.sessionAgentId,
+        agentId,
         workspaceDir: params.effectiveWorkspace,
       });
+    const isPrimaryRun = isPrimaryBootstrapRun(params.sessionKey);
+    const warn = (message: string) => embeddedAgentLog.warn(message);
+    let completedBootstrapTurn: boolean | undefined;
+    const hasCompletedBootstrapTurnForAttempt = async () => {
+      completedBootstrapTurn ??= await hasCompletedBootstrapTurn(params.params.sessionTarget);
+      return completedBootstrapTurn;
+    };
+    const resolveBootstrapRouting = (bootstrapFiles?: readonly CodexBootstrapFile[]) =>
+      resolveWorkspaceBootstrapRouting({
+        isWorkspaceBootstrapPending,
+        bootstrapFiles,
+        bootstrapFilesProvideAccess: false,
+        bootstrapContextRunKind: params.params.bootstrapContextRunKind,
+        trigger: params.params.trigger,
+        sessionKey: params.sessionKey,
+        isPrimaryRun,
+        isCanonicalWorkspace: params.params.isCanonicalWorkspace,
+        effectiveWorkspace: params.effectiveWorkspace,
+        resolvedWorkspace: params.resolvedWorkspace,
+        hasBootstrapFileAccess:
+          params.hasBootstrapFileAccess ?? params.params.disableTools !== true,
+      });
+    const shouldProbeContinuationSkip =
+      contextInjectionMode === "continuation-skip" &&
+      params.params.bootstrapContextRunKind !== "heartbeat" &&
+      (await hasCompletedBootstrapTurnForAttempt());
+    let preloadedBootstrapFiles: CodexBootstrapFile[] | undefined;
+    let bootstrapRouting =
+      shouldProbeContinuationSkip || contextInjectionMode === "never"
+        ? await resolveBootstrapRouting()
+        : undefined;
+    if (
+      contextInjectionMode !== "never" &&
+      (bootstrapRouting === undefined || bootstrapRouting.bootstrapMode === "full")
+    ) {
+      preloadedBootstrapFiles = await resolveBootstrapFilesForRun({
+        workspaceDir: params.resolvedWorkspace,
+        config: params.params.config,
+        sessionKey: params.sessionKey,
+        sessionId: params.params.sessionId,
+        chatType: params.params.chatType,
+        agentId,
+        warn,
+        contextMode: params.params.bootstrapContextMode,
+        runKind: params.params.bootstrapContextRunKind,
+      });
+      bootstrapRouting = await resolveBootstrapRouting(preloadedBootstrapFiles);
+    }
+    const resolvedBootstrapRouting =
+      bootstrapRouting ?? (await resolveBootstrapRouting(preloadedBootstrapFiles));
+    const { bootstrapFiles, contextFiles, isContinuationTurn, shouldRecordCompletedBootstrapTurn } =
+      await resolveAttemptBootstrapContext({
+        contextInjectionMode,
+        bootstrapContextMode: params.params.bootstrapContextMode,
+        bootstrapContextRunKind: params.params.bootstrapContextRunKind ?? "default",
+        bootstrapMode: resolvedBootstrapRouting.bootstrapMode,
+        isPrimaryRun,
+        hasCompletedBootstrapTurn: hasCompletedBootstrapTurnForAttempt,
+        resolveBootstrapContextForRun: async () => {
+          const resolvedBootstrapFiles =
+            preloadedBootstrapFiles ??
+            (await resolveBootstrapFilesForRun({
+              workspaceDir: params.resolvedWorkspace,
+              config: params.params.config,
+              sessionKey: params.sessionKey,
+              sessionId: params.params.sessionId,
+              chatType: params.params.chatType,
+              agentId,
+              warn,
+              contextMode: params.params.bootstrapContextMode,
+              runKind: params.params.bootstrapContextRunKind,
+            }));
+          const resolvedContextFiles = buildBootstrapContextForFiles(
+            memoryToolsAvailable
+              ? resolvedBootstrapFiles.filter(
+                  (file) =>
+                    !isCodexWorkspaceRootMemoryBootstrapFile({
+                      file,
+                      workspaceDir: params.resolvedWorkspace,
+                    }),
+                )
+              : resolvedBootstrapFiles,
+            {
+              config: params.params.config,
+              agentId,
+              warn,
+            },
+          );
+          return {
+            bootstrapFiles: resolvedBootstrapFiles,
+            contextFiles: resolvedBootstrapRouting.includeBootstrapInSystemContext
+              ? resolvedContextFiles
+              : resolvedContextFiles.filter(
+                  (file) => !/(^|[\\/])BOOTSTRAP\.md$/iu.test(file.path.trim()),
+                ),
+          };
+        },
+      });
+    if (contextInjectionMode === "never" || isContinuationTurn) {
+      return { bootstrapFiles, contextFiles, shouldRecordCompletedBootstrapTurn };
+    }
     // Native Codex turns should read workspace MEMORY.md through tools when
     // possible; pasting it into every prompt turns durable memory into policy.
-    const bootstrapFiles = await resolveBootstrapFilesForRun({
-      workspaceDir: params.resolvedWorkspace,
-      config: params.params.config,
-      sessionKey: params.sessionKey,
-      sessionId: params.params.sessionId,
-      chatType: params.params.chatType,
-      agentId: params.params.agentId ?? params.sessionAgentId,
-      warn: (message) => embeddedAgentLog.warn(message),
-      contextMode: params.params.bootstrapContextMode,
-      runKind: params.params.bootstrapContextRunKind,
-    });
     const memoryToolRoutedBootstrapFiles = memoryToolsAvailable
       ? selectCodexWorkspaceMemoryReferenceFiles({
           bootstrapFiles,
@@ -209,46 +312,32 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
         targetWorkspaceDir: params.effectiveWorkspace,
       }),
     );
-    const contextFiles = buildBootstrapContextForFiles(
-      memoryToolsAvailable
-        ? bootstrapFiles.filter(
-            (file) =>
-              !isCodexWorkspaceRootMemoryBootstrapFile({
-                file,
-                workspaceDir: params.resolvedWorkspace,
-              }),
-          )
-        : bootstrapFiles,
-      {
-        config: params.params.config,
-        agentId: params.params.agentId ?? params.sessionAgentId,
-        warn: (message) => embeddedAgentLog.warn(message),
-      },
-    ).map((file) =>
+    const remappedContextFiles = contextFiles.map((file) =>
       remapCodexContextFilePath({
         file,
         sourceWorkspaceDir: params.resolvedWorkspace,
         targetWorkspaceDir: params.effectiveWorkspace,
       }),
     );
-    const promptContextFiles = selectCodexWorkspacePromptContextFiles(contextFiles, {
+    const promptContextFiles = selectCodexWorkspacePromptContextFiles(remappedContextFiles, {
       excludeMemory: memoryToolsAvailable,
       memoryWorkspaceDir: params.effectiveWorkspace,
     });
     const turnScopedDeveloperInstructionFiles = shouldInjectCodexOpenClawPromptContext(
       params.params,
     )
-      ? selectCodexWorkspaceTurnScopedDeveloperInstructionFiles(contextFiles)
+      ? selectCodexWorkspaceTurnScopedDeveloperInstructionFiles(remappedContextFiles)
       : [];
     return {
       bootstrapFiles,
-      contextFiles,
+      contextFiles: remappedContextFiles,
       promptContextFiles,
       turnScopedDeveloperInstructionFiles,
       memoryReferenceFiles,
       memoryToolRoutedBootstrapFiles,
       memoryToolNames: [...params.memoryToolNames],
       memoryToolRouted: memoryToolsAvailable,
+      shouldRecordCompletedBootstrapTurn,
       promptContext: renderCodexWorkspaceBootstrapPromptContext(promptContextFiles),
       turnScopedDeveloperInstructions: renderCodexWorkspaceCollaborationDeveloperInstructions(
         turnScopedDeveloperInstructionFiles,
@@ -259,7 +348,7 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
             toolNames: params.memoryToolNames,
             memoryToolRouted: memoryToolsAvailable,
             citationsMode: params.params.config?.memory?.citations,
-            agentId: params.params.agentId ?? params.sessionAgentId,
+            agentId,
             agentSessionKey: params.sessionKey,
             sandboxed: params.sandboxed,
           })
@@ -557,6 +646,12 @@ export function buildCodexWatchedSessionsContext(params: {
 }
 
 function shouldInjectCodexOpenClawPromptContext(params: EmbeddedRunAttemptParams): boolean {
+  // Pre-compaction memory maintenance has its own exact prompt and append-only
+  // tool contract. Re-injecting persona, workspace, watched-session, and skill
+  // context makes the maintenance turn almost as large as the turn it protects.
+  if (isCodexMemoryFlushRun(params)) {
+    return false;
+  }
   // Lightweight cron runs are commonly exact commands. Keep the user input byte-for-byte
   // to avoid changing command intent while Codex keeps its native project-doc loader.
   return !(

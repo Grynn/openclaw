@@ -91,6 +91,7 @@ describe("resolveAgentConfig", () => {
       agents: {
         defaults: {
           contextLimits: {
+            contextProjectionMaxChars: 304_000,
             memoryGetMaxChars: 20_000,
           },
         },
@@ -101,15 +102,22 @@ describe("resolveAgentConfig", () => {
               maxSkillsPromptChars: 30_000,
             },
             contextLimits: {
+              contextProjectionMaxChars: 280_000,
               memoryGetMaxChars: 24_000,
             },
           },
+          { id: "secondary" },
         ],
       },
     };
 
     expect(resolveAgentConfig(cfg, "main")?.contextLimits).toEqual({
+      contextProjectionMaxChars: 280_000,
       memoryGetMaxChars: 24_000,
+    });
+    expect(resolveAgentConfig(cfg, "secondary")?.contextLimits).toEqual({
+      contextProjectionMaxChars: 304_000,
+      memoryGetMaxChars: 20_000,
     });
   });
 

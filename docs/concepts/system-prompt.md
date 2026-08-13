@@ -169,7 +169,8 @@ This keeps the base prompt small while still enabling targeted skill usage. Sizi
 | Global    | `skills.limits.maxSkillsPromptChars`                 | `agents.defaults.contextLimits.*`  |
 | Per-agent | `agents.entries.*.skillsLimits.maxSkillsPromptChars` | `agents.entries.*.contextLimits.*` |
 
-The runtime excerpt budget covers `memory_get`, live tool results, and post-compaction `AGENTS.md` refreshes.
+The runtime excerpt budget covers Codex continuity projections, `memory_get`,
+live tool results, and post-compaction `AGENTS.md` refreshes.
 
 ## Documentation
 

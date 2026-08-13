@@ -88,6 +88,8 @@ agent:
       enabled: true
       rememberAcrossConversations: true
       sources: [memory, sessions]
+  heartbeat:
+    tools: [exec]
 ```
 
 This profile exists only inside the Claw package. OpenClaw validates and uses it
@@ -115,6 +117,9 @@ weaken host filesystem confinement. A Claw may also set
 `memory.search.enabled`, choose the portable `memory` and `sessions` sources,
 and opt into cross-conversation memory with `rememberAcrossConversations`.
 Declaring the `sessions` source requires that opt-in.
+`heartbeat.tools` may add a bounded, heartbeat-only runtime allowlist (including
+`[]` to remove optional tools). It remains intersected with host tool policy and
+cannot grant wildcard or unbounded plugin access.
 Host policy still constrains these settings, and Claws do not carry custom
 profile definitions, providers, credentials, bindings, or local memory paths.
 The conventional profile is limited to 256 KiB, must be JSON-compatible YAML, may

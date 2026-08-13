@@ -87,6 +87,8 @@ export const HeartbeatSchema = z
     to: z.string().optional(),
     accountId: z.string().optional(),
     prompt: z.string().optional(),
+    skills: z.array(z.string()).optional(),
+    tools: z.array(z.string()).optional(),
     timeoutSeconds: z.number().int().positive().optional(),
     lightContext: z.boolean().optional(),
     isolatedSession: z.boolean().optional(),
@@ -278,6 +280,7 @@ const SandboxPruneSchema = z
 
 export const AgentContextLimitsSchema = z
   .object({
+    contextProjectionMaxChars: z.number().int().min(1).max(1_000_000).optional(),
     memoryGetMaxChars: z.number().int().min(1).max(250_000).optional(),
     postCompactionMaxChars: z.number().int().min(1).max(50_000).optional(),
   })

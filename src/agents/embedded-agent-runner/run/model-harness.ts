@@ -53,6 +53,7 @@ export function resolveEmbeddedRunEffectiveModel(
     runtimeModel: params.runtimeModel,
     nativeModelOwned: params.nativeModelOwned,
     agentContextTokens,
+    requestedContextTokenBudget: params.runParams.contextTokenBudget,
   });
 }
 

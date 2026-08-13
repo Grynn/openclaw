@@ -1734,6 +1734,42 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     expect(hoisted.resolveBootstrapContextForRunMock).not.toHaveBeenCalled();
   });
 
+  it("persists continuation state after an established workspace injects full context", async () => {
+    hoisted.resolveContextInjectionModeMock.mockReturnValue("continuation-skip");
+    hoisted.hasCompletedBootstrapTurnMock.mockResolvedValue(false);
+    hoisted.isWorkspaceBootstrapPendingMock.mockResolvedValue(false);
+    hoisted.resolveBootstrapContextForRunMock.mockResolvedValue({
+      bootstrapFiles: [
+        {
+          name: "AGENTS.md",
+          path: "/tmp/openclaw-established-workspace/AGENTS.md",
+          content: "Established workspace guidance.",
+          missing: false,
+        },
+      ],
+      contextFiles: [],
+    });
+
+    await createContextEngineAttemptRunner({
+      contextEngine: createContextEngineBootstrapAndAssemble(),
+      sessionKey,
+      tempPaths,
+      attemptOverrides: {
+        prompt: "visible ask",
+        transcriptPrompt: "visible ask",
+        trigger: "user",
+      },
+      sessionPrompt: async (session) => {
+        session.messages = [...session.messages, doneMessage];
+      },
+    });
+
+    expect(hoisted.sessionManager.appendCustomEntry).toHaveBeenCalledWith(
+      "openclaw:bootstrap-context:full",
+      expect.objectContaining({ runId: expect.any(String), sessionId: expect.any(String) }),
+    );
+  });
+
   it("adds current-turn context to the current model input without exposing internal runtime context", async () => {
     let seenPrompt: string | undefined;
     let seenMessages: unknown[] | undefined;

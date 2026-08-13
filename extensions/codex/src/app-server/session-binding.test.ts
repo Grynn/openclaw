@@ -15,8 +15,10 @@ import {
   createCodexAppServerBindingStore,
   createStoredCodexAppServerBinding,
   hashCodexAppServerBindingFingerprint,
+  isSameCodexAppServerBindingGeneration,
   readCodexAppServerThreadBinding,
   reclaimCurrentCodexSessionGeneration,
+  type CodexAppServerThreadBinding,
   type StoredCodexAppServerBinding,
 } from "./session-binding.js";
 
@@ -628,6 +630,160 @@ describe("Codex app-server binding store", () => {
       true,
     );
     await expect(store.read(identity)).resolves.toBeUndefined();
+  });
+
+  it("clears only the exact same-thread physical binding generation under its lease", async () => {
+    const { state } = createStateStore();
+    const store = createCodexAppServerBindingStore(state);
+    const identity = { kind: "session" as const, agentId: "main", sessionId: "session-cas" };
+    const expected: CodexAppServerThreadBinding = {
+      threadId: "thread-shared",
+      clientId: "client-old",
+      cwd: "/repo",
+      authProfileId: "openai:work",
+      appServerRuntimeFingerprint: "runtime-old",
+      networkProxyProfileName: "proxy-old",
+      networkProxyConfigFingerprint: "proxy-config-old",
+      contextEngine: {
+        schemaVersion: 1,
+        engineId: "lossless-claw",
+        policyFingerprint: "policy-old",
+        projection: {
+          schemaVersion: 1,
+          mode: "thread_bootstrap",
+          epoch: "epoch-old",
+          fingerprint: "projection-old",
+        },
+      },
+    };
+    const successor = {
+      ...expected,
+      networkProxyConfigFingerprint: "proxy-config-new",
+    };
+    await store.mutate(identity, { kind: "set", binding: expected });
+    await store.mutate(identity, { kind: "set", binding: successor });
+
+    await expect(
+      store.withLease(identity, () =>
+        store.mutate(identity, {
+          kind: "clear",
+          threadId: expected.threadId,
+          expectedBinding: expected,
+        }),
+      ),
+    ).resolves.toBe(false);
+    await expect(store.read(identity)).resolves.toEqual(successor);
+    await expect(
+      store.withLease(identity, () =>
+        store.mutate(identity, {
+          kind: "clear",
+          threadId: successor.threadId,
+          expectedBinding: successor,
+        }),
+      ),
+    ).resolves.toBe(true);
+  });
+
+  it("compares every physical binding-generation field", () => {
+    const expected: CodexAppServerThreadBinding = {
+      threadId: "source-thread",
+      clientId: "client-1",
+      cwd: "/repo",
+      connectionScope: "supervision",
+      supervisionSourceThreadId: "source-thread",
+      authProfileId: "openai:work",
+      preserveNativeModel: true,
+      conversationSourceTransferComplete: true,
+      pendingSupervisionBranch: {
+        sourceThreadId: "source-thread",
+        connectionFingerprint: "connection-1",
+        lastTurnId: "turn-1",
+        cleanupThreadIds: ["cleanup-1", "cleanup-2"],
+      },
+      appServerRuntimeFingerprint: "runtime-1",
+      networkProxyProfileName: "proxy-1",
+      networkProxyConfigFingerprint: "proxy-config-1",
+      contextEngine: {
+        schemaVersion: 1,
+        engineId: "lossless-claw",
+        policyFingerprint: "policy-1",
+        projection: {
+          schemaVersion: 1,
+          mode: "thread_bootstrap",
+          epoch: "epoch-1",
+          fingerprint: "projection-1",
+        },
+      },
+    };
+    const changed: CodexAppServerThreadBinding[] = [
+      { ...expected, threadId: "thread-2" },
+      { ...expected, clientId: "client-2" },
+      { ...expected, authProfileId: "openai:other" },
+      { ...expected, connectionScope: undefined },
+      { ...expected, supervisionSourceThreadId: "source-thread-2" },
+      {
+        ...expected,
+        pendingSupervisionBranch: {
+          ...expected.pendingSupervisionBranch!,
+          sourceThreadId: "source-thread-2",
+        },
+      },
+      {
+        ...expected,
+        pendingSupervisionBranch: { ...expected.pendingSupervisionBranch!, lastTurnId: "turn-2" },
+      },
+      {
+        ...expected,
+        pendingSupervisionBranch: {
+          ...expected.pendingSupervisionBranch!,
+          connectionFingerprint: "connection-2",
+        },
+      },
+      {
+        ...expected,
+        pendingSupervisionBranch: {
+          ...expected.pendingSupervisionBranch!,
+          cleanupThreadIds: ["cleanup-2", "cleanup-1"],
+        },
+      },
+      { ...expected, appServerRuntimeFingerprint: "runtime-2" },
+      { ...expected, networkProxyProfileName: "proxy-2" },
+      { ...expected, networkProxyConfigFingerprint: "proxy-config-2" },
+      {
+        ...expected,
+        contextEngine: { ...expected.contextEngine!, engineId: "other-engine" },
+      },
+      {
+        ...expected,
+        contextEngine: { ...expected.contextEngine!, policyFingerprint: "policy-2" },
+      },
+      {
+        ...expected,
+        contextEngine: {
+          ...expected.contextEngine!,
+          projection: { ...expected.contextEngine!.projection!, epoch: "epoch-2" },
+        },
+      },
+      {
+        ...expected,
+        contextEngine: {
+          ...expected.contextEngine!,
+          projection: {
+            ...expected.contextEngine!.projection!,
+            fingerprint: "projection-2",
+          },
+        },
+      },
+      {
+        ...expected,
+        contextEngine: { ...expected.contextEngine!, projection: undefined },
+      },
+    ];
+
+    expect(isSameCodexAppServerBindingGeneration({ ...expected }, expected)).toBe(true);
+    for (const current of changed) {
+      expect(isSameCodexAppServerBindingGeneration(current, expected)).toBe(false);
+    }
   });
 
   it("retains cleared legacy conversation provenance after normal tombstones expire", async () => {

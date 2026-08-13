@@ -71,6 +71,7 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
     modelRuntimeId?: string;
     model?: string;
     isolatedSession?: boolean;
+    tools?: string[];
     target?: "telegram" | "last" | "none";
     showOk?: boolean;
   }): OpenClawConfig {
@@ -82,6 +83,7 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
             every: "5m",
             target: params.target ?? "telegram",
             ...(params.isolatedSession ? { isolatedSession: true } : {}),
+            ...(params.tools !== undefined ? { tools: params.tools } : {}),
           },
           ...(params.model ? { model: params.model } : {}),
           ...(params.model && params.modelRuntimeId
@@ -199,6 +201,7 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
     enableHeartbeatTool?: boolean;
     forceHeartbeatTool?: boolean;
     sourceReplyDeliveryMode?: string;
+    toolsAllow?: string[];
   } {
     const options = replyCall(replySpy)[1];
     if (!options || typeof options !== "object") {
@@ -208,6 +211,7 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
       enableHeartbeatTool?: boolean;
       forceHeartbeatTool?: boolean;
       sourceReplyDeliveryMode?: string;
+      toolsAllow?: string[];
     };
   }
 
@@ -1036,6 +1040,16 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
     });
 
     expectHeartbeatToolPrompt(result);
+  });
+
+  it("keeps heartbeat_respond available under a heartbeat-only tool cap", async () => {
+    vi.stubEnv("OPENCLAW_AGENT_RUNTIME", "codex");
+    const result = await runPromptScenario({
+      config: { model: "openai/gpt-5.5", tools: ["exec"] },
+    });
+
+    expectHeartbeatToolPrompt(result);
+    expect(result.calledOpts.toolsAllow).toEqual(["exec", "heartbeat_respond"]);
   });
 
   it("uses the heartbeat response tool prompt for due heartbeat tasks", async () => {

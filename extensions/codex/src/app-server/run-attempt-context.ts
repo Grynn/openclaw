@@ -15,17 +15,24 @@ import {
   readMirroredSessionHistoryMessages,
   renderCodexSkillsCollaborationInstructions,
 } from "./attempt-context.js";
-import {
-  resolveCodexContextEngineProjectionMaxChars,
-  resolveCodexContextEngineProjectionReserveTokens,
-  type CodexProjectedContextRange,
-} from "./context-engine-projection.js";
+import type { CodexProjectedContextRange } from "./context-engine-projection.js";
+import { flattenCodexDynamicToolFunctions } from "./protocol.js";
 import type { CodexAttemptRuntime } from "./run-attempt-runtime.js";
 import type { CodexAttemptTools } from "./run-attempt-tool-setup.js";
 import {
   buildDeveloperInstructions,
+  resolveCodexContextEngineProjectionMaxCharsForAttempt,
   type CodexContextEngineThreadBootstrapProjection,
 } from "./thread-lifecycle.js";
+
+const CODEX_BOOTSTRAP_FILE_TOOL_NAMES = new Set([
+  "apply_patch",
+  "edit",
+  "exec",
+  "exec_command",
+  "read",
+  "write",
+]);
 
 export async function prepareCodexAttemptContext(
   runtime: CodexAttemptRuntime,
@@ -138,6 +145,11 @@ export async function prepareCodexAttemptContext(
     historyState.messages = (await readFencedHistory()) ?? historyState.messages;
   }
   const memoryToolNames = getCodexWorkspaceMemoryToolNames(toolBridge.availableSpecs);
+  const hasBootstrapFileAccess =
+    runtime.nativeToolSurfaceEnabled ||
+    flattenCodexDynamicToolFunctions(toolBridge.availableSpecs).some((tool) =>
+      CODEX_BOOTSTRAP_FILE_TOOL_NAMES.has(tool.name.trim().toLowerCase()),
+    );
   const workspaceBootstrapContext = await buildCodexWorkspaceBootstrapContext({
     params: runtimeParams,
     resolvedWorkspace,
@@ -145,6 +157,7 @@ export async function prepareCodexAttemptContext(
     sessionKey: contextSessionKey,
     sessionAgentId,
     memoryToolNames,
+    hasBootstrapFileAccess,
     sandboxed: sandbox?.enabled === true,
   });
   const baseDeveloperInstructions = buildDeveloperInstructions(runtimeParams, {
@@ -175,10 +188,10 @@ export async function prepareCodexAttemptContext(
     inactiveThreadBootstrapBindingForcedFreshStart:
       initialInactiveThreadBootstrapBindingForcedFreshStart,
   };
-  const codexContextProjectionMaxChars = resolveCodexContextEngineProjectionMaxChars({
-    contextTokenBudget: effectiveContextTokenBudget,
-    reserveTokens: resolveCodexContextEngineProjectionReserveTokens(),
-  });
+  const codexContextProjectionMaxChars = resolveCodexContextEngineProjectionMaxCharsForAttempt(
+    runtimeParams,
+    sessionAgentId,
+  );
   return {
     runtime,
     attemptTools,

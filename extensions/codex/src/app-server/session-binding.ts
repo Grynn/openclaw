@@ -387,6 +387,8 @@ type CodexAppServerBindingMutation =
   | {
       kind: "clear";
       threadId?: string;
+      /** Clear only this exact physical binding generation. */
+      expectedBinding?: CodexAppServerThreadBinding;
       /** Only failed creation may clear the exact provisional supervision owner. */
       expectedPendingSupervisionBranch?: CodexAppServerPendingSupervisionBranch;
     };
@@ -950,6 +952,11 @@ export function createCodexAppServerBindingStore(
               (mutation.kind === "clear" &&
                 ((mutation.threadId !== undefined &&
                   active?.binding.threadId !== mutation.threadId) ||
+                  (mutation.expectedBinding !== undefined &&
+                    !isSameCodexAppServerBindingGeneration(
+                      active?.binding,
+                      mutation.expectedBinding,
+                    )) ||
                   !ownsGeneration ||
                   (active?.binding.connectionScope === "supervision" &&
                     !clearsPendingSupervisionOwner)))
@@ -1255,6 +1262,73 @@ function matchesPendingSupervisionBranch(
   return (
     currentCleanup.length === expectedCleanup.length &&
     currentCleanup.every((threadId, index) => threadId === expectedCleanup[index])
+  );
+}
+
+function isSamePendingSupervisionBranch(
+  current: CodexAppServerPendingSupervisionBranch | undefined,
+  expected: CodexAppServerPendingSupervisionBranch | undefined,
+): boolean {
+  if (!current || !expected) {
+    return current === expected;
+  }
+  const currentCleanup = current.cleanupThreadIds ?? [];
+  const expectedCleanup = expected.cleanupThreadIds ?? [];
+  return (
+    current.sourceThreadId === expected.sourceThreadId &&
+    current.connectionFingerprint === expected.connectionFingerprint &&
+    current.lastTurnId === expected.lastTurnId &&
+    currentCleanup.length === expectedCleanup.length &&
+    currentCleanup.every((threadId, index) => threadId === expectedCleanup[index])
+  );
+}
+
+function isSameContextEngineBinding(
+  current: CodexAppServerContextEngineBinding | undefined,
+  expected: CodexAppServerContextEngineBinding | undefined,
+): boolean {
+  if (!current || !expected) {
+    return current === expected;
+  }
+  const currentProjection = current.projection;
+  const expectedProjection = expected.projection;
+  const sameProjection =
+    !currentProjection || !expectedProjection
+      ? currentProjection === expectedProjection
+      : currentProjection.schemaVersion === expectedProjection.schemaVersion &&
+        currentProjection.mode === expectedProjection.mode &&
+        currentProjection.epoch === expectedProjection.epoch &&
+        currentProjection.fingerprint === expectedProjection.fingerprint;
+  return (
+    current.schemaVersion === expected.schemaVersion &&
+    current.engineId === expected.engineId &&
+    current.policyFingerprint === expected.policyFingerprint &&
+    sameProjection
+  );
+}
+
+/** Compares every field that identifies a compaction-safe physical binding generation. */
+export function isSameCodexAppServerBindingGeneration(
+  current: CodexAppServerThreadBinding | undefined,
+  expected: CodexAppServerThreadBinding,
+): boolean {
+  if (!current) {
+    return false;
+  }
+  return (
+    current.threadId === expected.threadId &&
+    current.clientId === expected.clientId &&
+    current.authProfileId === expected.authProfileId &&
+    current.connectionScope === expected.connectionScope &&
+    current.supervisionSourceThreadId === expected.supervisionSourceThreadId &&
+    isSamePendingSupervisionBranch(
+      current.pendingSupervisionBranch,
+      expected.pendingSupervisionBranch,
+    ) &&
+    current.appServerRuntimeFingerprint === expected.appServerRuntimeFingerprint &&
+    current.networkProxyProfileName === expected.networkProxyProfileName &&
+    current.networkProxyConfigFingerprint === expected.networkProxyConfigFingerprint &&
+    isSameContextEngineBinding(current.contextEngine, expected.contextEngine)
   );
 }
 

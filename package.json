@@ -776,6 +776,9 @@
     "./plugin-sdk/codex-session-transcript-runtime": {
       "default": "./dist/plugin-sdk/codex-session-transcript-runtime.js"
     },
+    "./plugin-sdk/agent-bootstrap-runtime": {
+      "default": "./dist/plugin-sdk/agent-bootstrap-runtime.js"
+    },
     "./plugin-sdk/agent-harness-task-runtime": {
       "default": "./dist/plugin-sdk/agent-harness-task-runtime.js"
     },

@@ -54,7 +54,7 @@ type EmbeddedRunAttemptBase = Omit<
 type EmbeddedRunContextWindowInfo = {
   tokens: number;
   referenceTokens?: number;
-  source: "model" | "modelsConfig" | "agentContextTokens" | "default";
+  source: "model" | "modelsConfig" | "agentContextTokens" | "runContextTokenBudget" | "default";
 };
 
 export type EmbeddedRunFastModeParam = boolean | (() => boolean | undefined);

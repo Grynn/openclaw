@@ -1,6 +1,9 @@
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { captureCodexSettledTurnFinalizationContext } from "./settled-turn-context.js";
+import {
+  captureCodexSettledTurnFinalizationContext,
+  shouldCaptureCodexSettledTurnFinalizationContext,
+} from "./settled-turn-context.js";
 import { attachCodexMirrorAttestation } from "./transcript-mirror-attestation.js";
 import {
   attachCodexMirrorIdentity,
@@ -260,5 +263,64 @@ describe("captureCodexSettledTurnFinalizationContext", () => {
         turnId: "turn-2",
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("shouldCaptureCodexSettledTurnFinalizationContext", () => {
+  const toolResult = { role: "toolResult" } as AgentMessage;
+
+  it.each([
+    { name: "empty output", assistantTexts: [] },
+    { name: "blank output", assistantTexts: ["  "] },
+    { name: "exact silent output", assistantTexts: ["NO_REPLY"] },
+  ])("retains attested context for $name after tools settle", ({ assistantTexts }) => {
+    expect(
+      shouldCaptureCodexSettledTurnFinalizationContext({
+        assistantTexts,
+        messagesSnapshot: [toolResult],
+      }),
+    ).toBe(true);
+  });
+
+  it("does not retain context for a visible answer", () => {
+    expect(
+      shouldCaptureCodexSettledTurnFinalizationContext({
+        assistantTexts: ["Done."],
+        messagesSnapshot: [toolResult],
+      }),
+    ).toBe(false);
+  });
+
+  it("does not retain context without a settled tool result", () => {
+    expect(
+      shouldCaptureCodexSettledTurnFinalizationContext({
+        assistantTexts: ["NO_REPLY"],
+        messagesSnapshot: [],
+      }),
+    ).toBe(false);
+  });
+
+  it("does not retain context for a run whose output is intentionally silent", () => {
+    expect(
+      shouldCaptureCodexSettledTurnFinalizationContext(
+        {
+          assistantTexts: ["NO_REPLY"],
+          messagesSnapshot: [toolResult],
+        },
+        { silentExpected: true },
+      ),
+    ).toBe(false);
+  });
+
+  it("retains context for a blank run even when silence was expected", () => {
+    expect(
+      shouldCaptureCodexSettledTurnFinalizationContext(
+        {
+          assistantTexts: [""],
+          messagesSnapshot: [toolResult],
+        },
+        { silentExpected: true },
+      ),
+    ).toBe(true);
   });
 });

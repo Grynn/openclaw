@@ -273,6 +273,11 @@ already crossed by a transcript cursor.
   Optional projection lifecycle for hosts with persistent backend threads (for example Codex app-server). `mode: "thread_bootstrap"` with a stable `epoch` asks the host to inject the assembled context once per epoch and reuse the backend thread until the epoch changes, instead of re-projecting every turn. Omit this field for normal per-turn projection.
 </ParamField>
 
+Codex operators can narrow the rendered continuity payload with
+`agents.defaults.contextLimits.contextProjectionMaxChars` or its per-agent
+override. The cap does not reduce the engine's `tokenBudget`, the model context
+window, or compaction thresholds.
+
 `compact` returns a `CompactResult`. When compaction changes the active session
 identity, `result.sessionTarget` (a typed `ContextEngineSessionTarget` carrying
 the session identity and store scope) identifies the successor session that the

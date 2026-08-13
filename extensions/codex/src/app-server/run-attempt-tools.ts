@@ -2,6 +2,7 @@ import type { EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams } from "ope
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { isSystemAgentOnlyCodexDynamicToolAllowlist } from "./dynamic-tool-profile.js";
 import type { CodexDynamicToolRuntimeResponse } from "./dynamic-tool-response-state.js";
+import { isCodexMemoryFlushRun } from "./memory-flush-run.js";
 import type { CodexDynamicToolCallParams, CodexDynamicToolCallResponse } from "./protocol.js";
 import { sanitizeCodexToolResponse } from "./tool-progress-normalization.js";
 
@@ -80,6 +81,11 @@ export function resolveCodexDynamicToolDirectNames(
   // Tools with catalogMode=direct-only use the model-only namespace. This list
   // remains for control tools that intentionally live at the dynamic-tool root.
   const names: string[] = [];
+  // Memory maintenance has an exact two-tool surface. Expose both tools on the
+  // first model call so a tiny append does not require a tool-search round trip.
+  if (isCodexMemoryFlushRun(params)) {
+    names.push("read", "write");
+  }
   // OpenClaw is the run's only tool and must stay callable when Codex tool
   // search is unavailable. Exact toolsAllow is the public harness contract.
   if (hostSystemAgentActive && isSystemAgentOnlyCodexDynamicToolAllowlist(params.toolsAllow)) {

@@ -270,6 +270,9 @@ const openClawProfileSchema = z
               .optional(),
             lightContext: z.boolean().optional(),
             isolatedSession: z.boolean().optional(),
+            tools: z
+              .array(nonEmptyString.refine(isBoundedClawToolGrant, "Tool grants must be bounded."))
+              .optional(),
             timeoutSeconds: z.number().int().positive().optional(),
           })
           .strict()

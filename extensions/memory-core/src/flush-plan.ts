@@ -25,10 +25,16 @@ const MEMORY_FLUSH_APPEND_ONLY_HINT =
   "If memory/YYYY-MM-DD.md already exists, APPEND new content only and do not overwrite existing entries.";
 const MEMORY_FLUSH_READ_ONLY_HINT =
   "Treat workspace bootstrap/reference files such as MEMORY.md, DREAMS.md, SOUL.md, and AGENTS.md as read-only during this flush; never overwrite, replace, or edit them.";
+const MEMORY_FLUSH_DEDUPE_HINT =
+  "Read the target daily memory file before writing and append only durable facts not already present; do not repeat or restate existing entries.";
+const MEMORY_FLUSH_RECEIPT_HINT =
+  "After the append-only write tool reports success or no new content, trust that receipt and do not reread the file for verification.";
 const MEMORY_FLUSH_REQUIRED_HINTS = [
   MEMORY_FLUSH_TARGET_HINT,
   MEMORY_FLUSH_APPEND_ONLY_HINT,
   MEMORY_FLUSH_READ_ONLY_HINT,
+  MEMORY_FLUSH_DEDUPE_HINT,
+  MEMORY_FLUSH_RECEIPT_HINT,
 ];
 
 function normalizeAgentMemoryPath(relativePath: string): string | undefined {

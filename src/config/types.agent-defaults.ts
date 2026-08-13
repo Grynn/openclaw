@@ -98,6 +98,8 @@ export type AgentStartupContextConfig = {
 };
 
 export type AgentContextLimitsConfig = {
+  /** Max chars projected into Codex continuity prompts; only narrows the token-derived cap. */
+  contextProjectionMaxChars?: number;
   /** Default max chars returned by memory_get before truncation metadata/notice (default: 12000). */
   memoryGetMaxChars?: number;
   /** Max chars retained from post-compaction AGENTS.md context injection (default: 1800). */
@@ -305,6 +307,10 @@ export type AgentDefaultsConfig = {
     accountId?: string;
     /** Override the heartbeat prompt body. The default treats scratch as monitor prose and directs recurring work to cron jobs. */
     prompt?: string;
+    /** Optional allowlist of skills for heartbeat turns; omitted uses the agent's normal skill set. */
+    skills?: string[];
+    /** Optional runtime tool allowlist for heartbeat turns; omitted uses the agent's normal tool set. */
+    tools?: string[];
     /** Run timeout in seconds for heartbeat agent turns. Unset uses global timeout or heartbeat cadence capped at 600 seconds. */
     timeoutSeconds?: number;
     /**

@@ -25,10 +25,14 @@ describe("OpenClaw profile schema", () => {
             sources: ["memory", "sessions"],
           },
         },
+        heartbeat: { tools: ["exec", "memory_search"] },
       },
     });
 
     expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.profile.agent.heartbeat?.tools).toEqual(["exec", "memory_search"]);
+    }
   });
 
   it("accepts a full profile only with a bounded allowlist", () => {
@@ -84,6 +88,8 @@ describe("OpenClaw profile schema", () => {
       { tools: { allow: ["read"], alsoAllow: ["write"] } },
       { memory: { search: { provider: "openai" } } },
       { memory: { search: { sources: ["sessions"] } } },
+      { heartbeat: { tools: ["*"] } },
+      { heartbeat: { tools: ["group:plugins"] } },
     ]) {
       expect(parseClawOpenClawProfile({ schemaVersion: 1, agent }).ok).toBe(false);
     }
