@@ -38,7 +38,7 @@ type CodexTrajectorySink = {
   write: (event: CodexTrajectoryEvent) => void;
 };
 
-export type CodexHostTrajectoryRecorder = {
+type CodexHostTrajectoryRecorder = {
   recordEvent: (type: string, data?: Record<string, unknown>) => void;
   flush: () => Promise<void>;
 };

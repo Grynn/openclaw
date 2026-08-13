@@ -157,6 +157,9 @@ const testing = {
     hostSystemAgentActive = false,
   ): string[] {
     const names: string[] = [];
+    if (params.trigger === "memory" && params.memoryFlushWritePath?.trim()) {
+      names.push("read", "write");
+    }
     if (
       hostSystemAgentActive &&
       params.toolsAllow?.length === 1 &&
@@ -1713,7 +1716,8 @@ describe("runCodexAppServerAttempt", () => {
       data?: { prompt?: string; systemPrompt?: string };
       type: string;
     }> = [];
-    Object.assign(params, {
+    params.hostCapabilities = Object.freeze({
+      ...params.hostCapabilities,
       trajectoryRecorder: {
         recordEvent: (type: string, data?: { prompt?: string; systemPrompt?: string }) => {
           trajectoryEvents.push({ type, data });
@@ -2107,7 +2111,7 @@ describe("runCodexAppServerAttempt", () => {
       "Deferred searchable OpenClaw dynamic tools available: heartbeat_respond",
     );
     expect(heartbeatInstructions).toContain(
-      "Deferred searchable OpenClaw dynamic tools available: heartbeat_respond.",
+      "Deferred searchable OpenClaw dynamic tools available: heartbeat_respond, message.",
     );
     for (const bridge of [normalBridge, heartbeatBridge, nextNormalBridge]) {
       const heartbeat = flattenSpecsWithNamespace(bridge.specs).find(

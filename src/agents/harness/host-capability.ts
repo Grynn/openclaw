@@ -207,6 +207,21 @@ export function createAgentHarnessHostCapabilities(params: {
   });
   const withCaller = async <T>(run: () => Promise<T>): Promise<T> =>
     await withGatewayToolCallerIdentity(callerIdentity, run);
+  const hostTrajectoryRecorder = attempt.trajectoryRecorder;
+  const trajectoryRecorder = hostTrajectoryRecorder
+    ? Object.freeze({
+        recordEvent: (type: string, data?: Record<string, unknown>) => {
+          assertActive();
+          hostTrajectoryRecorder.recordEvent(type, data);
+          assertActive();
+        },
+        flush: async () => {
+          assertActive();
+          await hostTrajectoryRecorder.flush();
+          assertActive();
+        },
+      })
+    : undefined;
 
   const capabilities: AgentHarnessHostCapabilities = Object.freeze({
     kind: "agent-harness-host-capability" as const,
@@ -313,6 +328,7 @@ export function createAgentHarnessHostCapabilities(params: {
         ? (result.decision as "allow-once" | "allow-always" | "deny" | null | undefined)
         : undefined;
     },
+    ...(trajectoryRecorder ? { trajectoryRecorder } : {}),
   });
   return {
     capabilities,

@@ -37,4 +37,13 @@ export type AgentHarnessHostCapabilities = Readonly<{
     transportTimeoutMs?: number;
     signal?: AbortSignal;
   }) => Promise<AgentHarnessHostApprovalDecision | null | undefined>;
+  /**
+   * Attempt-local diagnostic sink owned by the host. The wrapper is revoked
+   * with the rest of the harness capability, so a plugin cannot retain SQLite
+   * write access after its admitted run has ended.
+   */
+  trajectoryRecorder?: Readonly<{
+    recordEvent: (type: string, data?: Record<string, unknown>) => void;
+    flush: () => Promise<void>;
+  }>;
 }>;
