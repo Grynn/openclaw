@@ -12,6 +12,7 @@ import {
   parseHealthRouteArgs,
   parseModelsListRouteArgs,
   parseModelsStatusRouteArgs,
+  parseMemorySearchRouteArgs,
   parsePluginsListRouteArgs,
   parseSessionsRouteArgs,
   parseStatusRouteArgs,
@@ -31,13 +32,13 @@ type TasksJsonCommandModule = typeof import("../../commands/tasks-json.js");
 /** Typed parsed route definition that binds one parser to its runner. */
 type RoutedCommandDefinition<TParse extends RouteArgParser<unknown>> = {
   parseArgs: TParse;
-  runParsedArgs: (args: ParsedRouteArgs<TParse>) => Promise<void>;
+  runParsedArgs: (args: ParsedRouteArgs<TParse>) => Promise<void | boolean>;
 };
 
 /** Erased routed-command definition map shape used by route-spec generation. */
 export type AnyRoutedCommandDefinition = {
   parseArgs: RouteArgParser<unknown>;
-  runParsedArgs: (args: never) => Promise<void>;
+  runParsedArgs: (args: never) => Promise<void | boolean>;
 };
 
 function defineRoutedCommand<TParse extends RouteArgParser<unknown>>(
@@ -164,6 +165,14 @@ export const routedCommandDefinitions = {
     runParsedArgs: async (args) => {
       const { modelsStatusCommand } = await loadModelsStatusCommand();
       await modelsStatusCommand(args, defaultRuntime);
+    },
+  }),
+  "memory-search": defineRoutedCommand({
+    parseArgs: parseMemorySearchRouteArgs,
+    runParsedArgs: async (args) => {
+      const { memorySearchGatewayCommand } =
+        await import("../../commands/memory-search-gateway.js");
+      return await memorySearchGatewayCommand(args, defaultRuntime);
     },
   }),
   "tasks-list": defineRoutedCommand({

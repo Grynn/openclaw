@@ -50,14 +50,14 @@ describe("wrapToolMemoryFlushAppendOnlyWrite output contract", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  async function runAppend(): Promise<unknown> {
+  async function runAppend(content = "hello"): Promise<unknown> {
     const wrapped = wrapToolMemoryFlushAppendOnlyWrite(baseWriteTool(), {
       root,
       relativePath: RELATIVE_PATH,
     });
     const result = await wrapped.execute(
       "call-1",
-      { path: RELATIVE_PATH, content: "hello" },
+      { path: RELATIVE_PATH, content },
       new AbortController().signal,
       undefined,
     );
@@ -114,5 +114,67 @@ describe("wrapToolMemoryFlushAppendOnlyWrite output contract", () => {
   it("documents the pre-fix regression: append-only metadata violates the declared schema", () => {
     const validation = validateAgainstDeclaredSchema({ path: RELATIVE_PATH, appendOnly: true });
     expect(validation.ok).toBe(false);
+  });
+  it("appends only the novel suffix when the model returns the complete file", async () => {
+    const absolute = path.join(root, RELATIVE_PATH);
+    await fs.mkdir(path.dirname(absolute), { recursive: true });
+    await fs.writeFile(absolute, "# Day\n\n- Existing fact.\n", "utf-8");
+
+    const details = await runAppend(
+      "# Day\r\n\r\n- Existing fact.\r\n\r\n## New\r\n\r\n- Novel fact.\r\n",
+    );
+
+    expect(details).toEqual({ changed: true });
+    await expect(fs.readFile(absolute, "utf-8")).resolves.toBe(
+      "# Day\n\n- Existing fact.\n\n## New\n\n- Novel fact.",
+    );
+  });
+
+  it("reports no change for an exact replay already present on line boundaries", async () => {
+    const absolute = path.join(root, RELATIVE_PATH);
+    await fs.mkdir(path.dirname(absolute), { recursive: true });
+    await fs.writeFile(absolute, "# Day\n\n## Durable\n\n- Existing fact.\n", "utf-8");
+
+    const wrapped = wrapToolMemoryFlushAppendOnlyWrite(baseWriteTool(), {
+      root,
+      relativePath: RELATIVE_PATH,
+    });
+    const result = await wrapped.execute(
+      "call-replay",
+      { path: RELATIVE_PATH, content: "## Durable\n\n- Existing fact." },
+      new AbortController().signal,
+      undefined,
+    );
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: `No new content to append to ${RELATIVE_PATH}.` }],
+      details: { changed: false },
+    });
+    expect(validateAgainstDeclaredSchema((result as { details?: unknown }).details).ok).toBe(true);
+    await expect(fs.readFile(absolute, "utf-8")).resolves.toBe(
+      "# Day\n\n## Durable\n\n- Existing fact.\n",
+    );
+  });
+
+  it("does not fuzzy-dedupe similar but changed prose", async () => {
+    const absolute = path.join(root, RELATIVE_PATH);
+    await fs.mkdir(path.dirname(absolute), { recursive: true });
+    await fs.writeFile(absolute, "- Position is $100.\n", "utf-8");
+
+    await runAppend("- Position is $101.\n");
+
+    await expect(fs.readFile(absolute, "utf-8")).resolves.toBe(
+      "- Position is $100.\n- Position is $101.",
+    );
+  });
+
+  it("keeps an ordinary novel append", async () => {
+    const absolute = path.join(root, RELATIVE_PATH);
+    await fs.mkdir(path.dirname(absolute), { recursive: true });
+    await fs.writeFile(absolute, "# Day\n", "utf-8");
+
+    await runAppend("## New\n\n- Fact.\n");
+
+    await expect(fs.readFile(absolute, "utf-8")).resolves.toBe("# Day\n## New\n\n- Fact.");
   });
 });

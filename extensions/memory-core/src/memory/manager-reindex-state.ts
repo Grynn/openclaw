@@ -23,6 +23,27 @@ export type MemoryIndexMeta = {
 
 export const MEMORY_INDEX_PROVENANCE_VERSION = 1;
 
+/**
+ * Chunking v3 only stopped multimodal discovery in the default memory root.
+ * A v2 index containing Markdown exclusively therefore has identical chunk
+ * boundaries and can advance without an expensive semantic rebuild.
+ */
+export function upgradeMarkdownOnlyMemoryChunkingMeta(params: {
+  meta: MemoryIndexMeta | null;
+  hasNonMarkdownSources: boolean;
+}): MemoryIndexMeta | null {
+  const { meta } = params;
+  if (
+    !meta ||
+    MEMORY_CHUNKING_VERSION !== 3 ||
+    meta.chunkingVersion !== 2 ||
+    params.hasNonMarkdownSources
+  ) {
+    return meta;
+  }
+  return { ...meta, chunkingVersion: MEMORY_CHUNKING_VERSION };
+}
+
 export type MemoryIndexIdentityState =
   | {
       status: "valid";

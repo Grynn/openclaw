@@ -50,6 +50,14 @@
       "label": "Read Memory Artifacts",
       "help": "Enable bridge reads from the active memory plugin's public artifact export."
     },
+    "bridge.excludePathPrefixes": {
+      "label": "Excluded Memory Path Prefixes",
+      "help": "Skip public memory artifacts beneath these workspace-relative path prefixes."
+    },
+    "bridge.excludePathPatterns": {
+      "label": "Excluded Memory Path Patterns",
+      "help": "Skip public memory artifacts matching these workspace-relative glob patterns."
+    },
     "unsafeLocal.allowPrivateMemoryCoreAccess": {
       "label": "Allow Private Memory Access",
       "help": "Experimental same-repo escape hatch for reading memory-core private paths."
@@ -166,6 +174,22 @@
           },
           "followMemoryEvents": {
             "type": "boolean"
+          },
+          "excludePathPrefixes": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "excludePathPatterns": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         }
       },

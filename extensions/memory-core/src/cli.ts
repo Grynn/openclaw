@@ -216,6 +216,7 @@ export function registerMemoryCli(program: Command, hostOptions?: MemoryCoreRunt
     .option("--min-score <n>", "Minimum score", (value: string) =>
       parseMemoryCliNumberOption(value, "--min-score"),
     )
+    .option("--local", "Bypass a running Gateway and search with a local manager", false)
     .option("--json", "Print JSON")
     .action(async (queryArg: string | undefined, opts: MemorySearchCommandOptions) => {
       await runMemorySearch(queryArg, opts, hostOptions);

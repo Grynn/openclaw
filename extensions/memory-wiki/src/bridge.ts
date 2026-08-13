@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { minimatch } from "minimatch";
 import { isPathInside } from "openclaw/plugin-sdk/file-access-runtime";
 import {
   getMemoryCapabilityRegistration,
@@ -89,6 +90,27 @@ function shouldImportArtifact(
   artifact: MemoryPluginPublicArtifact,
   bridgeConfig: ResolvedMemoryWikiConfig["bridge"],
 ): boolean {
+  const relativePath = artifact.relativePath.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  const excluded = bridgeConfig.excludePathPrefixes.some((rawPrefix) => {
+    const prefix = rawPrefix
+      .replace(/\\/g, "/")
+      .replace(/^\.\/+/, "")
+      .replace(/^\/+|\/+$/g, "");
+    return prefix.length > 0 && (relativePath === prefix || relativePath.startsWith(`${prefix}/`));
+  });
+  if (excluded) {
+    return false;
+  }
+  const patternExcluded = bridgeConfig.excludePathPatterns.some((rawPattern) => {
+    const pattern = rawPattern
+      .replace(/\\/g, "/")
+      .replace(/^\.\/+/, "")
+      .trim();
+    return pattern.length > 0 && minimatch(relativePath, pattern, { dot: true, nonegate: true });
+  });
+  if (patternExcluded) {
+    return false;
+  }
   switch (artifact.kind) {
     case "memory-root":
       return bridgeConfig.indexMemoryRoot;

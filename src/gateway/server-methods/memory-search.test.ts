@@ -10,9 +10,13 @@ import {
 import type { GatewayRequestContext, RespondFn } from "./types.js";
 
 const getActiveMemorySearchManagerCore = vi.hoisted(() => vi.fn());
+const recordActiveMemorySearchRecalls = vi.hoisted(() => vi.fn(async () => undefined));
 const resolveDefaultAgentId = vi.hoisted(() => vi.fn(() => "main"));
 
-vi.mock("../../plugins/memory-runtime.js", () => ({ getActiveMemorySearchManagerCore }));
+vi.mock("../../plugins/memory-runtime.js", () => ({
+  getActiveMemorySearchManagerCore,
+  recordActiveMemorySearchRecalls,
+}));
 vi.mock("../../agents/agent-scope.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../agents/agent-scope.js")>()),
   resolveDefaultAgentId,
@@ -75,6 +79,7 @@ describe("memory.search gateway method", () => {
       layout: "state-only",
     });
     getActiveMemorySearchManagerCore.mockReset();
+    recordActiveMemorySearchRecalls.mockClear();
     resolveDefaultAgentId.mockClear();
   });
 
@@ -113,7 +118,7 @@ describe("memory.search gateway method", () => {
       maxResults: expected,
       minScore: 0.42,
     });
-    expect(manager.close).toHaveBeenCalledOnce();
+    expect(manager.close).not.toHaveBeenCalled();
   });
 
   it("rejects an unknown agentId without acquiring a manager", async () => {
@@ -221,7 +226,6 @@ describe("memory.search gateway method", () => {
     expect(getActiveMemorySearchManagerCore).toHaveBeenCalledWith({
       cfg,
       agentId: configured,
-      purpose: "cli",
     });
     expect(resolveDefaultAgentId).not.toHaveBeenCalled();
     expect(respond).toHaveBeenCalledWith(
@@ -257,6 +261,32 @@ describe("memory.search gateway method", () => {
         message: "memory plugin unavailable",
       }),
     );
+  });
+
+  it("records recall signals only when the caller requests it", async () => {
+    const cfg = createConfig(testState.workspaceDir);
+    const manager = createStubManager();
+    const results = [
+      {
+        path: "memory/2026-08-12.md",
+        startLine: 1,
+        endLine: 1,
+        score: 0.8,
+        snippet: "Remember the shared search.",
+        source: "memory" as const,
+      },
+    ];
+    manager.search.mockResolvedValue(results);
+    getActiveMemorySearchManagerCore.mockResolvedValue({ manager });
+
+    await invokeMemorySearch({ query: "shared search", recordRecall: true }, cfg);
+
+    expect(recordActiveMemorySearchRecalls).toHaveBeenCalledWith({
+      cfg,
+      agentId: "main",
+      query: "shared search",
+      results,
+    });
   });
 
   it("qualifies results from a dirty index", async () => {

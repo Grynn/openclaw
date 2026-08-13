@@ -211,6 +211,11 @@ function createLazyMemoryRuntime(host: MemoryCoreRuntimeHost): MemoryPluginRunti
       }
       return await classifyWorkspaceMemoryPaths(params);
     },
+    async recordSearchRecalls(params) {
+      const { recordOperatorMemorySearchRecalls } =
+        await import("./src/operator-search-recalls.js");
+      await recordOperatorMemorySearchRecalls(params);
+    },
     resolveMemoryBackendConfig(params) {
       return resolveMemoryBackendConfig(params);
     },

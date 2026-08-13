@@ -10,6 +10,7 @@ import {
   resolveConfiguredSourcesForMeta,
   resolveMemoryIndexProviderIdentities,
   resolveMemoryIndexIdentityState,
+  upgradeMarkdownOnlyMemoryChunkingMeta,
   type MemoryIndexMeta,
 } from "./manager-reindex-state.js";
 
@@ -67,6 +68,16 @@ function isMemoryIndexIdentityDirty(
 }
 
 describe("memory reindex state", () => {
+  it("advances a Markdown-only v2 index without rebuilding unchanged chunks", () => {
+    const meta = createMeta({ chunkingVersion: 2 });
+
+    expect(upgradeMarkdownOnlyMemoryChunkingMeta({ meta, hasNonMarkdownSources: false })).toEqual({
+      ...meta,
+      chunkingVersion: MEMORY_CHUNKING_VERSION,
+    });
+    expect(upgradeMarkdownOnlyMemoryChunkingMeta({ meta, hasNonMarkdownSources: true })).toBe(meta);
+  });
+
   it.each([
     {
       name: "missing provenance version",
