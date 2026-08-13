@@ -1081,9 +1081,14 @@ describe("Codex app-server native code mode config", () => {
     // always-direct sessions_spawn.
     expect(instructions).toContain("Use `tool_search` when directly callable");
     expect(instructions).toContain(
-      "On code-mode-only models, use `exec` instead: filter `ALL_TOOLS` by name and description",
+      "On code-mode-only models, use `exec`: prefer an exact-name `ALL_TOOLS.find`",
     );
-    expect(instructions).toContain("call the matching entry through `tools`");
+    expect(instructions).toContain("return at most 12 compact `{name,purpose}` candidates");
+    expect(instructions).toContain("purpose truncated to 160 characters");
+    expect(instructions).toContain("never emit raw catalog entries or full descriptions");
+    expect(instructions).toContain("call that entry through `tools`");
+    expect(instructions).toContain("batch them within one `exec` evaluation with `Promise.all`");
+    expect(instructions).toContain("set output limits to the smallest useful size");
     expect(instructions).toContain(
       "Use OpenClaw `sessions_spawn` only for OpenClaw or ACP delegation, never as a substitute for `spawn_agent` on internal legwork.",
     );
@@ -1247,9 +1252,11 @@ describe("Codex app-server native code mode config", () => {
     );
     expect(instructions).toContain("Use `tool_search` when directly callable");
     expect(instructions).toContain(
-      "On code-mode-only models, use `exec` instead: filter `ALL_TOOLS` by name and description",
+      "On code-mode-only models, use `exec`: prefer an exact-name `ALL_TOOLS.find`",
     );
-    expect(instructions).toContain("call the matching entry through `tools`");
+    expect(instructions).toContain("return at most 12 compact `{name,purpose}` candidates");
+    expect(instructions).toContain("never emit raw catalog entries or full descriptions");
+    expect(instructions).toContain("call that entry through `tools`");
     expect(instructions).not.toContain("message,");
   });
 
