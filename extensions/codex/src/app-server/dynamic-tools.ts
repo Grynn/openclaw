@@ -471,6 +471,36 @@ const ALWAYS_DIRECT_DYNAMIC_TOOL_NAMES = new Set([
   "sessions_spawn",
   "sessions_yield",
 ]);
+const DIRECT_SOURCE_REPLY_MESSAGE_DESCRIPTION =
+  "Send a text reply to the current source conversation. Load openclaw.message for media, rich presentation, message management, or another destination.";
+const DIRECT_SOURCE_REPLY_MESSAGE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    action: {
+      type: "string",
+      enum: ["send"],
+      description: "Send a text reply to the current source conversation.",
+    },
+    message: {
+      type: "string",
+      description: "Visible reply text.",
+    },
+    final: {
+      type: "boolean",
+      description: "True for the completed reply; false for progress.",
+    },
+    replyTo: {
+      type: "string",
+      description: "Optional current-conversation message id to reply to.",
+    },
+    threadId: {
+      type: "string",
+      description: "Optional current-conversation thread id.",
+    },
+  },
+  required: ["action", "message"],
+} satisfies JsonValue;
 const EXPLICIT_MESSAGE_PROVIDER_KEYS = ["channel", "provider"];
 const EXPLICIT_MESSAGE_TARGET_KEYS = ["target", "to", "channelId"];
 const EXPLICIT_MESSAGE_THREAD_KEYS = ["threadId", "thread_id", "messageThreadId", "topicId"];
@@ -1119,8 +1149,24 @@ function createCodexDynamicToolSpecs(params: {
       directOnlyNamespaceTools.push(functionSpec);
       continue;
     }
-    if (params.loading === "direct" || params.directToolNames.has(entry.name)) {
+    if (params.loading === "direct") {
       specs.push(functionSpec);
+      continue;
+    }
+    if (params.directToolNames.has(entry.name)) {
+      if (entry.name === "message") {
+        specs.push({
+          ...functionSpec,
+          description: DIRECT_SOURCE_REPLY_MESSAGE_DESCRIPTION,
+          inputSchema: DIRECT_SOURCE_REPLY_MESSAGE_SCHEMA,
+        });
+        // Keep the complete message manager searchable under openclaw.message.
+        // The small root schema is the hot path for ordinary source replies;
+        // advanced actions retain their existing runtime and policy contract.
+        namespaceTools.push({ ...functionSpec, deferLoading: true });
+      } else {
+        specs.push(functionSpec);
+      }
       continue;
     }
     namespaceTools.push({ ...functionSpec, deferLoading: true });
