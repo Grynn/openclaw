@@ -294,6 +294,28 @@ describe("agent harness host capability", () => {
     },
   );
 
+  it("projects the host trajectory recorder and revokes retained access", async () => {
+    const recordEvent = vi.fn();
+    const flush = vi.fn(async () => undefined);
+    const { attempt } = await admittedAttempt("run-trajectory", {
+      trajectoryRecorder: { recordEvent, flush },
+    });
+    const host = createAgentHarnessHostCapabilities({ attempt, pluginId: "codex" });
+    const recorder = host.capabilities.trajectoryRecorder;
+    if (!recorder) {
+      throw new Error("expected projected trajectory recorder");
+    }
+
+    recorder.recordEvent("prompt.submitted", { chars: 42 });
+    await recorder.flush();
+    expect(recordEvent).toHaveBeenCalledWith("prompt.submitted", { chars: 42 });
+    expect(flush).toHaveBeenCalledOnce();
+
+    host.close();
+    expect(() => recorder.recordEvent("late.event")).toThrow("no longer active");
+    await expect(recorder.flush()).rejects.toThrow("no longer active");
+  });
+
   it("binds hooks to the native harness cwd instead of the agent workspace", async () => {
     const { attempt } = await admittedAttempt("run-native-cwd", {
       cwd: "/tmp/agent-workspace",

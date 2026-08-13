@@ -14,13 +14,15 @@ import {
 } from "openclaw/plugin-sdk/temp-path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  type CodexHostTrajectoryRecorder,
   createCodexTrajectoryRecorder,
   recordCodexTrajectoryCompletion,
   recordCodexTrajectoryContext,
 } from "./trajectory.js";
 
 type CodexTrajectoryRecorder = NonNullable<ReturnType<typeof createCodexTrajectoryRecorder>>;
+type CodexHostTrajectoryRecorder = NonNullable<
+  Parameters<typeof createCodexTrajectoryRecorder>[0]["trajectoryRecorder"]
+>;
 
 let testWorkspace: TempWorkspaceSync;
 

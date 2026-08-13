@@ -287,6 +287,21 @@ export function createAgentHarnessHostCapabilities(params: {
         await runBeforeToolCallWithAssertion(assertRecoveryActive, request),
     });
   });
+  const hostTrajectoryRecorder = attempt.trajectoryRecorder;
+  const trajectoryRecorder = hostTrajectoryRecorder
+    ? Object.freeze({
+        recordEvent: (type: string, data?: Record<string, unknown>) => {
+          assertActive();
+          hostTrajectoryRecorder.recordEvent(type, data);
+          assertActive();
+        },
+        flush: async () => {
+          assertActive();
+          await hostTrajectoryRecorder.flush();
+          assertActive();
+        },
+      })
+    : undefined;
 
   const capabilities: AgentHarnessHostCapabilities = Object.freeze({
     kind: "agent-harness-host-capability" as const,
@@ -399,6 +414,7 @@ export function createAgentHarnessHostCapabilities(params: {
         terminalReason: result.terminalReason,
       };
     },
+    ...(trajectoryRecorder ? { trajectoryRecorder } : {}),
   });
   return {
     capabilities,

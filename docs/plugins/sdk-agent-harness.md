@@ -382,7 +382,9 @@ whose working directory differs from the attempt may pass
 bounded action fact while keeping identity and policy authority closure-bound. The closure
 binds the host-resolved run, sandbox, requester, route, and approval identity;
 plugins must not reconstruct those fields or retain the capability after the
-attempt returns. Calls made after attempt settlement fail closed.
+attempt returns. Calls made after attempt settlement fail closed. When present,
+`hostCapabilities.trajectoryRecorder` is the host-owned, attempt-local sink for
+recording and flushing diagnostic trajectory events.
 
 New harnesses should implement `AgentHarnessV2` and type prepared attempts as
 `AgentHarnessAttemptParamsV2`, `EmbeddedRunAttemptParamsV2`, and
