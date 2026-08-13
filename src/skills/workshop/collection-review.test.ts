@@ -16,6 +16,7 @@ import { createTrackedTempDirs } from "../../test-utils/tracked-temp-dirs.js";
 import { writeWorkspaceSkills } from "../test-support/e2e-test-helpers.js";
 import {
   isSkillCollectionReviewDue,
+  recordSkillCollectionReviewFailure,
   recordSkillCollectionReviewSuccess,
 } from "./collection-review-state.js";
 import { runScheduledSkillCollectionReviews } from "./collection-review.js";
@@ -214,6 +215,33 @@ describe("skill collection review", () => {
         )
         .get(path.resolve(workspaceDir)),
     ).toEqual({ count: 90, oldest: 1 });
+  });
+
+  it("backs failed reviews off for one hour without delaying a later success", async () => {
+    const workspaceDir = await makeWorkspaceDir("openclaw-collection-review-backoff-");
+    const nowMs = Date.UTC(2026, 7, 10);
+
+    recordSkillCollectionReviewFailure(workspaceDir, nowMs, new Error("oversized"), {
+      env: testState.env,
+    });
+    expect(
+      isSkillCollectionReviewDue(workspaceDir, nowMs + 59 * 60_000, { env: testState.env }),
+    ).toBe(false);
+    expect(
+      isSkillCollectionReviewDue(workspaceDir, nowMs + 60 * 60_000, { env: testState.env }),
+    ).toBe(true);
+
+    recordSkillCollectionReviewSuccess(
+      workspaceDir,
+      nowMs + 60 * 60_000,
+      { backupId: "backup-after-retry", kept: [], written: [], dropped: [] },
+      { env: testState.env },
+    );
+    expect(
+      isSkillCollectionReviewDue(workspaceDir, nowMs + 24 * 60 * 60_000, {
+        env: testState.env,
+      }),
+    ).toBe(false);
   });
 
   it("leaves disabled and agent-filtered skills outside the editable collection", async () => {
@@ -608,15 +636,18 @@ describe("skill collection review", () => {
     ]);
 
     const onError = vi.fn();
-    await runScheduledSkillCollectionReviews({
+    const params = {
       config: {
         agents: { list: [{ id: "main", default: true, workspace: workspaceDir }] },
-        skills: { workshop: { autonomous: { mode: "auto" } } },
+        skills: { workshop: { autonomous: { mode: "auto" as const } } },
       },
       env: testState.env,
       onError,
-    });
+    };
+    await runScheduledSkillCollectionReviews(params);
+    await runScheduledSkillCollectionReviews(params);
 
+    expect(onError).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({ message: expect.stringContaining("review limit") }),
       workspaceDir,
