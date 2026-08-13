@@ -34,6 +34,7 @@ describe("board gateway methods", () => {
       Object.fromEntries(
         [
           "board.get",
+          "board.metadata",
           "board.update",
           "board.widget.put",
           "board.widget.grant",
@@ -46,6 +47,7 @@ describe("board gateway methods", () => {
       ),
     ).toEqual({
       "board.get": "operator.read",
+      "board.metadata": "operator.read",
       "board.update": "operator.write",
       "board.widget.put": "operator.write",
       "board.widget.grant": "operator.approvals",

@@ -1,8 +1,13 @@
-import type { BoardChangedEvent, BoardSnapshot } from "@openclaw/gateway-protocol";
+import type {
+  BoardChangedEvent,
+  BoardMetadataResult,
+  BoardSnapshot,
+} from "@openclaw/gateway-protocol";
 import type { ReactiveController, ReactiveControllerHost } from "lit";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import {
   boardExists,
+  boardProviderOwnsGatewaySnapshot,
   boardProviderCacheKey,
   boardProviderForSession,
   clearSessionBoardAvailability,
@@ -16,14 +21,20 @@ type AvailabilitySource = {
   client: AvailabilityClient | null;
   connected: boolean;
   available: boolean;
+  metadataAvailable?: boolean;
   key: string;
 };
 type SourceResolver = () => AvailabilitySource;
+
+// Matches BoardMetadataParamsSchema's maxItems contract without pulling runtime schemas
+// into the startup bundle; smaller batches remain compatible if the server cap grows.
+const BOARD_METADATA_BATCH_SIZE = 100;
 
 const disconnectedSource: SourceResolver = () => ({
   client: null,
   connected: false,
   available: false,
+  metadataAvailable: false,
   key: "",
 });
 
@@ -42,6 +53,7 @@ export class BoardAvailabilityController implements ReactiveController {
   private sourceUnsubscribe: (() => void) | undefined;
   private sourceActive = false;
   private available = false;
+  private metadataAvailable = false;
   private connected = false;
 
   constructor(
@@ -82,9 +94,10 @@ export class BoardAvailabilityController implements ReactiveController {
         .filter(Boolean)
         .map(boardProviderCacheKey),
     );
-    const currentProviders = new Set(
-      [...keys].map((sessionKey) => this.resolveProvider(sessionKey)),
+    const providersBySession = new Map(
+      [...keys].map((sessionKey) => [sessionKey, this.resolveProvider(sessionKey)]),
     );
+    const currentProviders = new Set(providersBySession.values());
     for (const [provider, unsubscribe] of this.subscriptions) {
       if (!currentProviders.has(provider)) {
         unsubscribe();
@@ -111,32 +124,46 @@ export class BoardAvailabilityController implements ReactiveController {
     this.visibleSessionKeys = keys;
     this.synchronizeSource();
     if (this.sourceActive && this.sourceClient) {
+      const pending: string[] = [];
       for (const sessionKey of keys) {
+        const provider = providersBySession.get(sessionKey);
+        // A mounted dashboard owns this session's authoritative refresh; a
+        // sidebar probe would duplicate its board.get and race the same snapshot.
+        if (provider && boardProviderOwnsGatewaySnapshot(provider)) {
+          continue;
+        }
         if (!this.lookedUpSessions.has(sessionKey)) {
           this.lookedUpSessions.add(sessionKey);
-          this.lookup(sessionKey, this.sourceClient);
+          pending.push(sessionKey);
         }
       }
+      this.lookupSessions(pending, this.sourceClient);
     }
   }
 
   private synchronizeSource(): void {
     const source = this.resolveSource();
     const active = source.connected && source.available && source.client !== null;
+    const metadataAvailable = source.metadataAvailable === true;
     if (
       this.sourceClient === source.client &&
       this.sourceActive === active &&
       this.available === source.available &&
+      this.metadataAvailable === metadataAvailable &&
       this.sourceKey === source.key
     ) {
       return;
     }
     const availabilitySourceChanged =
-      this.sourceClient !== source.client || this.sourceKey !== source.key || !source.available;
+      this.sourceClient !== source.client ||
+      this.sourceKey !== source.key ||
+      this.metadataAvailable !== metadataAvailable ||
+      !source.available;
     this.disconnectSource();
     this.sourceClient = source.client;
     this.sourceActive = active;
     this.available = source.available;
+    this.metadataAvailable = metadataAvailable;
     this.sourceKey = source.key;
     if (availabilitySourceChanged && clearSessionBoardAvailability()) {
       this.host.requestUpdate();
@@ -155,6 +182,9 @@ export class BoardAvailabilityController implements ReactiveController {
           ? boardProviderCacheKey(payload.sessionKey)
           : undefined;
       if (sessionKey && this.visibleSessionKeys.has(sessionKey)) {
+        if (boardProviderOwnsGatewaySnapshot(this.resolveProvider(sessionKey))) {
+          return;
+        }
         const revision =
           typeof payload?.revision === "number" &&
           Number.isInteger(payload.revision) &&
@@ -170,7 +200,7 @@ export class BoardAvailabilityController implements ReactiveController {
           this.knownRevisions.set(sessionKey, revision);
         }
         this.clearRetry(sessionKey);
-        this.lookup(sessionKey, client);
+        this.lookupSessions([sessionKey], client);
       }
     });
   }
@@ -181,6 +211,7 @@ export class BoardAvailabilityController implements ReactiveController {
     this.sourceClient = null;
     this.sourceActive = false;
     this.available = false;
+    this.metadataAvailable = false;
     this.lookedUpSessions.clear();
     this.lookupGeneration.clear();
     this.knownRevisions.clear();
@@ -189,36 +220,81 @@ export class BoardAvailabilityController implements ReactiveController {
     }
   }
 
-  private lookup(sessionKey: string, client: AvailabilityClient): void {
-    const generation = ++this.lookupSequence;
-    this.lookupGeneration.set(sessionKey, generation);
-    void client
-      .request<BoardSnapshot>("board.get", { sessionKey })
-      .then((snapshot) => {
-        if (
-          !this.connected ||
-          !this.sourceActive ||
-          this.sourceClient !== client ||
-          this.lookupGeneration.get(sessionKey) !== generation ||
-          !this.visibleSessionKeys.has(sessionKey)
-        ) {
-          return;
+  private lookupSessions(sessionKeys: readonly string[], client: AvailabilityClient): void {
+    if (sessionKeys.length === 0) {
+      return;
+    }
+    const batchSize = this.metadataAvailable ? BOARD_METADATA_BATCH_SIZE : 1;
+    for (let index = 0; index < sessionKeys.length; index += batchSize) {
+      this.lookupBatch(sessionKeys.slice(index, index + batchSize), client);
+    }
+  }
+
+  private lookupBatch(sessionKeys: readonly string[], client: AvailabilityClient): void {
+    const generations = new Map(
+      sessionKeys.map((sessionKey) => {
+        const generation = ++this.lookupSequence;
+        this.lookupGeneration.set(sessionKey, generation);
+        return [sessionKey, generation] as const;
+      }),
+    );
+    const outcomesRequest: Promise<BoardMetadataResult["outcomes"]> = this.metadataAvailable
+      ? client
+          .request<BoardMetadataResult>("board.metadata", { sessionKeys })
+          .then((result) => result.outcomes)
+      : client
+          .request<BoardSnapshot>("board.get", { sessionKey: sessionKeys[0]! })
+          .then((snapshot) => [
+            {
+              ok: true,
+              sessionKey: sessionKeys[0]!,
+              revision: snapshot.revision,
+              hasBoard: boardExists(snapshot),
+            },
+          ]);
+    void outcomesRequest
+      .then((result) => {
+        const outcomes = new Map(result.map((outcome) => [outcome.sessionKey, outcome]));
+        let changed = false;
+        for (const sessionKey of sessionKeys) {
+          const generation = generations.get(sessionKey)!;
+          if (!this.lookupIsCurrent(sessionKey, client, generation)) {
+            continue;
+          }
+          const outcome = outcomes.get(sessionKey);
+          if (!outcome?.ok) {
+            this.scheduleRetry(sessionKey, client);
+            continue;
+          }
+          this.knownRevisions.set(sessionKey, outcome.revision);
+          changed = recordSessionBoardAvailability(sessionKey, outcome.hasBoard) || changed;
+          this.clearRetry(sessionKey);
         }
-        this.knownRevisions.set(sessionKey, snapshot.revision);
-        if (recordSessionBoardAvailability(sessionKey, boardExists(snapshot))) {
+        if (changed) {
           this.host.requestUpdate();
         }
-        this.clearRetry(sessionKey);
       })
       .catch(() => {
-        if (
-          this.sourceClient === client &&
-          this.lookupGeneration.get(sessionKey) === generation &&
-          this.visibleSessionKeys.has(sessionKey)
-        ) {
-          this.scheduleRetry(sessionKey, client);
+        for (const [sessionKey, generation] of generations) {
+          if (this.lookupIsCurrent(sessionKey, client, generation)) {
+            this.scheduleRetry(sessionKey, client);
+          }
         }
       });
+  }
+
+  private lookupIsCurrent(
+    sessionKey: string,
+    client: AvailabilityClient,
+    generation: number,
+  ): boolean {
+    return (
+      this.connected &&
+      this.sourceActive &&
+      this.sourceClient === client &&
+      this.lookupGeneration.get(sessionKey) === generation &&
+      this.visibleSessionKeys.has(sessionKey)
+    );
   }
 
   private scheduleRetry(sessionKey: string, client: AvailabilityClient): void {
@@ -234,7 +310,7 @@ export class BoardAvailabilityController implements ReactiveController {
         this.sourceClient === client &&
         this.visibleSessionKeys.has(sessionKey)
       ) {
-        this.lookup(sessionKey, client);
+        this.lookupSessions([sessionKey], client);
       }
     }, delay);
     this.retryTimers.set(sessionKey, timer);

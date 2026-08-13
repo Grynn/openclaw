@@ -63,5 +63,6 @@ export type ChatState = {
   chatBranches?: SessionBranch[];
   chatBranchesSessionKey?: string | null;
   chatBranchesConnectionEpoch?: number | null;
+  chatBranchesLoading?: boolean;
   requestUpdate?: () => void;
 };
