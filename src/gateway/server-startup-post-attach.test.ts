@@ -1530,8 +1530,16 @@ describe("startGatewayPostAttachRuntime", () => {
       await vi.advanceTimersByTimeAsync(10_000);
       expect(hoisted.warmCurrentProviderAuthStateOffMainThread).not.toHaveBeenCalled();
 
-      const hook = hoisted.setAuthProfileFailureHook.mock.calls[0]?.[0] as (() => void) | undefined;
-      hook?.();
+      const hook = hoisted.setAuthProfileFailureHook.mock.calls[0]?.[0] as
+        | ((event?: { reason: string; source: string }) => void)
+        | undefined;
+      hook?.({ reason: "rate_limit", source: "profile" });
+      expect(hoisted.clearCurrentProviderAuthState).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(hoisted.warmCurrentProviderAuthStateOffMainThread).not.toHaveBeenCalled();
+
+      hook?.({ reason: "auth", source: "profile" });
       expect(hoisted.clearCurrentProviderAuthState).toHaveBeenCalledTimes(1);
 
       await vi.advanceTimersByTimeAsync(1_000);

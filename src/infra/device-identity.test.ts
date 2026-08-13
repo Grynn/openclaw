@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   closeOpenClawStateDatabaseForTest,
+  isOpenClawStateDatabaseOpen,
   OPENCLAW_STATE_SCHEMA_VERSION,
 } from "../state/openclaw-state-db.js";
 import { withTempDir } from "../test-utils/temp-dir.js";
@@ -369,6 +370,18 @@ describe("device identity SQLite store", () => {
       expect(() => loadDeviceIdentityIfPresent(options)).toThrow(
         /no such table: device_identities/,
       );
+    });
+  });
+
+  it("reuses a current identity without joining the writable state lifecycle", async () => {
+    await withTempDir("openclaw-device-identity-readonly-existing-", async (rootDir) => {
+      const options = storeOptions(rootDir);
+      const created = loadOrCreateDeviceIdentity(options);
+      closeOpenClawStateDatabaseForTest();
+
+      expect(isOpenClawStateDatabaseOpen()).toBe(false);
+      expect(loadOrCreateDeviceIdentity(options)).toEqual(created);
+      expect(isOpenClawStateDatabaseOpen()).toBe(false);
     });
   });
 

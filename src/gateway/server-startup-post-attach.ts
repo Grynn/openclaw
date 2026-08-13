@@ -203,8 +203,15 @@ function scheduleProviderAuthStatePrewarm(params: {
     if (isStopped()) {
       return;
     }
-    setAuthProfileFailureHook(() => {
+    setAuthProfileFailureHook((event) => {
       if (isStopped()) {
+        return;
+      }
+      // Rate-limit cooldowns affect profile selection, not whether provider
+      // credentials exist. Rebuilding the full provider catalog here can take
+      // tens of seconds on a live installation while producing the same auth
+      // presence snapshot.
+      if (event?.reason === "rate_limit") {
         return;
       }
       clearCurrentProviderAuthState();
