@@ -521,6 +521,25 @@ export class TerminalSessionManager {
     return this.agentOwnedSession(agentSessionKey, sessionId, agentId)?.buffer.snapshot();
   }
 
+  /** Raw agent-owned scrollback plus its stable cumulative UTF-16 cursor range. */
+  snapshotAgentRange(
+    agentSessionKey: string,
+    sessionId: string,
+    agentId?: string,
+  ): { buffer: string; startCursor: number; endCursor: number } | undefined {
+    const session = this.agentOwnedSession(agentSessionKey, sessionId, agentId);
+    if (!session) {
+      return undefined;
+    }
+    const buffer = session.buffer.snapshot();
+    const endCursor = session.output.endOffset;
+    return {
+      buffer,
+      startCursor: endCursor - buffer.length,
+      endCursor,
+    };
+  }
+
   /** Live sessions owned by one agent tool caller. */
   listAgent(agentSessionKey: string, agentId?: string): TerminalSessionSummary[] {
     const sessionIds = new Set(

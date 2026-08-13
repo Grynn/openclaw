@@ -70,8 +70,8 @@ describe("cron tool", () => {
     opts?: Parameters<typeof createCronTool>[0],
   ): ReturnType<typeof createCronTool> {
     return createCronTool(opts, {
-      callGatewayTool: async (method, gatewayOpts, params) => {
-        const result = await callGatewayMock({ method, params }, gatewayOpts);
+      callGatewayTool: async (method, gatewayOpts, params, extra) => {
+        const result = await callGatewayMock({ method, params, extra }, gatewayOpts);
         if (
           method === "cron.get" &&
           result !== null &&
@@ -98,7 +98,11 @@ describe("cron tool", () => {
     };
   }
 
-  function readGatewayCall(index = 0): { method?: string; params?: Record<string, unknown> } {
+  function readGatewayCall(index = 0): {
+    method?: string;
+    params?: Record<string, unknown>;
+    extra?: { signal?: AbortSignal };
+  } {
     return (
       (callGatewayMock.mock.calls[index]?.[0] as
         | { method?: string; params?: Record<string, unknown> }
@@ -358,10 +362,40 @@ describe("cron tool", () => {
     expect(result.details).toEqual({ id: "job-current", name: "current" });
   });
 
+  it("loads the current job and its run history in one inspect action", async () => {
+    callGatewayMock
+      .mockResolvedValueOnce({ id: "job-current", name: "current" })
+      .mockResolvedValueOnce({ entries: [{ jobId: "job-current", status: "ok" }], total: 1 });
+    const tool = createTestCronTool({
+      agentSessionKey: "main",
+      selfRemoveOnlyJobId: "job-current",
+    });
+
+    const result = await tool.execute("call-inspect", {
+      action: "inspect",
+      jobId: "job-current",
+    });
+
+    expect(callGatewayMock.mock.calls.map((call) => call[0].method)).toEqual([
+      "cron.get",
+      "cron.runs",
+    ]);
+    expect(callGatewayMock.mock.calls.map((call) => call[0].params)).toEqual([
+      { id: "job-current" },
+      { id: "job-current" },
+    ]);
+    expect(result.details).toEqual({
+      job: { id: "job-current", name: "current" },
+      runs: { entries: [{ jobId: "job-current", status: "ok" }], total: 1 },
+    });
+  });
+
   it.each([
     ["another job", { action: "get", jobId: "job-other" }],
     ["missing job id", { action: "get" }],
-  ])("denies scoped isolated cron runs from getting %s", async (_label, args) => {
+    ["another job through inspect", { action: "inspect", jobId: "job-other" }],
+    ["missing job id through inspect", { action: "inspect" }],
+  ])("denies scoped isolated cron runs from reading %s", async (_label, args) => {
     const tool = createTestCronTool({ selfRemoveOnlyJobId: "job-current" });
 
     await expect(tool.execute("call-get-denied", args)).rejects.toThrow(
@@ -961,6 +995,10 @@ describe("cron tool", () => {
     const runMode = parameters.properties?.runMode;
 
     expect(tool.description).toContain('run jobId (runMode "force"=now)');
+    expect(tool.description).toContain("waitForCompletion:true");
+    expect(tool.description).toContain("does not cancel an admitted run");
+    expect(tool.description).toContain("inspect jobId = job + run history");
+    expect(tool.description).toContain("declarationKey makes add an atomic upsert");
     expect(runMode?.description).toContain('omitted defaults to "due"');
     expect(runMode?.description).toContain('use "force" to trigger now');
   });
@@ -1078,6 +1116,201 @@ describe("cron tool", () => {
       id: "job-force",
       mode: "force",
     });
+  });
+
+  it("keeps cron run admission immediate when completion waiting is disabled", async () => {
+    const admission = { ok: true, enqueued: true, runId: "manual:job-async:1" };
+    callGatewayMock.mockResolvedValueOnce(admission);
+    const tool = createTestCronTool();
+
+    const result = await tool.execute("call-async", {
+      action: "run",
+      jobId: "job-async",
+      runMode: "force",
+      waitForCompletion: false,
+    });
+
+    expectSingleGatewayCallMethod("cron.run");
+    expect(result.details).toEqual(admission);
+  });
+
+  it.each(["ok", "error", "skipped"] as const)(
+    "waits in one tool call for an exact cron run with status %s",
+    async (status) => {
+      const admission = { ok: true, enqueued: true, runId: "manual:job-wait:1" };
+      const run = { runId: admission.runId, status, summary: `${status} result` };
+      callGatewayMock.mockResolvedValueOnce(admission).mockResolvedValueOnce({ entries: [run] });
+      const tool = createTestCronTool();
+
+      const result = await tool.execute("call-wait", {
+        action: "run",
+        jobId: "job-wait",
+        runMode: "force",
+        waitForCompletion: true,
+      });
+
+      expect(readGatewayCall(1)).toMatchObject({
+        method: "cron.runs",
+        params: { id: "job-wait", runId: admission.runId, limit: 1 },
+      });
+      expect(result.details).toEqual({
+        ...admission,
+        completed: true,
+        status,
+        run,
+      });
+    },
+  );
+
+  it("bounds completion polls by the remaining wait deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const admission = { ok: true, enqueued: true, runId: "manual:job-budget:1" };
+    const run = { runId: admission.runId, status: "ok" };
+    callGatewayMock
+      .mockResolvedValueOnce(admission)
+      .mockResolvedValueOnce({ entries: [] })
+      .mockResolvedValueOnce({ entries: [run] });
+    const tool = createTestCronTool();
+
+    const pending = tool.execute("call-budget", {
+      action: "run",
+      jobId: "job-budget",
+      waitForCompletion: true,
+      completionTimeoutMs: 5_000,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(2_000);
+    const result = await pending;
+
+    expect(readGatewayOpts(1)?.timeoutMs).toBe(5_000);
+    expect(readGatewayOpts(2)?.timeoutMs).toBe(3_000);
+    expect(result.details).toMatchObject({ completed: true, run });
+    vi.useRealTimers();
+  });
+
+  it("charges slow admission against the end-to-end completion deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const admission = { ok: true, enqueued: true, runId: "manual:job-admission:1" };
+    callGatewayMock
+      .mockImplementationOnce(async () => {
+        vi.setSystemTime(4_000);
+        return admission;
+      })
+      .mockResolvedValueOnce({ entries: [{ runId: admission.runId, status: "ok" }] });
+    const tool = createTestCronTool();
+
+    const result = await tool.execute("call-admission", {
+      action: "run",
+      jobId: "job-admission",
+      waitForCompletion: true,
+      completionTimeoutMs: 5_000,
+    });
+
+    expect(readGatewayOpts(0)?.timeoutMs).toBe(5_000);
+    expect(readGatewayOpts(1)?.timeoutMs).toBe(1_000);
+    expect(result.details).toMatchObject({ completed: true, status: "ok" });
+    vi.useRealTimers();
+  });
+
+  it("returns admission evidence instead of retryable failure when completion waiting times out", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const admission = { ok: true, enqueued: true, runId: "manual:job-timeout:1" };
+    callGatewayMock
+      .mockImplementationOnce(async () => {
+        vi.setSystemTime(1);
+        return admission;
+      })
+      .mockResolvedValueOnce({ entries: [] });
+    const tool = createTestCronTool();
+
+    const result = await tool.execute("call-timeout", {
+      action: "run",
+      jobId: "job-timeout",
+      waitForCompletion: true,
+      completionTimeoutMs: 1,
+    });
+
+    expect(callGatewayMock).toHaveBeenCalledTimes(2);
+    expect(result.details).toEqual({
+      ...admission,
+      completed: false,
+      timedOut: true,
+    });
+    vi.useRealTimers();
+  });
+
+  it("classifies a final history RPC expiry at the completion deadline as a timeout", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const admission = { ok: true, enqueued: true, runId: "manual:job-poll-timeout:1" };
+    callGatewayMock.mockResolvedValueOnce(admission).mockImplementationOnce(async () => {
+      vi.setSystemTime(5_000);
+      throw new Error("gateway call timed out");
+    });
+    const tool = createTestCronTool();
+
+    const result = await tool.execute("call-poll-timeout", {
+      action: "run",
+      jobId: "job-poll-timeout",
+      waitForCompletion: true,
+      completionTimeoutMs: 5_000,
+    });
+
+    expect(result.details).toEqual({
+      ...admission,
+      completed: false,
+      timedOut: true,
+    });
+    vi.useRealTimers();
+  });
+
+  it("retains admission evidence when completion history becomes unavailable", async () => {
+    const admission = { ok: true, enqueued: true, runId: "manual:job-history-error:1" };
+    callGatewayMock
+      .mockResolvedValueOnce(admission)
+      .mockRejectedValueOnce(new Error("history unavailable"));
+    const tool = createTestCronTool();
+
+    const result = await tool.execute("call-history-error", {
+      action: "run",
+      jobId: "job-history-error",
+      waitForCompletion: true,
+    });
+
+    expect(result.details).toMatchObject({
+      ...admission,
+      completed: false,
+      waitError: expect.stringContaining("history unavailable"),
+    });
+  });
+
+  it("aborts completion polling without enqueueing the run again", async () => {
+    const admission = { ok: true, enqueued: true, runId: "manual:job-abort:1" };
+    callGatewayMock.mockResolvedValueOnce(admission).mockResolvedValueOnce({ entries: [] });
+    const controller = new AbortController();
+    const tool = createTestCronTool();
+
+    const pending = tool.execute(
+      "call-abort",
+      {
+        action: "run",
+        jobId: "job-abort",
+        waitForCompletion: true,
+      },
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(callGatewayMock).toHaveBeenCalledTimes(2));
+    controller.abort(new Error("stop waiting"));
+
+    await expect(pending).rejects.toThrow("stop waiting");
+    expect(readGatewayCall(0).extra?.signal).toBe(controller.signal);
+    expect(readGatewayCall(1).extra?.signal).toBe(controller.signal);
+    expect(callGatewayMock.mock.calls.filter(([call]) => call.method === "cron.run")).toHaveLength(
+      1,
+    );
   });
 
   it("normalizes cron.add job payloads", async () => {

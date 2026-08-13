@@ -105,7 +105,7 @@ describe("terminal tool", () => {
     });
     expect(tool.outputSchema).toBeDefined();
     expect(compactToolOutputHint(tool.outputSchema)).toBe(
-      "{ sessions: Array<{ agentId: string; attached: boolean; createdAtMs: number; cwd: string; owner: string; sessionId: string; shell: string }> } | { agentId: string; cwd: string; ok: true; sessionId: string; shell: string } | { sessionId: string; text: string } | { ok: boolean }",
+      "{ sessions: Array<{ agentId: string; attached: boolean; createdAtMs: number; cwd: string; owner: string; sessionId: string; shell: string }> } | { agentId: string; cwd: string; ok: true; sessionId: string; shell: string } | { cursor: number; endCursor: number; hasMore: boolean; running: true; sessionId: string; startCursor: number; text: string; truncated: boolean } | { ok: boolean }",
     );
 
     const opened = await tool.execute("open", { action: "open", command: "echo ready" });
@@ -125,7 +125,16 @@ describe("terminal tool", () => {
 
     backend.emitData("\u001b[31mready\u001b[0m\r\n");
     const read = await tool.execute("read", { action: "read", sessionId });
-    expect(read.details).toEqual({ sessionId, text: "ready\n" });
+    expect(read.details).toEqual({
+      sessionId,
+      text: "ready\n",
+      startCursor: 0,
+      cursor: 16,
+      endCursor: 16,
+      truncated: false,
+      hasMore: false,
+      running: true,
+    });
     expect(Value.Check(tool.outputSchema!, read.details)).toBe(true);
 
     const input = await tool.execute("input", { action: "input", sessionId, data: "yes\r" });
@@ -156,6 +165,119 @@ describe("terminal tool", () => {
     expect(closed.details).toEqual({ ok: true });
     expect(Value.Check(tool.outputSchema!, closed.details)).toBe(true);
     expect(backend.killed).toBe(true);
+  });
+
+  it("returns only new terminal output after the prior read cursor", async () => {
+    const backend = makeBackend();
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn: async () => backend });
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      getGatewayContext: () => makeContext(manager),
+    });
+    const opened = await tool.execute("open", { action: "open", show: false });
+    const sessionId = (opened.details as { sessionId: string }).sessionId;
+
+    backend.emitData("abcdef");
+    const tail = await tool.execute("tail", { action: "read", sessionId, maxChars: 3 });
+    expect(tail.details).toMatchObject({
+      text: "def",
+      startCursor: 3,
+      cursor: 6,
+      endCursor: 6,
+      truncated: true,
+      hasMore: false,
+    });
+
+    backend.emitData("ghi");
+    const page = await tool.execute("page", {
+      action: "read",
+      sessionId,
+      cursor: 6,
+      maxChars: 2,
+    });
+    expect(page.details).toMatchObject({
+      text: "gh",
+      startCursor: 6,
+      cursor: 8,
+      endCursor: 9,
+      truncated: false,
+      hasMore: true,
+    });
+    const remainder = await tool.execute("remainder", {
+      action: "read",
+      sessionId,
+      cursor: 8,
+    });
+    expect(remainder.details).toMatchObject({
+      text: "i",
+      startCursor: 8,
+      cursor: 9,
+      endCursor: 9,
+      truncated: false,
+      hasMore: false,
+    });
+  });
+
+  it("reports scrollback loss and rejects a cursor beyond current output", async () => {
+    const backend = makeBackend();
+    const manager = new TerminalSessionManager({
+      emit: vi.fn(),
+      spawn: async () => backend,
+      scrollbackChars: 4,
+    });
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      getGatewayContext: () => makeContext(manager),
+    });
+    const opened = await tool.execute("open", { action: "open", show: false });
+    const sessionId = (opened.details as { sessionId: string }).sessionId;
+    backend.emitData("abcdef");
+
+    const stale = await tool.execute("stale", {
+      action: "read",
+      sessionId,
+      cursor: 0,
+    });
+    expect(stale.details).toMatchObject({
+      text: "cdef",
+      startCursor: 2,
+      cursor: 6,
+      endCursor: 6,
+      truncated: true,
+      hasMore: false,
+    });
+    await expect(tool.execute("future", { action: "read", sessionId, cursor: 7 })).rejects.toThrow(
+      "cursor 7 is beyond terminal end cursor 6",
+    );
+  });
+
+  it("keeps cursor pages on UTF-16 surrogate boundaries", async () => {
+    const backend = makeBackend();
+    const manager = new TerminalSessionManager({ emit: vi.fn(), spawn: async () => backend });
+    const tool = createTerminalTool({
+      agentId: "main",
+      agentSessionKey: "agent:main:main",
+      getGatewayContext: () => makeContext(manager),
+    });
+    const opened = await tool.execute("open", { action: "open", show: false });
+    const sessionId = (opened.details as { sessionId: string }).sessionId;
+    backend.emitData("🦞ok");
+
+    const emoji = await tool.execute("emoji", {
+      action: "read",
+      sessionId,
+      cursor: 0,
+      maxChars: 1,
+    });
+    expect(emoji.details).toMatchObject({ text: "🦞", startCursor: 0, cursor: 2, hasMore: true });
+    const rest = await tool.execute("rest", {
+      action: "read",
+      sessionId,
+      cursor: 2,
+    });
+    expect(rest.details).toMatchObject({ text: "ok", startCursor: 2, cursor: 4, hasMore: false });
   });
 
   it("binds the exact run when two active tasks share one child session", async () => {

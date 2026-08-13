@@ -295,6 +295,18 @@ function acceptsCronRunContinuationLifecycleEvent(params: {
     return true;
   }
   const runId = params.event.runId?.trim();
+  if (marker?.phase === "ready") {
+    const phase = resolveLifecyclePhase(params.event);
+    // Sealing can win the race with the Gateway's asynchronous terminal
+    // persistence. Let that recorded initial owner settle a still-running row,
+    // but never let a duplicate late event replace an existing terminal state.
+    return Boolean(
+      params.entry.status === "running" &&
+      (phase === "end" || phase === "error") &&
+      runId &&
+      params.entry.lifecycleRunId === runId,
+    );
+  }
   return Boolean(marker?.phase === "continuing" && runId && marker.ownerRunId === runId);
 }
 

@@ -145,6 +145,37 @@ describe("createCronToolSchema", () => {
     }
   });
 
+  it("exposes bounded completion-aware cron run controls", () => {
+    expect(propertyAt(schemaRecord, "waitForCompletion")).toMatchObject({
+      type: "boolean",
+      description: expect.stringContaining('action="run"'),
+    });
+    expect(propertyAt(schemaRecord, "completionTimeoutMs")).toMatchObject({
+      type: "integer",
+      minimum: 1,
+      maximum: 600_000,
+      description: expect.stringContaining("admission and completion"),
+    });
+    expect(
+      Value.Check(schema, {
+        action: "run",
+        jobId: "job-1",
+        waitForCompletion: true,
+        completionTimeoutMs: 600_000,
+      }),
+    ).toBe(true);
+    for (const completionTimeoutMs of [0, -1, 1.5, 600_001]) {
+      expect(
+        Value.Check(schema, {
+          action: "run",
+          jobId: "job-1",
+          waitForCompletion: true,
+          completionTimeoutMs,
+        }),
+      ).toBe(false);
+    }
+  });
+
   it("job.schedule exposes interval, cron, and stream source fields", () => {
     expect(keysAt(schemaRecord, "job.schedule")).toEqual(
       [

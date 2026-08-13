@@ -51,6 +51,9 @@ const CODEX_DYNAMIC_MESSAGE_TOOL_TIMEOUT_MS = 600_000;
 /** Outer default for collector waits: full swarm budget plus completion grace. */
 const CODEX_DYNAMIC_AGENTS_WAIT_TOOL_TIMEOUT_MS =
   CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS + CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS;
+/** Outer budget for an automation's full completion wait plus result-processing grace. */
+const CODEX_DYNAMIC_AUTOMATIONS_WAIT_TOOL_TIMEOUT_MS =
+  CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS + CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS;
 const LOG_FIELD_MAX_LENGTH = 160;
 
 type DynamicToolTimeoutDetails = {
@@ -495,6 +498,10 @@ export function resolveDynamicToolCallTimeoutMs(params: {
   call: CodexDynamicToolCallParams;
   config: EmbeddedRunAttemptParams["config"];
 }): number {
+  const automationsWaitTimeoutMs = readAutomationsWaitTimeoutMs(params.call);
+  if (automationsWaitTimeoutMs !== undefined) {
+    return automationsWaitTimeoutMs;
+  }
   if (params.call.tool === "computer") {
     return clampDynamicToolTimeoutMs(readComputerToolTimeoutMs(params.call.arguments));
   }
@@ -525,6 +532,27 @@ export function resolveDynamicToolCallTimeoutMs(params: {
     readDynamicToolCallTimeoutMs(params.call.arguments) ??
       readConfiguredDynamicToolTimeoutMs(params.call.tool, params.config) ??
       CODEX_DYNAMIC_TOOL_TIMEOUT_MS,
+  );
+}
+
+function readAutomationsWaitTimeoutMs(call: CodexDynamicToolCallParams): number | undefined {
+  if (call.tool !== "automations" || !isJsonObject(call.arguments)) {
+    return undefined;
+  }
+  if (call.arguments.action !== "run" || call.arguments.waitForCompletion !== true) {
+    return undefined;
+  }
+  // `timeoutMs` on automations is a per-Gateway-RPC budget. The outer Codex
+  // watchdog follows the completion budget so a short transport timeout cannot
+  // abort an admitted run before the tool returns its durable runId.
+  const completionTimeoutMs = Math.min(
+    readPositiveFiniteTimeoutMs(call.arguments.completionTimeoutMs) ??
+      CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS,
+    CODEX_DYNAMIC_TOOL_MAX_TIMEOUT_MS,
+  );
+  return Math.min(
+    completionTimeoutMs + CODEX_DYNAMIC_TOOL_TIMEOUT_SECONDS_GRACE_MS,
+    CODEX_DYNAMIC_AUTOMATIONS_WAIT_TOOL_TIMEOUT_MS,
   );
 }
 

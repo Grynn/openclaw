@@ -1,3 +1,4 @@
+import { avoidTrailingHighSurrogateBreak } from "@openclaw/normalization-core/utf16-slice";
 import { Type } from "typebox";
 import type { UiCommandParams } from "../../../packages/gateway-protocol/src/index.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
@@ -15,6 +16,7 @@ import type { TaskRecord } from "../../tasks/task-registry.types.js";
 import type { AnyAgentTool } from "./common.js";
 import {
   jsonResult,
+  readNonNegativeIntegerParam,
   readPositiveIntegerParam,
   readToolStringParam,
   ToolInputError,
@@ -29,6 +31,8 @@ const ACTIONS = ["open", "read", "input", "resize", "close", "list"] as const;
 const DEFAULT_COLS = 100;
 const DEFAULT_ROWS = 30;
 const MAX_DIMENSION = 2000;
+const DEFAULT_READ_MAX_CHARS = 32 * 1024;
+const MAX_READ_CHARS = 128 * 1024;
 
 const TerminalToolSchema = Type.Object(
   {
@@ -40,6 +44,19 @@ const TerminalToolSchema = Type.Object(
     cols: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_DIMENSION })),
     rows: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_DIMENSION })),
     show: Type.Optional(Type.Boolean({ description: "Show in web UI. Default: true" })),
+    cursor: Type.Optional(
+      Type.Integer({
+        minimum: 0,
+        description: "For read: return output after this cursor from the prior read.",
+      }),
+    ),
+    maxChars: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: MAX_READ_CHARS,
+        description: `For read: raw output cap (default ${DEFAULT_READ_MAX_CHARS}).`,
+      }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -69,7 +86,19 @@ const TerminalToolOutputSchema = Type.Union([
     },
     { additionalProperties: false },
   ),
-  Type.Object({ sessionId: Type.String(), text: Type.String() }, { additionalProperties: false }),
+  Type.Object(
+    {
+      sessionId: Type.String(),
+      text: Type.String(),
+      startCursor: Type.Integer({ minimum: 0 }),
+      cursor: Type.Integer({ minimum: 0 }),
+      endCursor: Type.Integer({ minimum: 0 }),
+      truncated: Type.Boolean(),
+      hasMore: Type.Boolean(),
+      running: Type.Literal(true),
+    },
+    { additionalProperties: false },
+  ),
   Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }),
 ]);
 
@@ -146,6 +175,27 @@ function requireSessionId(params: Record<string, unknown>): string {
   return readToolStringParam(params, "sessionId", { required: true });
 }
 
+function cursorSlice(raw: string, start: number, maxChars: number) {
+  let safeStart = start;
+  const startCodeUnit = raw.charCodeAt(safeStart);
+  const priorCodeUnit = raw.charCodeAt(safeStart - 1);
+  if (
+    safeStart > 0 &&
+    startCodeUnit >= 0xdc00 &&
+    startCodeUnit <= 0xdfff &&
+    priorCodeUnit >= 0xd800 &&
+    priorCodeUnit <= 0xdbff
+  ) {
+    safeStart += 1;
+  }
+  const end = avoidTrailingHighSurrogateBreak(
+    raw,
+    safeStart,
+    Math.min(raw.length, safeStart + maxChars),
+  );
+  return { start: safeStart, end, value: raw.slice(safeStart, end) };
+}
+
 function launchBlockMessage(
   block: Extract<
     ReturnType<GatewayRequestContext["resolveTerminalLaunchPolicy"]>,
@@ -169,7 +219,7 @@ export function createTerminalTool(opts: TerminalToolOptions = {}): AnyAgentTool
     label: "Terminal",
     name: "terminal",
     description:
-      "Own terminal on gateway host. open/read/input/resize/close/list. User sees it in web UI, can type too. read = buffer snapshot.",
+      "Own terminal on gateway host. open/read/input/resize/close/list. User sees it in web UI, can type too. read returns at most 32K chars by default plus a cursor; pass that cursor on the next read to receive only new output.",
     parameters: TerminalToolSchema,
     outputSchema: TerminalToolOutputSchema,
     execute: async (_toolCallId, rawArgs, signal) => {
@@ -298,11 +348,41 @@ export function createTerminalTool(opts: TerminalToolOptions = {}): AnyAgentTool
 
       const sessionId = requireSessionId(params);
       if (action === "read") {
-        const raw = manager.snapshotAgent(agentSessionKey, sessionId, agentId);
-        if (raw === undefined) {
+        const snapshot = manager.snapshotAgentRange(agentSessionKey, sessionId, agentId);
+        if (!snapshot) {
           throw new ToolInputError("terminal not owned by this agent session");
         }
-        return jsonResult({ sessionId, text: renderTerminalBufferText(raw) });
+        const requestedCursor = readNonNegativeIntegerParam(params, "cursor");
+        if (requestedCursor !== undefined && requestedCursor > snapshot.endCursor) {
+          throw new ToolInputError(
+            `cursor ${requestedCursor} is beyond terminal end cursor ${snapshot.endCursor}`,
+          );
+        }
+        const maxChars =
+          readPositiveIntegerParam(params, "maxChars", {
+            max: MAX_READ_CHARS,
+            message: `maxChars must be an integer from 1 to ${MAX_READ_CHARS}`,
+          }) ?? DEFAULT_READ_MAX_CHARS;
+        const requestedStart = requestedCursor ?? snapshot.startCursor;
+        const availableStart = Math.max(requestedStart, snapshot.startCursor);
+        const relativeStart = availableStart - snapshot.startCursor;
+        const initialStart =
+          requestedCursor === undefined && snapshot.buffer.length > maxChars
+            ? snapshot.buffer.length - maxChars
+            : relativeStart;
+        const slice = cursorSlice(snapshot.buffer, initialStart, maxChars);
+        const startCursor = snapshot.startCursor + slice.start;
+        const cursor = snapshot.startCursor + slice.end;
+        return jsonResult({
+          sessionId,
+          text: renderTerminalBufferText(slice.value),
+          startCursor,
+          cursor,
+          endCursor: snapshot.endCursor,
+          truncated: requestedStart < snapshot.startCursor || startCursor > requestedStart,
+          hasMore: cursor < snapshot.endCursor,
+          running: true,
+        });
       }
       if (action === "input") {
         const data = readToolStringParam(params, "data", {
