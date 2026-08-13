@@ -3,10 +3,13 @@ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/st
 import type { ModelCompatConfig, ModelMediaInputConfig } from "../../config/types.models.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { Api, Model } from "../../llm/types.js";
-import type { PluginMetadataSnapshotOwnerMaps } from "../../plugins/plugin-metadata-snapshot.types.js";
+import type {
+  PluginMetadataSnapshot,
+  PluginMetadataSnapshotOwnerMaps,
+} from "../../plugins/plugin-metadata-snapshot.types.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
 import { resolveCatalogOwnedModelCompat } from "../model-compat-catalog.js";
-import { modelKey, normalizeStaticProviderModelId } from "../model-ref-shared.js";
+import { createStaticProviderModelIdNormalizer, modelKey } from "../model-ref-shared.js";
 import { findNormalizedProviderValue, normalizeProviderId } from "../model-selection.js";
 import {
   shouldSuppressBuiltInModelCore,
@@ -243,6 +246,7 @@ function findConfiguredAgentModelParams(params: {
   cfg?: OpenClawConfig;
   provider: string;
   modelId: string;
+  metadataSnapshot?: Pick<PluginMetadataSnapshot, "plugins">;
 }): Record<string, unknown> | undefined {
   const configuredModels = params.cfg?.agents?.defaults?.models;
   if (!configuredModels) {
@@ -260,7 +264,10 @@ function findConfiguredAgentModelParams(params: {
   }
 
   const normalizedProvider = normalizeProviderId(params.provider);
-  const normalizedModelId = normalizeStaticProviderModelId(normalizedProvider, params.modelId)
+  const normalizeModelId = createStaticProviderModelIdNormalizer(
+    params.metadataSnapshot ? { manifestPlugins: params.metadataSnapshot.plugins } : undefined,
+  );
+  const normalizedModelId = normalizeModelId(normalizedProvider, params.modelId)
     .trim()
     .toLowerCase();
   for (const [rawKey, entry] of Object.entries(configuredModels)) {
@@ -272,7 +279,7 @@ function findConfiguredAgentModelParams(params: {
     const candidateModelId = rawKey.slice(slashIndex + 1);
     if (
       normalizeProviderId(candidateProvider) === normalizedProvider &&
-      normalizeStaticProviderModelId(normalizedProvider, candidateModelId).trim().toLowerCase() ===
+      normalizeModelId(normalizedProvider, candidateModelId).trim().toLowerCase() ===
         normalizedModelId
     ) {
       return readModelParams(entry.params);
@@ -288,6 +295,7 @@ export function mergeConfiguredRuntimeModelParams(params: {
   discoveredParams?: unknown;
   providerParams?: unknown;
   configuredParams?: unknown;
+  metadataSnapshot?: Pick<PluginMetadataSnapshot, "plugins">;
 }): Record<string, unknown> | undefined {
   return mergeModelParams(
     readModelParams(params.discoveredParams),
@@ -296,6 +304,7 @@ export function mergeConfiguredRuntimeModelParams(params: {
       cfg: params.cfg,
       provider: params.provider,
       modelId: params.modelId,
+      metadataSnapshot: params.metadataSnapshot,
     }),
     readModelParams(params.configuredParams),
   );
@@ -333,6 +342,7 @@ export function applyConfiguredProviderOverrides(params: {
   preferDiscoveredTransport?: boolean;
   staticCatalogModel?: StaticCatalogFallbackModel;
   workspaceDir?: string;
+  metadataSnapshot?: PluginMetadataSnapshot;
 }): ProviderRuntimeModel {
   const { providerConfig, modelId } = params;
   const discoveredModel = attachModelProviderMetadataOwners(
@@ -345,6 +355,7 @@ export function applyConfiguredProviderOverrides(params: {
     cfg: params.cfg,
     provider: params.provider,
     modelId,
+    metadataSnapshot: params.metadataSnapshot,
   });
   if (!providerConfig) {
     const resolvedParams = mergeModelParams(
@@ -405,6 +416,7 @@ export function applyConfiguredProviderOverrides(params: {
         cfg: params.cfg,
         workspaceDir: params.workspaceDir,
         includeRuntimeDiscovery: true,
+        ...(params.metadataSnapshot ? { metadataSnapshot: params.metadataSnapshot } : {}),
       }) as StaticCatalogFallbackModel | undefined));
   const metadataOverrideModel =
     params.preferDiscoveredModelMetadata && isModelsAddMetadataModel({ model: configuredModel })

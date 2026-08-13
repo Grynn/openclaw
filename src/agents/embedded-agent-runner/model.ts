@@ -44,7 +44,7 @@ import {
   resolveBundledProviderStaticCatalogModel,
   resolveBundledStaticCatalogModel,
 } from "./model.static-catalog.js";
-import { staticModelIdMatches } from "./model.static-id.js";
+import { createStaticModelIdMatcher, staticModelIdMatches } from "./model.static-id.js";
 
 export { resolveModelWithRegistry } from "./model.registry-resolution.js";
 
@@ -142,7 +142,13 @@ export function resolveModel(
   }
   const workspaceDir =
     options?.workspaceDir ?? preparedSnapshot?.workspaceDir ?? derivedWorkspaceDir;
-  const normalizedRef = normalizeProviderModelRef({ provider, modelId, cfg, workspaceDir });
+  const normalizedRef = normalizeProviderModelRef({
+    provider,
+    modelId,
+    cfg,
+    workspaceDir,
+    metadataSnapshot: preparedSnapshot?.metadataSnapshot,
+  });
   const preparedStores = preparedSnapshot?.createStores();
   const authStorage = options?.authStorage ?? preparedStores!.authStorage;
   const modelRegistry =
@@ -163,6 +169,7 @@ export function resolveModel(
     authProfileMode: options?.authProfileMode,
     preferredProfile: options?.preferredProfile,
     runtimeHooks,
+    metadataSnapshot: preparedSnapshot?.metadataSnapshot,
   });
   if (model) {
     return { model, authStorage, modelRegistry };
@@ -222,7 +229,15 @@ export async function resolveModelAsync(
       : undefined);
   const workspaceDir =
     options?.workspaceDir ?? preparedSnapshot?.workspaceDir ?? derivedWorkspaceDir;
-  const normalizedRef = normalizeProviderModelRef({ provider, modelId, cfg, workspaceDir });
+  // Route-projected cfg owns transport/auth; the snapshot contributes generation facts only.
+  const preparedModelRuntime = options?.preparedModelRuntime ?? preparedSnapshot;
+  const normalizedRef = normalizeProviderModelRef({
+    provider,
+    modelId,
+    cfg,
+    workspaceDir,
+    metadataSnapshot: preparedModelRuntime?.metadataSnapshot,
+  });
   const preparedStores = preparedSnapshot?.createStores();
   const fallbackStores =
     emptyDiscoveryStores ?? preparedStores ?? createEmptyAgentDiscoveryStores();
@@ -233,11 +248,14 @@ export async function resolveModelAsync(
       ? fallbackStores.modelRegistry.fork(authStorage)
       : fallbackStores.modelRegistry);
   const runtimeHooks = resolveRuntimeHooks(options);
-  // Route-projected cfg owns transport/auth; the snapshot contributes generation facts only.
-  const preparedModelRuntime = options?.preparedModelRuntime ?? preparedSnapshot;
+  const matchesPreparedStaticModelId = preparedModelRuntime?.metadataSnapshot
+    ? createStaticModelIdMatcher({
+        manifestPlugins: preparedModelRuntime.metadataSnapshot.plugins,
+      })
+    : staticModelIdMatches;
   const preparedStaticCatalogModel = preparedModelRuntime?.configuredRuntimeModels?.find(
     ({ modelId: candidateId, provider: rowProvider }) =>
-      staticModelIdMatches({
+      matchesPreparedStaticModelId({
         candidateId,
         rowProvider,
         provider: normalizedRef.provider,
@@ -269,6 +287,7 @@ export async function resolveModelAsync(
     runtimeHooks,
     preparedInlineProviderModels: preparedModelRuntime?.inlineProviderModels,
     preparedStaticCatalogModel,
+    metadataSnapshot: preparedModelRuntime?.metadataSnapshot,
   });
   if (explicitModel?.kind === "suppressed") {
     const suppressedRuntimeModel = resolveRuntimePreferredSuppressedModel({
@@ -284,6 +303,7 @@ export async function resolveModelAsync(
       authProfileMode: options?.authProfileMode,
       preferredProfile: options?.preferredProfile,
       runtimeHooks,
+      metadataSnapshot: preparedModelRuntime?.metadataSnapshot,
     });
     if (suppressedRuntimeModel) {
       return { model: suppressedRuntimeModel, authStorage, modelRegistry };
@@ -326,6 +346,9 @@ export async function resolveModelAsync(
         cfg,
         workspaceDir,
         includeRuntimeDiscovery: true,
+        ...(preparedModelRuntime?.metadataSnapshot
+          ? { metadataSnapshot: preparedModelRuntime.metadataSnapshot }
+          : {}),
       });
       if (manifestModel) {
         return manifestModel;
@@ -335,6 +358,9 @@ export async function resolveModelAsync(
         modelId: normalizedRef.model,
         cfg,
         workspaceDir,
+        ...(preparedModelRuntime?.metadataSnapshot
+          ? { metadataSnapshot: preparedModelRuntime.metadataSnapshot }
+          : {}),
       });
     })();
     return await staticCatalogLookup;
@@ -356,6 +382,7 @@ export async function resolveModelAsync(
       preferDiscoveredModelMetadata: true,
       preferDiscoveredTransport: options?.preferBundledStaticCatalogTransport,
       staticCatalogModel: catalogModel,
+      metadataSnapshot: preparedModelRuntime?.metadataSnapshot,
     });
     return normalizeResolvedModel({
       provider: normalizedRef.provider,
@@ -396,6 +423,7 @@ export async function resolveModelAsync(
       authProfileMode: options?.authProfileMode,
       preferredProfile: options?.preferredProfile,
       runtimeHooks,
+      metadataSnapshot: preparedModelRuntime?.metadataSnapshot,
       ...(options?.allowBundledStaticCatalogFallback ? { skipConfiguredFallback: true } : {}),
     });
   };

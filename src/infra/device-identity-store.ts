@@ -7,7 +7,7 @@ import type { Insertable, Selectable } from "kysely";
 import { withOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
-  openOpenClawStateDatabase,
+  OPENCLAW_STATE_SCHEMA_VERSION,
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
@@ -21,6 +21,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
+import { readSqliteUserVersion } from "./sqlite-user-version.js";
 
 export const PRIMARY_DEVICE_IDENTITY_KEY = "primary";
 
@@ -260,25 +261,10 @@ export function resolveDeviceIdentityStore(options: DeviceIdentityStoreOptions =
   };
 }
 
-/** Read through the writable shared-state lifecycle, validating any existing row. */
-export function readStoredDeviceIdentity(
-  options: DeviceIdentityStoreOptions = {},
-): StoredDeviceIdentity | null {
-  const resolved = resolveDeviceIdentityStore(options);
-  const database = openOpenClawStateDatabase({
-    env: options.env,
-    path: resolved.databasePath,
-  });
-  const stored = readStoredIdentityFromDatabase(database, resolved.identityKey);
-  if (stored) {
-    validateStoredDeviceIdentity(stored, resolved.identityKey);
-  }
-  return stored;
-}
-
 /** Read without creating, repairing, chmodding, or joining the writer lifecycle. */
 export function readStoredDeviceIdentityReadOnly(
   options: DeviceIdentityStoreOptions = {},
+  requirements: { currentSchemaOnly?: boolean } = {},
 ): StoredDeviceIdentity | null {
   const resolved = resolveDeviceIdentityStore(options);
   try {
@@ -291,6 +277,12 @@ export function readStoredDeviceIdentityReadOnly(
   }
   return withOpenClawStateDatabaseReadOnly(
     (database) => {
+      if (
+        requirements.currentSchemaOnly === true &&
+        readSqliteUserVersion(database.db) !== OPENCLAW_STATE_SCHEMA_VERSION
+      ) {
+        return null;
+      }
       const stored = readStoredIdentityFromDatabase(database, resolved.identityKey);
       if (stored) {
         validateStoredDeviceIdentity(stored, resolved.identityKey);

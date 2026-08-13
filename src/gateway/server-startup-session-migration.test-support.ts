@@ -2,8 +2,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import { EMPTY_LEGACY_SESSION_SURFACES } from "../plugins/legacy-session-surfaces.types.js";
+import {
+  closeOpenClawAgentDatabasesForTest,
+  isOpenClawAgentDatabaseOpen,
+} from "../state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import { runStartupSessionMigration } from "./server-startup-session-migration.js";
 
@@ -97,6 +102,8 @@ function makeSessionSqliteImport(
   });
 }
 
+afterEach(() => closeOpenClawAgentDatabasesForTest());
+
 describe("runStartupSessionMigration", () => {
   it("skips legacy migration imports when no session stores exist", async () => {
     const log = makeLog();
@@ -130,6 +137,31 @@ describe("runStartupSessionMigration", () => {
     expect(deps.runDoctorSessionSqlite).toHaveBeenCalledOnce();
   });
 
+  it("keeps the startup-opened agent database warm for transcript reconciliation", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-session-startup-warm-"));
+    const env = { OPENCLAW_STATE_DIR: stateDir };
+    const storePath = path.join(stateDir, "agents", "main", "sessions.json");
+    const databasePath = resolveSqliteTargetFromSessionStorePath(storePath, {
+      agentId: "main",
+      env,
+    }).path;
+    const migrate = vi.fn<MigrateSessionKeys>().mockResolvedValue({ changes: [], warnings: [] });
+    const reconcile = vi.fn<ReconcileSessionTranscriptIndexes>().mockImplementation(async () => {
+      expect(isOpenClawAgentDatabaseOpen(databasePath)).toBe(true);
+      return { reconciledSessions: 0 };
+    });
+    const deps = makeDeps(migrate, 0, makeSessionSqliteImport(), reconcile);
+    deps.resolveAllAgentSessionStoreTargetsSync.mockReturnValue([{ agentId: "main", storePath }]);
+
+    try {
+      await runStartupSessionMigration({ cfg: makeCfg(), env, log: makeLog(), deps });
+    } finally {
+      closeOpenClawAgentDatabasesForTest();
+      fs.rmSync(stateDir, { force: true, recursive: true });
+    }
+
+    expect(reconcile).toHaveBeenCalledOnce();
+  });
   it("logs changes when orphaned keys are canonicalized", async () => {
     const log = makeLog();
     const migrate = vi.fn<MigrateSessionKeys>().mockResolvedValue({

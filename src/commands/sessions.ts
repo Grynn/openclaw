@@ -10,7 +10,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { isRich, theme } from "../../packages/terminal-core/src/theme.js";
-import { readAcpSessionMetaBatch } from "../acp/runtime/session-meta.js";
+import { readAcpSessionMetaBatch } from "../acp/runtime/session-meta-batch-read.js";
 import { resolveModelAgentRuntimeMetadata } from "../agents/agent-runtime-metadata.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../agents/defaults.js";
 import {
@@ -20,10 +20,13 @@ import {
 import { resolveRuntimePolicySessionKey } from "../auto-reply/reply/runtime-policy-session-key.js";
 import { normalizeChatType } from "../channels/chat-type.js";
 import { getRuntimeConfig } from "../config/config.js";
-import { resolveFreshSessionTotalTokens, resolveSessionTotalTokens } from "../config/sessions.js";
-import { listSessionEntriesReadOnly } from "../config/sessions/session-accessor.js";
+import { listSessionEntriesReadOnly } from "../config/sessions/session-accessor.read-list.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
-import type { SessionEntry } from "../config/sessions/types.js";
+import {
+  resolveFreshSessionTotalTokens,
+  resolveSessionTotalTokens,
+  type SessionEntry,
+} from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveStoredSessionKeyForAgentStore } from "../gateway/session-store-key.js";
 import { info } from "../globals.js";
@@ -357,7 +360,12 @@ export async function sessionsCommand(
   const classifyCliProvider = prepareCliProviderClassifier(cfg);
   const activeSince = activeMinutes === undefined ? undefined : Date.now() - activeMinutes * 60_000;
   const sessionEntries = targets.flatMap((target) => {
-    return listSessionEntriesReadOnly({ agentId: target.agentId, storePath: target.storePath })
+    return listSessionEntriesReadOnly({
+      agentId: target.agentId,
+      clone: false,
+      projection: "list",
+      storePath: target.storePath,
+    })
       .filter(
         ({ entry }) =>
           activeSince === undefined ||

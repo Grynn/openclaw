@@ -1,7 +1,10 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ModelRegistry as CoreModelRegistry } from "../../llm/model-registry.js";
 import type { Model } from "../../llm/types.js";
-import type { PluginMetadataSnapshotOwnerMaps } from "../../plugins/plugin-metadata-snapshot.types.js";
+import type {
+  PluginMetadataSnapshot,
+  PluginMetadataSnapshotOwnerMaps,
+} from "../../plugins/plugin-metadata-snapshot.types.js";
 import { ensureAuthProfileStore, resolveAuthProfileOrder } from "../auth-profiles.js";
 import type { AuthProfileCredential } from "../auth-profiles/types.js";
 import { resolveAgentHarnessPolicy } from "../harness/policy.js";
@@ -60,6 +63,7 @@ export function resolveExplicitModelWithRegistry(params: {
   runtimeHooks?: ProviderRuntimeHooks;
   preparedInlineProviderModels?: readonly InlineModelEntry[];
   preparedStaticCatalogModel?: StaticCatalogFallbackModel;
+  metadataSnapshot?: PluginMetadataSnapshot;
 }): ExplicitModelResolution | undefined {
   const { provider, modelId, modelRegistry, cfg, agentDir, workspaceDir, runtimeHooks } = params;
   const providerMetadataOwners = getRegistryProviderMetadataOwners(modelRegistry);
@@ -99,6 +103,7 @@ export function resolveExplicitModelWithRegistry(params: {
         cfg,
         workspaceDir,
         includeRuntimeDiscovery: true,
+        ...(params.metadataSnapshot ? { metadataSnapshot: params.metadataSnapshot } : {}),
       }) as StaticCatalogFallbackModel | undefined);
     return {
       kind: "resolved",
@@ -120,6 +125,7 @@ export function resolveExplicitModelWithRegistry(params: {
           workspaceDir,
           preferDiscoveredTransport: true,
           staticCatalogModel,
+          metadataSnapshot: params.metadataSnapshot,
         }),
         runtimeHooks,
       }),
@@ -177,6 +183,7 @@ export function resolveExplicitModelWithRegistry(params: {
           providerMetadataOwners,
           runtimeHooks,
           workspaceDir,
+          metadataSnapshot: params.metadataSnapshot,
         }),
         runtimeHooks,
       }),
@@ -215,6 +222,9 @@ export function resolveDynamicModelAuthProfile(params: {
   authProfileMode?: AuthProfileCredential["type"] | "aws-sdk";
 } {
   const explicitProfileId = params.authProfileId?.trim() || undefined;
+  if (explicitProfileId && params.authProfileMode) {
+    return { authProfileId: explicitProfileId, authProfileMode: params.authProfileMode };
+  }
   const store = ensureAuthProfileStore(params.agentDir, { allowKeychainPrompt: false });
   if (explicitProfileId) {
     const credential = store.profiles[explicitProfileId];
@@ -272,6 +282,7 @@ function resolvePluginDynamicModelWithRegistry(params: {
   authProfileMode?: AuthProfileCredential["type"] | "aws-sdk";
   preferredProfile?: string;
   runtimeHooks?: ProviderRuntimeHooks;
+  metadataSnapshot?: PluginMetadataSnapshot;
 }): Model | undefined {
   const { provider, modelId, modelRegistry, cfg, agentDir, workspaceDir } = params;
   const runtimeHooks = params.runtimeHooks ?? DEFAULT_PROVIDER_RUNTIME_HOOKS;
@@ -330,6 +341,7 @@ function resolvePluginDynamicModelWithRegistry(params: {
     runtimeHooks,
     workspaceDir,
     preferDiscoveredModelMetadata,
+    metadataSnapshot: params.metadataSnapshot,
   });
   return normalizeResolvedModel({
     provider,
@@ -394,6 +406,7 @@ export function normalizeProviderModelRef(params: {
   modelId: string;
   cfg?: OpenClawConfig;
   workspaceDir?: string;
+  metadataSnapshot?: Pick<PluginMetadataSnapshot, "plugins">;
 }): {
   provider: string;
   model: string;
@@ -404,12 +417,14 @@ export function normalizeProviderModelRef(params: {
     modelId: params.modelId,
     cfg: params.cfg,
     workspaceDir: params.workspaceDir,
+    metadataSnapshot: params.metadataSnapshot,
   });
   return {
     provider: manifestAlias.provider,
     model: normalizeStaticProviderModelId(
       normalizeProviderId(manifestAlias.provider),
       params.modelId,
+      params.metadataSnapshot ? { manifestPlugins: params.metadataSnapshot.plugins } : undefined,
     ),
     manifestAlias,
   };
@@ -428,6 +443,7 @@ type ResolveModelWithRegistryParams = {
   preferredProfile?: string;
   runtimeHooks?: ProviderRuntimeHooks;
   skipConfiguredFallback?: boolean;
+  metadataSnapshot?: PluginMetadataSnapshot;
 };
 
 export function resolveModelWithPreparedRegistry(

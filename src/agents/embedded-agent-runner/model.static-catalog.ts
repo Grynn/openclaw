@@ -368,6 +368,7 @@ export function resolveBundledStaticCatalogModel(
     workspaceDir?: string;
     env?: NodeJS.ProcessEnv;
     includeRuntimeDiscovery?: boolean;
+    metadataSnapshot?: PluginMetadataSnapshot;
   },
 ): ProviderRuntimeModel | undefined {
   return createBundledStaticCatalogModelResolver({
@@ -376,6 +377,7 @@ export function resolveBundledStaticCatalogModel(
     ...(params.includeRuntimeDiscovery !== undefined
       ? { includeRuntimeDiscovery: params.includeRuntimeDiscovery }
       : {}),
+    ...(params.metadataSnapshot ? { metadataSnapshot: params.metadataSnapshot } : {}),
     ...(params.workspaceDir !== undefined ? { workspaceDir: params.workspaceDir } : {}),
   })(params);
 }
@@ -730,6 +732,7 @@ export async function resolveBundledProviderStaticCatalogModel(params: {
   cfg?: OpenClawConfig;
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
+  metadataSnapshot?: PluginMetadataSnapshot;
 }): Promise<ProviderRuntimeModel | undefined> {
   return createBundledProviderStaticCatalogModelResolver(params)(params);
 }

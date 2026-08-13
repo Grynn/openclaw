@@ -389,6 +389,7 @@ describe("markAuthProfileFailure", () => {
           agentDir,
         });
         expect(hook).toHaveBeenCalledTimes(1);
+        expect(hook).toHaveBeenCalledWith({ reason: "auth", source: "profile" });
       } finally {
         setAuthProfileFailureHook(undefined);
       }
@@ -407,6 +408,10 @@ describe("markAuthProfileFailure", () => {
           agentDir,
         });
         expect(hook).toHaveBeenCalledTimes(1);
+        expect(hook).toHaveBeenCalledWith({
+          reason: "billing",
+          source: "inline-provider-api-key",
+        });
       } finally {
         setAuthProfileFailureHook(undefined);
       }

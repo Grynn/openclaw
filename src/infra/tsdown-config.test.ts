@@ -169,6 +169,7 @@ describe("tsdown config", () => {
       "plugins/memory-state",
       "subagent-registry.runtime",
       "task-registry-control.runtime",
+      "tasks/task-registry.maintenance",
       "link-understanding/apply.runtime",
       "media-understanding/apply.runtime",
       "index",
@@ -184,6 +185,7 @@ describe("tsdown config", () => {
       "mcp/openclaw-tools-serve",
       "mcp/plugin-tools-serve",
       bundledEntry("active-memory"),
+      "extensions/browser/src/control-service",
       "bundled/boot-md/handler",
     ]) {
       expect(keys).toContain(entry);
@@ -219,6 +221,22 @@ describe("tsdown config", () => {
 
     expect(entrySources(distGraph)["provider-dispatcher.runtime"]).toBe(
       "src/auto-reply/reply/provider-dispatcher.runtime.ts",
+    );
+  });
+
+  it("keeps task maintenance behind one stable dist entry", () => {
+    const distGraph = requireUnifiedDistGraph();
+
+    expect(entrySources(distGraph)["tasks/task-registry.maintenance"]).toBe(
+      "src/tasks/task-registry.maintenance.ts",
+    );
+  });
+
+  it("keeps browser control service behind one stable dist entry", () => {
+    const distGraph = requireUnifiedDistGraph();
+
+    expect(entrySources(distGraph)["extensions/browser/src/control-service"]).toBe(
+      "extensions/browser/src/control-service.ts",
     );
   });
 

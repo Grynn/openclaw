@@ -3,7 +3,6 @@ import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
 import type { ChannelRouteRef } from "../../plugin-sdk/channel-route.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
-  isIncognitoOpenClawAgentSqlitePath,
   openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
   runOpenClawAgentWriteTransaction,
@@ -25,9 +24,9 @@ import type {
   SessionTranscriptWriteScope,
 } from "./session-accessor.sqlite-contract.js";
 import {
-  readSessionEntryCache,
-  type SessionEntryCacheSnapshot,
-} from "./session-accessor.sqlite-entry-cache.js";
+  listSqliteSessionEntriesFromDatabase,
+  readSessionEntrySnapshot,
+} from "./session-accessor.sqlite-entry-list.js";
 import {
   assertLifecycleTargetSnapshotUnchanged,
   assertSessionEntrySelectionUnchanged,
@@ -66,16 +65,11 @@ import {
 } from "./session-accessor.sqlite-scope.js";
 import { readSessionEntriesByStatus } from "./session-accessor.sqlite-status.js";
 import type { SessionEntryListScope } from "./session-accessor.types.js";
-import {
-  assertCanonicalSessionKeyWrite,
-  assertCanonicalSqliteSessionKeysCurrent,
-  canonicalSessionKeyMigrationRequiredError,
-} from "./session-canonical-key.js";
+import { assertCanonicalSessionKeyWrite } from "./session-canonical-key.js";
 import { preserveSqliteSameKeySessionRolloverLineage } from "./session-entry-lineage.js";
 import { buildSessionCreationStamp } from "./session-entry-provenance.js";
 import { kickSessionHistoryDiskBudgetMaintenance } from "./session-history-eviction.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
-import { resolveDeliveryProvenCanonicalSessionKey } from "./store-entry.js";
 import {
   SessionTranscriptWriterClaimReboundError,
   withOwnedSessionTranscriptWriterFence,
@@ -264,21 +258,7 @@ export function listSessionEntryRows(scope: SessionEntryListScope = {}): Session
   return listSqliteSessionEntriesFromDatabase(database, resolved, scope);
 }
 
-/**
- * Lists session entries without opening the agent database writable.
- * Transient lock errors propagate: only the caller knows whether "empty" is an
- * acceptable degradation (health snapshots) or hides real state (migration detection).
- */
-export function listSessionEntriesReadOnly(
-  scope: SessionEntryListScope = {},
-): SessionEntrySummary[] {
-  const resolved = resolveSqliteScope({ ...scope, sessionKey: "" });
-  const result = withOpenClawAgentDatabaseReadOnly(
-    (database) => listSqliteSessionEntriesFromDatabase(database, resolved, scope),
-    toDatabaseOptions(resolved),
-  );
-  return result.found ? result.value : [];
-}
+export { listSessionEntriesReadOnly } from "./session-accessor.sqlite-entry-list.js";
 
 /** Counts durable session rows without materializing entry JSON or warming the entry cache. */
 export function countSessionEntryRowsReadOnly(scope: SessionEntryListScope = {}): number {
@@ -323,52 +303,6 @@ export function hasSessionEntriesByStatusReadOnly(
     );
   }, toDatabaseOptions(resolved));
   return result.found ? result.value : result.reason !== "database-missing";
-}
-
-function listSqliteSessionEntriesFromDatabase(
-  database: Pick<OpenClawAgentDatabase, "agentId" | "db" | "path">,
-  resolved: ResolvedSqliteScope,
-  scope: SessionEntryListScope,
-): SessionEntrySummary[] {
-  assertCanonicalSqliteSessionKeysCurrent(database);
-  const snapshot = readSessionEntrySnapshot(database, resolved, scope.readConsistency);
-  const entries = scope.projection === "list" ? snapshot.listEntries : snapshot.entries;
-  return snapshot.keys.flatMap((sessionKey) => {
-    if (isInternalSessionEffectsKey(sessionKey)) {
-      return [];
-    }
-    const entry = entries.get(sessionKey);
-    if (!entry) {
-      return [];
-    }
-    const deliveryCanonicalKey = resolveDeliveryProvenCanonicalSessionKey(sessionKey, entry);
-    if (deliveryCanonicalKey !== sessionKey) {
-      throw canonicalSessionKeyMigrationRequiredError(
-        `non-canonical persisted row resolves to session key ${deliveryCanonicalKey}`,
-      );
-    }
-    return [
-      {
-        sessionKey,
-        entry: scope.clone === false ? entry : cloneSessionEntry(entry),
-      },
-    ];
-  });
-}
-
-function readSessionEntrySnapshot(
-  database: Pick<OpenClawAgentDatabase, "agentId" | "db" | "path">,
-  resolved: ResolvedSqliteScope,
-  readConsistency: SessionAccessScope["readConsistency"],
-): SessionEntryCacheSnapshot {
-  const cache = !isIncognitoOpenClawAgentSqlitePath(database.path, {
-    agentId: database.agentId,
-    env: resolved.env,
-  });
-  return readSessionEntryCache(database, {
-    cache,
-    latest: readConsistency === "latest",
-  });
 }
 
 /** Lists only entries whose normalized session row has one of the requested statuses. */

@@ -295,6 +295,8 @@ function buildCoreDistEntries(): Record<string, string> {
     "audit/audit-event-writer.worker": "src/audit/audit-event-writer.worker.ts",
     "config/sessions/session-accessor.sqlite-archive.worker":
       "src/config/sessions/session-accessor.sqlite-archive.worker.ts",
+    "config/sessions/session-accessor.read-list":
+      "src/config/sessions/session-accessor.read-list.ts",
     "config/sessions/session-transcript-reconcile.worker":
       "src/config/sessions/session-transcript-reconcile.worker.ts",
     "state/openclaw-database-verify.worker": "src/state/openclaw-database-verify.worker.ts",
@@ -312,6 +314,7 @@ function buildCoreDistEntries(): Record<string, string> {
     "plugins/synthetic-auth.runtime": "src/plugins/synthetic-auth.runtime.ts",
     "subagent-registry.runtime": "src/agents/subagents/registry/subagent-registry.runtime.ts",
     "task-registry-control.runtime": "src/tasks/task-registry-control.runtime.ts",
+    "tasks/task-registry.maintenance": "src/tasks/task-registry.maintenance.ts",
     "link-understanding/apply.runtime": "src/link-understanding/apply.runtime.ts",
     "media-understanding/apply.runtime": "src/media-understanding/apply.runtime.ts",
     "commands/doctor/shared/plugin-registry-migration":
@@ -527,6 +530,7 @@ function buildUnifiedDistEntries(): Record<string, string> {
     "memory-core-local-embedding-worker":
       "packages/memory-host-sdk/src/host/embeddings-worker-child.ts",
     ...listBundledPluginEntrySources(rootBundledPluginBuildEntries),
+    "extensions/browser/src/control-service": "extensions/browser/src/control-service.ts",
     "extensions/browser/native-host-entry": "extensions/browser/native-host-entry.ts",
     ...bundledHookEntries,
   };

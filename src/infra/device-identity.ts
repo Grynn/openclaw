@@ -8,7 +8,6 @@ import {
   generateStoredDeviceIdentity,
   insertStoredDeviceIdentityIfAbsent,
   PRIMARY_DEVICE_IDENTITY_KEY,
-  readStoredDeviceIdentity,
   readStoredDeviceIdentityReadOnly,
   resolveDeviceIdentityStore,
   type DeviceIdentity,
@@ -120,7 +119,9 @@ function loadOrCreateDeviceIdentityOwned(options: DeviceIdentityStoreOptions): D
   const { databasePath } = resolveDeviceIdentityStore(options);
   // A downgrade can recreate retired JSON after SQLite migration. Once this profile has
   // a canonical row, keep it authoritative and leave the retired source for Doctor.
-  const existing = pathMayExist(databasePath) ? readStoredDeviceIdentity(options) : null;
+  const existing = pathMayExist(databasePath)
+    ? readStoredDeviceIdentityReadOnly(options, { currentSchemaOnly: true })
+    : null;
   if (existing) {
     return toDeviceIdentity(existing);
   }
