@@ -1,6 +1,7 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { isBackgroundExecTask } from "./background-exec-task-contract.js";
+import { isContextEngineTurnMaintenanceTask } from "./context-engine-maintenance-task-contract.js";
 import { CRON_TASK_KIND } from "./cron-task-contract.js";
 import { SUBAGENT_KILL_TASK_ERROR } from "./detached-task-runtime-contract.js";
 import { isHarnessOwnedSubagentTask } from "./harness-owned-subagent-task.js";
@@ -40,10 +41,11 @@ export async function cancelTaskById(params: {
   reason?: string;
 }): Promise<{ found: boolean; cancelled: boolean; reason?: string; task?: TaskRecord }> {
   ensureTaskRegistryReady();
-  const task = tasks.get(params.taskId.trim());
-  if (!task) {
+  const initialTask = tasks.get(params.taskId.trim());
+  if (!initialTask) {
     return { found: false, cancelled: false, reason: "Task not found." };
   }
+  let task: TaskRecord = initialTask;
   const requestedReason = params.reason?.trim();
   const cancellationError =
     requestedReason && requestedReason !== SUBAGENT_KILL_TASK_ERROR
@@ -84,6 +86,48 @@ export async function cancelTaskById(params: {
           task: cloneTaskRecord(task),
         };
       }
+    } else if (isContextEngineTurnMaintenanceTask(task)) {
+      const { isContextEngineTurnMaintenanceRunActive } = await loadTaskRegistryControlRuntime();
+      if (!isContextEngineTurnMaintenanceRunActive) {
+        return {
+          found: true,
+          cancelled: false,
+          reason: "Context-engine maintenance liveness is unavailable.",
+          task: cloneTaskRecord(task),
+        };
+      }
+      if (
+        isContextEngineTurnMaintenanceRunActive({
+          runId: task.runId,
+          sessionKey: task.ownerKey,
+        })
+      ) {
+        return {
+          found: true,
+          cancelled: false,
+          reason: "Context-engine maintenance is still active and cannot be cancelled safely.",
+          task: cloneTaskRecord(task),
+        };
+      }
+      // The worker unregisters only after settlement. Re-read after the async
+      // runtime probe so a completion that won that race cannot be overwritten
+      // by the run-scoped cancellation update below. No await follows this
+      // check before the mutation, making the decision atomic on this process.
+      const current = tasks.get(task.taskId);
+      if (!current) {
+        return { found: false, cancelled: false, reason: "Task not found." };
+      }
+      if (isTerminalTaskStatus(current.status)) {
+        return {
+          found: true,
+          cancelled: false,
+          reason: "Task became terminal while cancellation was in progress.",
+          task: cloneTaskRecord(current),
+        };
+      }
+      task = current;
+      // No process-local owner means this durable row survived its worker.
+      // Finalization below also reconciles its task-mirrored parent flow.
     } else if (task.runtime !== "cli") {
       if (task.runtime === "cron") {
         const { cancelActiveCronTaskRun } = await loadTaskRegistryControlRuntime();

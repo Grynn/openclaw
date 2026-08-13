@@ -107,6 +107,7 @@ function createTaskRegistryMaintenanceHarness(params: {
     isCronJobActive: (jobId: string) => activeCronJobIds.has(jobId),
     getAgentRunContext: (runId: string) =>
       activeRunIds.has(runId) ? { sessionKey: "main" } : undefined,
+    isContextEngineTurnMaintenanceRunActive: () => false,
     hasActiveAcpTurn: (sessionKey: string) => activeAcpSessionKeys.has(sessionKey),
     parseAgentSessionKey: (sessionKey: string | null | undefined): ParsedAgentSessionKey | null => {
       if (!sessionKey) {

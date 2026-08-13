@@ -10,6 +10,7 @@ export {
   waitForActiveEmbeddedRuns,
 } from "../../agents/embedded-agent-runner/runs.js";
 export { markRestartAbortedMainSessions } from "../../agents/main-session-recovery/main-session-restart-recovery-marking.js";
+export { abortDeferredTurnMaintenanceForLifecycleRestart } from "../../agents/embedded-agent-runner/context-engine-maintenance-control.js";
 export { getRuntimeConfig } from "../../config/config.js";
 export {
   respawnGatewayProcessForUpdate,

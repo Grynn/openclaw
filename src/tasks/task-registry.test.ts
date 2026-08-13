@@ -23,9 +23,11 @@ import {
 import type { ParsedAgentSessionKey } from "../routing/session-key.js";
 import { withTestDir } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import { CONTEXT_ENGINE_TURN_MAINTENANCE_TASK_KIND } from "./context-engine-maintenance-task-contract.js";
 import { CRON_TASK_KIND } from "./cron-task-contract.js";
 import { SUBAGENT_KILL_TASK_ERROR } from "./detached-task-runtime-contract.js";
 import { ensureTaskRuntimeStateReady } from "./runtime-internal.js";
+import { createRunningTaskRunCore } from "./task-executor.js";
 import {
   createTaskFlowForTask as createTaskFlowForTaskOrNull,
   createManagedTaskFlow as createManagedTaskFlowOrNull,
@@ -120,12 +122,14 @@ const hoisted = vi.hoisted(() => {
   const cancelSessionMock = vi.fn();
   const cancelBackgroundExecSessionMock = vi.fn();
   const cancelActiveCronTaskRunMock = vi.fn();
+  const isContextEngineTurnMaintenanceRunActiveMock = vi.fn();
   const killSubagentRunAdminMock = vi.fn();
   return {
     sendMessageMock,
     cancelSessionMock,
     cancelBackgroundExecSessionMock,
     cancelActiveCronTaskRunMock,
+    isContextEngineTurnMaintenanceRunActiveMock,
     killSubagentRunAdminMock,
   };
 });
@@ -169,6 +173,11 @@ function configureTaskRegistryMaintenanceRuntimeForTest(params: {
   listAcpSessionEntries?: () => Promise<AcpSessionStoreEntry[]>;
   hasActiveAcpTurn?: (sessionKey: string) => boolean;
   isBackgroundExecSessionActive?: (sessionId: string) => boolean;
+  isContextEngineTurnMaintenanceRunActive?: (params: {
+    runId: string | undefined;
+    sessionKey: string | undefined;
+  }) => boolean;
+  runtimeAuthoritative?: boolean;
   sessionBindings?: SessionBindingRecord[];
   closeAcpSession?: (params: {
     cfg: AcpSessionStoreEntry["cfg"];
@@ -201,6 +210,8 @@ function configureTaskRegistryMaintenanceRuntimeForTest(params: {
     isCronJobActive: () => false,
     getAgentRunContext: () => undefined,
     isBackgroundExecSessionActive: params.isBackgroundExecSessionActive,
+    isContextEngineTurnMaintenanceRunActive:
+      params.isContextEngineTurnMaintenanceRunActive ?? (() => false),
     hasActiveAcpTurn: params.hasActiveAcpTurn ?? (() => false),
     hasActiveTaskForChildSessionKey: ({ sessionKey, excludeTaskId }) => {
       const normalized = sessionKey.trim().toLowerCase();
@@ -252,7 +263,7 @@ function configureTaskRegistryMaintenanceRuntimeForTest(params: {
       params.currentTasks.set(patch.taskId, next);
       return next;
     },
-    isRuntimeAuthoritative: () => true,
+    isRuntimeAuthoritative: () => params.runtimeAuthoritative ?? true,
     listTaskRegistryRecordsByRuntimeSourceIdFromSqlite: () => [],
   });
 }
@@ -527,6 +538,8 @@ describe("task-registry", () => {
       cancelBackgroundExecSession: (sessionId) =>
         hoisted.cancelBackgroundExecSessionMock(sessionId),
       cancelActiveCronTaskRun: (params) => hoisted.cancelActiveCronTaskRunMock(params),
+      isContextEngineTurnMaintenanceRunActive: (params) =>
+        hoisted.isContextEngineTurnMaintenanceRunActiveMock(params),
       getAcpSessionManager: () => ({
         cancelSession: hoisted.cancelSessionMock,
       }),
@@ -552,6 +565,7 @@ describe("task-registry", () => {
     hoisted.cancelSessionMock.mockReset();
     hoisted.cancelBackgroundExecSessionMock.mockReset();
     hoisted.cancelActiveCronTaskRunMock.mockReset();
+    hoisted.isContextEngineTurnMaintenanceRunActiveMock.mockReset();
     hoisted.killSubagentRunAdminMock.mockReset();
   });
 
@@ -3028,6 +3042,88 @@ describe("task-registry", () => {
 
   it.each([
     {
+      name: "retains a live context-maintenance owner in the authoritative runtime",
+      runtimeAuthoritative: true,
+      active: true,
+    },
+    {
+      name: "stays conservative for context maintenance outside the authoritative runtime",
+      runtimeAuthoritative: false,
+      active: false,
+    },
+  ])("$name", async ({ runtimeAuthoritative, active }) => {
+    await withTaskRegistryTempDir(async () => {
+      resetTaskRegistryMemoryForTest();
+      const task = createTaskFixture("acp", {
+        taskKind: CONTEXT_ENGINE_TURN_MAINTENANCE_TASK_KIND,
+        sourceId: CONTEXT_ENGINE_TURN_MAINTENANCE_TASK_KIND,
+        runId: "turn-maint:test-live",
+        task: "Deferred context-engine maintenance after turn.",
+        lastEventAt: Date.now() - 10 * 60_000,
+      });
+      const currentTasks = new Map([[task.taskId, task]]);
+      const isActive = vi.fn(
+        ({ runId, sessionKey }: { runId: string | undefined; sessionKey: string | undefined }) =>
+          active && runId === task.runId && sessionKey === task.ownerKey,
+      );
+      configureTaskRegistryMaintenanceRuntimeForTest({
+        currentTasks,
+        snapshotTasks: [task],
+        runtimeAuthoritative,
+        isContextEngineTurnMaintenanceRunActive: isActive,
+      });
+
+      expect(await runTaskRegistryMaintenance()).toMatchObject({ reconciled: 0 });
+      expect(currentTasks.get(task.taskId)?.status).toBe("running");
+      if (runtimeAuthoritative) {
+        expect(isActive).toHaveBeenCalledWith({
+          runId: task.runId,
+          sessionKey: task.ownerKey,
+        });
+      } else {
+        expect(isActive).not.toHaveBeenCalled();
+      }
+    });
+  });
+
+  it("marks a restored context-maintenance orphan lost and reconciles its mirrored flow", async () => {
+    await withTaskRegistryTempDir(async () => {
+      resetTaskRegistryMemoryForTest();
+      resetTaskFlowRegistryForTests({ persist: false });
+      configureTaskRegistryMaintenance({ runtimeAuthoritative: true });
+      const lastEventAt = Date.now() - 10 * 60_000;
+      const task = createRunningTaskRunCore({
+        runtime: "acp",
+        taskKind: CONTEXT_ENGINE_TURN_MAINTENANCE_TASK_KIND,
+        sourceId: CONTEXT_ENGINE_TURN_MAINTENANCE_TASK_KIND,
+        requesterSessionKey: "agent:main:maintenance",
+        ownerKey: "agent:main:maintenance",
+        scopeKind: "session",
+        runId: "turn-maint:restored-orphan",
+        label: "Context engine turn maintenance",
+        task: "Deferred context-engine maintenance after turn.",
+        notifyPolicy: "silent",
+        deliveryStatus: "pending",
+        lastEventAt,
+      });
+      if (!task?.parentFlowId) {
+        throw new Error("expected context maintenance task with mirrored flow");
+      }
+
+      expect(await runTaskRegistryMaintenance()).toMatchObject({ reconciled: 1 });
+      expectRecordFields(requireTaskById(task.taskId), {
+        status: "lost",
+        error: "context-engine maintenance owner missing",
+      });
+      expectRecordFields(getTaskFlowById(task.parentFlowId), {
+        status: "lost",
+        endedAt: expect.any(Number),
+      });
+    });
+  });
+
+  it.each([
+    {
       name: "keeps fresh harness-owned subagent tasks live",
       taskKind: "external-harness",
       sourceId: "harness:child",
@@ -3512,6 +3608,7 @@ describe("task-registry", () => {
         parseAgentSessionKey: () => null,
         isCronJobActive: () => false,
         getAgentRunContext: () => undefined,
+        isContextEngineTurnMaintenanceRunActive: () => false,
         hasActiveAcpTurn: () => false,
         hasActiveTaskForChildSessionKey: () => false,
         deleteTaskRecordById: () => false,
@@ -4249,6 +4346,108 @@ describe("task-registry", () => {
           content: "Background task cancelled: ACP background task (run run-canc).",
         }),
       );
+    });
+  });
+
+  it("cancels orphaned context maintenance and reconciles its mirrored flow", async () => {
+    await withTaskRegistryTempDir(async () => {
+      hoisted.isContextEngineTurnMaintenanceRunActiveMock.mockReturnValue(false);
+      const task = createRunningTaskRunCore({
+        runtime: "acp",
+        taskKind: CONTEXT_ENGINE_TURN_MAINTENANCE_TASK_KIND,
+        sourceId: CONTEXT_ENGINE_TURN_MAINTENANCE_TASK_KIND,
+        requesterSessionKey: "agent:main:maintenance-cancel",
+        ownerKey: "agent:main:maintenance-cancel",
+        scopeKind: "session",
+        runId: "turn-maint:orphan-cancel",
+        label: "Context engine turn maintenance",
+        task: "Deferred context-engine maintenance after turn.",
+        deliveryStatus: "pending",
+      });
+      if (!task?.parentFlowId) {
+        throw new Error("expected context maintenance task with mirrored flow");
+      }
+
+      const result = await cancelTask(task.taskId);
+
+      expectRecordFields(result, { found: true, cancelled: true });
+      expect(result.task?.status).toBe("cancelled");
+      expect(getTaskFlowById(task.parentFlowId)?.status).toBe("cancelled");
+      expect(hoisted.isContextEngineTurnMaintenanceRunActiveMock).toHaveBeenCalledWith({
+        runId: task.runId,
+        sessionKey: task.ownerKey,
+      });
+      expect(hoisted.cancelSessionMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it("does not overwrite context maintenance that completes during the cancellation probe", async () => {
+    await withTaskRegistryTempDir(async () => {
+      hoisted.isContextEngineTurnMaintenanceRunActiveMock.mockReturnValue(false);
+      const task = createRunningTaskRunCore({
+        runtime: "acp",
+        taskKind: CONTEXT_ENGINE_TURN_MAINTENANCE_TASK_KIND,
+        sourceId: CONTEXT_ENGINE_TURN_MAINTENANCE_TASK_KIND,
+        requesterSessionKey: "agent:main:maintenance-race",
+        ownerKey: "agent:main:maintenance-race",
+        scopeKind: "session",
+        runId: "turn-maint:orphan-cancel-race",
+        label: "Context engine turn maintenance",
+        task: "Deferred context-engine maintenance after turn.",
+        deliveryStatus: "pending",
+      });
+      if (!task?.parentFlowId || !task.runId) {
+        throw new Error("expected context maintenance task with mirrored flow and run id");
+      }
+
+      const cancellation = cancelTask(task.taskId);
+      const endedAt = Date.now();
+      finalizeTaskRecordByRunId({
+        runId: task.runId,
+        runtime: "acp",
+        sessionKey: task.ownerKey,
+        status: "succeeded",
+        endedAt,
+        terminalSummary: "Maintenance completed.",
+      });
+
+      const result = await cancellation;
+
+      expect(result).toMatchObject({
+        found: true,
+        cancelled: false,
+        reason: "Task became terminal while cancellation was in progress.",
+      });
+      expect(getTaskById(task.taskId)?.status).toBe("succeeded");
+      expect(getTaskFlowById(task.parentFlowId)?.status).toBe("succeeded");
+      expect(hoisted.cancelSessionMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it("refuses to terminalize live context maintenance without an abort contract", async () => {
+    await withTaskRegistryTempDir(async () => {
+      hoisted.isContextEngineTurnMaintenanceRunActiveMock.mockReturnValue(true);
+      const task = createTaskFixture("acp", {
+        taskKind: CONTEXT_ENGINE_TURN_MAINTENANCE_TASK_KIND,
+        sourceId: CONTEXT_ENGINE_TURN_MAINTENANCE_TASK_KIND,
+        runId: "turn-maint:live-cancel",
+        task: "Deferred context-engine maintenance after turn.",
+        deliveryStatus: "pending",
+      });
+
+      const result = await cancelTask(task.taskId);
+
+      expect(result).toMatchObject({
+        found: true,
+        cancelled: false,
+        reason: "Context-engine maintenance is still active and cannot be cancelled safely.",
+      });
+      expect(getTaskById(task.taskId)?.status).toBe("running");
+      expect(hoisted.isContextEngineTurnMaintenanceRunActiveMock).toHaveBeenCalledWith({
+        runId: task.runId,
+        sessionKey: task.ownerKey,
+      });
+      expect(hoisted.cancelSessionMock).not.toHaveBeenCalled();
     });
   });
 
