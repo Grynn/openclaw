@@ -116,6 +116,11 @@ for an efficient source-server update: it restores tracked build outputs that
 `main` (or rebases a local server branch onto `origin/main`), installs
 dependencies, builds clean, and restarts the gateway.
 
+The script stops the gateway immediately before replacing hashed `dist`
+chunks. It retains the previous build until the clean build succeeds and
+restores/restarts that build if compilation fails. This prevents a live process
+from dynamically importing chunks that a concurrent clean build has deleted.
+
 Generated output roots such as `dist`, `dist-runtime`, and package-local
 `dist` directories must be real directories. Builds refuse symbolic-link roots
 before reading or mutating their contents so cleanup cannot affect the link
@@ -126,12 +131,17 @@ building a source checkout.
 ssh you@server 'cd /path/to/openclaw && scripts/update-gateway.sh'
 ```
 
-Override the restart for custom service units, or skip it entirely:
+Override the stop/restart commands for custom service units:
 
 ```bash
-OPENCLAW_UPDATE_RESTART_CMD='systemctl --user restart openclaw-gateway.service' scripts/update-gateway.sh
-OPENCLAW_UPDATE_RESTART_CMD='' scripts/update-gateway.sh
+OPENCLAW_UPDATE_STOP_CMD='systemctl --user stop openclaw-gateway.service' \
+OPENCLAW_UPDATE_RESTART_CMD='systemctl --user restart openclaw-gateway.service' \
+  scripts/update-gateway.sh
 ```
+
+The source-server updater refuses an empty restart command because replacing a
+live checkout without a restart recreates the stale hashed-chunk failure it is
+designed to prevent.
 
 For a plain single-user source install, prefer `openclaw update --channel dev`
 instead — it manages the checkout, build, and gateway restart for you.
