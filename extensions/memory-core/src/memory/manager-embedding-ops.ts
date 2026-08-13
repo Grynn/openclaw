@@ -79,6 +79,7 @@ const EMBEDDING_INDEX_CONCURRENCY = 4;
 const EMBEDDING_RETRY_MAX_ATTEMPTS = 3;
 const EMBEDDING_RETRY_BASE_DELAY_MS = 500;
 const EMBEDDING_RETRY_MAX_DELAY_MS = 8000;
+const EMBEDDING_QUERY_CACHE_MAX_ENTRIES = 256;
 const EMBEDDING_QUERY_TIMEOUT_REMOTE_MS = 60_000;
 const EMBEDDING_QUERY_TIMEOUT_LOCAL_MS = 5 * 60_000;
 const EMBEDDING_BATCH_TIMEOUT_REMOTE_MS = 2 * 60_000;
@@ -312,6 +313,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
   protected abstract markLocalEmbeddingProviderDegraded(err: unknown): void;
   private activeProviderUses = new Map<EmbeddingProvider, number>();
   private providerIdleWaiters = new Map<EmbeddingProvider, Set<() => void>>();
+  private queryEmbeddingCache?: WeakMap<EmbeddingProvider, Map<string, number[]>>;
   private syncProviderGenerationRelease: (() => void) | null = null;
   private syncProviderGenerationOwners = 0;
 
@@ -747,7 +749,18 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
       throw new Error("Cannot embed query in FTS-only mode (no embedding provider)");
     }
     try {
-      return await this.withProviderUse(
+      signal?.throwIfAborted();
+      this.queryEmbeddingCache ??= new WeakMap();
+      const providerCache = this.queryEmbeddingCache.get(provider) ?? new Map<string, number[]>();
+      this.queryEmbeddingCache.set(provider, providerCache);
+      const cached = providerCache.get(text);
+      if (cached) {
+        // Refresh insertion order so frequently repeated recalls stay resident.
+        providerCache.delete(text);
+        providerCache.set(text, cached);
+        return cached.slice();
+      }
+      const embedding = await this.withProviderUse(
         provider,
         async () =>
           await runMemoryEmbeddingRetryLoop({
@@ -771,6 +784,16 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
             baseDelayMs: EMBEDDING_RETRY_BASE_DELAY_MS,
           }),
       );
+      signal?.throwIfAborted();
+      providerCache.set(text, embedding.slice());
+      while (providerCache.size > EMBEDDING_QUERY_CACHE_MAX_ENTRIES) {
+        const oldest = providerCache.keys().next().value;
+        if (oldest === undefined) {
+          break;
+        }
+        providerCache.delete(oldest);
+      }
+      return embedding;
     } catch (err) {
       if (markDegraded) {
         this.markLocalEmbeddingProviderDegraded(err);

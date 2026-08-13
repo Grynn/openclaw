@@ -8,7 +8,10 @@ import type {
   MemorySearchResult,
 } from "../../memory-host-sdk/host/types.js";
 import { resolveMemorySearchStaleness } from "../../memory-host-sdk/host/types.js";
-import { getActiveMemorySearchManagerCore } from "../../plugins/memory-runtime.js";
+import {
+  getActiveMemorySearchManagerCore,
+  recordActiveMemorySearchRecalls,
+} from "../../plugins/memory-runtime.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import type { GatewayRequestHandlers } from "./types.js";
 
@@ -91,6 +94,14 @@ export const memorySearchHandlers: GatewayRequestHandlers = {
       );
       return;
     }
+    if (record.recordRecall !== undefined && typeof record.recordRecall !== "boolean") {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "recordRecall must be a boolean when provided"),
+      );
+      return;
+    }
 
     const cfg = context.getRuntimeConfig();
     const hasAgentId = Object.hasOwn(record, "agentId");
@@ -125,12 +136,12 @@ export const memorySearchHandlers: GatewayRequestHandlers = {
     }
     let acquired: Awaited<ReturnType<typeof getActiveMemorySearchManagerCore>>;
     try {
-      // Use the transient CLI lifecycle so request cleanup cannot close a shared manager.
-      // manager.search owns the same lazy/on-search sync behavior as the existing CLI path.
+      // Reuse the gateway-owned manager. Its watcher keeps the index current, while a
+      // transient CLI manager must rescan and hash the full corpus on every request.
+      // Gateway shutdown/config reload owns cleanup for this shared lifecycle.
       acquired = await getActiveMemorySearchManagerCore({
         cfg,
         agentId,
-        purpose: "cli",
       });
     } catch (error) {
       respond(
@@ -155,6 +166,11 @@ export const memorySearchHandlers: GatewayRequestHandlers = {
 
     try {
       const results = await manager.search(query, searchOptions);
+      if (record.recordRecall === true) {
+        await recordActiveMemorySearchRecalls({ cfg, agentId, query, results }).catch(() => {
+          // Recall tracking is best-effort and must not fail an otherwise valid search.
+        });
+      }
       const status = manager.status();
       const payload: MemorySearchResponse = {
         agentId,
@@ -170,8 +186,6 @@ export const memorySearchHandlers: GatewayRequestHandlers = {
         undefined,
         errorShape(ErrorCodes.UNAVAILABLE, `memory search failed: ${formatErrorMessage(error)}`),
       );
-    } finally {
-      await manager.close?.().catch(() => {});
     }
   },
 };

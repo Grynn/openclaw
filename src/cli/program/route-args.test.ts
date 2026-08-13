@@ -9,6 +9,7 @@ import {
   parseGatewayHealthRouteArgs,
   parseGatewayStatusRouteArgs,
   parseHealthRouteArgs,
+  parseMemorySearchRouteArgs,
   parseModelsListRouteArgs,
   parseModelsStatusRouteArgs,
   parseSessionsRouteArgs,
@@ -455,6 +456,53 @@ describe("route-args", () => {
     });
     expect(
       parseModelsStatusRouteArgs(["node", "openclaw", "models", "status", "--probe-profile"]),
+    ).toBeNull();
+  });
+
+  it("parses Gateway-backed memory searches and defers local or invalid shapes", () => {
+    expect(
+      parseMemorySearchRouteArgs([
+        "node",
+        "openclaw",
+        "memory",
+        "search",
+        "queue policy",
+        "--agent",
+        "main",
+        "--max-results=4",
+        "--min-score",
+        "0.25",
+        "--json",
+      ]),
+    ).toEqual({
+      query: "queue policy",
+      agent: "main",
+      maxResults: 4,
+      minScore: 0.25,
+      json: true,
+    });
+    expect(
+      parseMemorySearchRouteArgs(["node", "openclaw", "memory", "search", "--query", "flag query"]),
+    ).toEqual({
+      query: "flag query",
+      agent: undefined,
+      maxResults: undefined,
+      minScore: undefined,
+      json: false,
+    });
+    expect(
+      parseMemorySearchRouteArgs(["node", "openclaw", "memory", "search", "--local", "query"]),
+    ).toBeNull();
+    expect(
+      parseMemorySearchRouteArgs([
+        "node",
+        "openclaw",
+        "memory",
+        "search",
+        "query",
+        "--max-results",
+        "2.5",
+      ]),
     ).toBeNull();
   });
 

@@ -330,4 +330,90 @@ describe("embedding cache seed responsiveness", () => {
       targetDb.close();
     }
   });
+
+  it("seeds a newly enabled cache from canonical chunk embeddings", async () => {
+    const sourceDb = createCacheDb();
+    const targetDb = createCacheDb();
+    try {
+      sourceDb.prepare("INSERT INTO memory_index_meta (key, value) VALUES (?, ?)").run(
+        "memory_index_meta_v1",
+        JSON.stringify({
+          provider: "openai",
+          model: "text-embedding-3-small",
+          providerKey: "provider-key",
+          chunkTokens: 400,
+          chunkOverlap: 80,
+          vectorDims: 2,
+        }),
+      );
+      sourceDb
+        .prepare(
+          `INSERT INTO memory_index_chunks
+             (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
+           VALUES (?, ?, 'memory', 1, 1, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "chunk-1",
+          "memory/example.md",
+          "hash-1",
+          "text-embedding-3-small",
+          "example",
+          "[0.25,0.75]",
+          123,
+        );
+
+      await new EmbeddingCacheSeedHarness(targetDb).seedCache(sourceDb);
+
+      expect(
+        targetDb
+          .prepare(
+            `SELECT provider, model, provider_key, hash, embedding, dims, updated_at
+             FROM memory_embedding_cache`,
+          )
+          .get(),
+      ).toEqual({
+        provider: "openai",
+        model: "text-embedding-3-small",
+        provider_key: "provider-key",
+        hash: "hash-1",
+        embedding: "[0.25,0.75]",
+        dims: 2,
+        updated_at: 123,
+      });
+    } finally {
+      sourceDb.close();
+      targetDb.close();
+    }
+  });
+
+  it("backfills the live database when caching is enabled later", async () => {
+    const db = createCacheDb();
+    try {
+      db.prepare("INSERT INTO memory_index_meta (key, value) VALUES (?, ?)").run(
+        "memory_index_meta_v1",
+        JSON.stringify({
+          provider: "openai",
+          model: "text-embedding-3-small",
+          providerKey: "provider-key",
+          chunkTokens: 400,
+          chunkOverlap: 80,
+          vectorDims: 2,
+        }),
+      );
+      db.prepare(
+        `INSERT INTO memory_index_chunks
+           (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
+         VALUES ('chunk-1', 'memory/example.md', 'memory', 1, 1, 'hash-1',
+                 'text-embedding-3-small', 'example', '[0.25,0.75]', 123)`,
+      ).run();
+      const harness = new EmbeddingCacheSeedHarness(db);
+
+      await harness.seedCache(db);
+      await harness.seedCache(db);
+
+      expect(countCacheRows(db)).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
 });

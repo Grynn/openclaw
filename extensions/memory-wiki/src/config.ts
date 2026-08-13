@@ -43,6 +43,8 @@ export type MemoryWikiPluginConfig = {
     indexDailyNotes?: boolean;
     indexMemoryRoot?: boolean;
     followMemoryEvents?: boolean;
+    excludePathPrefixes?: string[];
+    excludePathPatterns?: string[];
   };
   unsafeLocal?: {
     allowPrivateMemoryCoreAccess?: boolean;
@@ -88,6 +90,8 @@ export type ResolvedMemoryWikiConfig = {
     indexDailyNotes: boolean;
     indexMemoryRoot: boolean;
     followMemoryEvents: boolean;
+    excludePathPrefixes: string[];
+    excludePathPatterns: string[];
   };
   unsafeLocal: {
     allowPrivateMemoryCoreAccess: boolean;
@@ -149,6 +153,8 @@ const MemoryWikiConfigSource = z
         indexDailyNotes: z.boolean().optional(),
         indexMemoryRoot: z.boolean().optional(),
         followMemoryEvents: z.boolean().optional(),
+        excludePathPrefixes: z.array(z.string().min(1)).max(64).optional(),
+        excludePathPatterns: z.array(z.string().min(1)).max(64).optional(),
       })
       .optional(),
     unsafeLocal: z
@@ -273,6 +279,20 @@ export function resolveMemoryWikiConfig(
       indexDailyNotes: safeConfig.bridge?.indexDailyNotes ?? true,
       indexMemoryRoot: safeConfig.bridge?.indexMemoryRoot ?? true,
       followMemoryEvents: safeConfig.bridge?.followMemoryEvents ?? true,
+      excludePathPrefixes: [
+        ...new Set(
+          (safeConfig.bridge?.excludePathPrefixes ?? [])
+            .map((prefix) => prefix.trim())
+            .filter(Boolean),
+        ),
+      ],
+      excludePathPatterns: [
+        ...new Set(
+          (safeConfig.bridge?.excludePathPatterns ?? [])
+            .map((pattern) => pattern.trim())
+            .filter(Boolean),
+        ),
+      ],
     },
     unsafeLocal: {
       allowPrivateMemoryCoreAccess: safeConfig.unsafeLocal?.allowPrivateMemoryCoreAccess ?? false,

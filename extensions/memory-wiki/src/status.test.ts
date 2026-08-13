@@ -419,6 +419,8 @@ describe("renderMemoryWikiStatus", () => {
         indexDailyNotes: true,
         indexMemoryRoot: true,
         followMemoryEvents: true,
+        excludePathPrefixes: [],
+        excludePathPatterns: [],
       },
       bridgePublicArtifactCount: null,
       obsidianCli: {

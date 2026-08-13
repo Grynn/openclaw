@@ -1,5 +1,6 @@
 // Stable public surface for short-term promotion behavior.
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
+import { isPromotionOriginBlocked } from "./dreaming-consolidation-candidates.js";
 import { readPhaseSignalStore, readStore } from "./short-term-promotion-store.js";
 import {
   DEFAULT_PROMOTION_MIN_RECALL_COUNT,
@@ -124,6 +125,12 @@ export async function rankShortTermPromotionCandidates(
 
   for (const entry of Object.values(store.entries)) {
     if (!entry || entry.source !== "memory" || !isShortTermMemoryPath(entry.path)) {
+      continue;
+    }
+    // The durable write boundary rejects these origins unconditionally. Filter
+    // them before scoring so previews and dreaming runs do not rank, narrate,
+    // or consolidate candidates that can never be promoted.
+    if (isPromotionOriginBlocked(entry)) {
       continue;
     }
     if (

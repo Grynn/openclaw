@@ -38,6 +38,7 @@ import {
   resolveConfiguredScopeHash,
   resolveConfiguredSourcesForMeta,
   resolveMemoryIndexIdentityState,
+  upgradeMarkdownOnlyMemoryChunkingMeta,
   type MemoryIndexMeta,
   type MemoryIndexProviderIdentity,
 } from "./manager-reindex-state.js";
@@ -173,7 +174,17 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
     // Keyword-only generations never write vectors, so they must not wait for
     // the vector extension before text and FTS indexing can proceed.
     const vectorReady = syncProvider ? await this.ensureVectorReady() : false;
-    const meta = this.readMeta();
+    let meta = this.readMeta();
+    const compatibleMeta = upgradeMarkdownOnlyMemoryChunkingMeta({
+      meta,
+      hasNonMarkdownSources:
+        meta?.chunkingVersion === 2 ? this.hasNonMarkdownIndexedSources() : false,
+    });
+    if (compatibleMeta && compatibleMeta !== meta) {
+      this.writeMeta(compatibleMeta);
+      meta = compatibleMeta;
+    }
+    await this.seedEmbeddingCacheFromChunks(this.db, meta);
     // Resolve and index a targeted session against one corpus snapshot. A reset
     // between separate enumerations could otherwise replace the chosen identity.
     const targetSessionSync = this.hasRequestedTargetSessionSync(params)

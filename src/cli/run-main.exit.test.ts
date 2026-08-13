@@ -670,6 +670,23 @@ describe("runCli exit behavior", () => {
     exitSpy.mockRestore();
   });
 
+  it("does not scan plugin CLI ownership before a parseable plugin-root route", async () => {
+    tryRouteCliMock.mockResolvedValueOnce(true);
+
+    await runCli(["node", "openclaw", "memory", "search", "repeated terms", "--json"]);
+
+    expect(tryRouteCliMock).toHaveBeenCalledWith([
+      "node",
+      "openclaw",
+      "memory",
+      "search",
+      "repeated terms",
+      "--json",
+    ]);
+    expect(loadPluginCliDescriptorsMock).not.toHaveBeenCalled();
+    expect(resolvePluginCliRootOwnerIdsMock).not.toHaveBeenCalled();
+  });
+
   it("passes config get machine ownership into route-first startup", async () => {
     tryRouteCliMock.mockResolvedValueOnce(true);
 

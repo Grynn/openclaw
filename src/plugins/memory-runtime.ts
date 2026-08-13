@@ -156,6 +156,22 @@ export async function authorizeActiveMemorySearchHits(
   });
 }
 
+/** Persist plugin-owned recall signals for an operator memory search. */
+export async function recordActiveMemorySearchRecalls(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  query: string;
+  results: MemorySearchAuthorization["hits"];
+}): Promise<void> {
+  const owner = ensureMemoryRuntime(params);
+  if (!owner?.runtime.recordSearchRecalls) {
+    return;
+  }
+  await withMemoryRuntimeOwner(owner, async (runtime) => {
+    await runtime.recordSearchRecalls?.(params);
+  });
+}
+
 /** Resolves current memory backend config without constructing a manager. */
 export function resolveActiveMemoryBackendConfig(params: { cfg: OpenClawConfig; agentId: string }) {
   const owner = ensureMemoryRuntime(params);

@@ -66,6 +66,35 @@ describe("resolveMemoryWikiConfig", () => {
     expect(canonical.bridge.readMemoryArtifacts).toBe(false);
   });
 
+  it("normalizes bridge artifact exclusion prefixes", () => {
+    const config = resolveMemoryWikiConfig({
+      bridge: {
+        excludePathPrefixes: [" memory/archive/ ", "memory/events", "memory/archive/"],
+      },
+    });
+
+    expect(config.bridge.excludePathPrefixes).toEqual(["memory/archive/", "memory/events"]);
+    expect(resolveMemoryWikiConfig(undefined).bridge.excludePathPrefixes).toEqual([]);
+  });
+
+  it("normalizes bridge artifact exclusion patterns", () => {
+    const config = resolveMemoryWikiConfig({
+      bridge: {
+        excludePathPatterns: [
+          " memory/????-??-??-????.md ",
+          "memory/sessions/**",
+          "memory/????-??-??-????.md",
+        ],
+      },
+    });
+
+    expect(config.bridge.excludePathPatterns).toEqual([
+      "memory/????-??-??-????.md",
+      "memory/sessions/**",
+    ]);
+    expect(resolveMemoryWikiConfig(undefined).bridge.excludePathPatterns).toEqual([]);
+  });
+
   it("resolves normalized agent ids to distinct vault roots", () => {
     const base = resolveMemoryWikiConfig(
       {
@@ -195,6 +224,7 @@ describe("memory-wiki manifest config schema", () => {
         enabled: true,
         readMemoryArtifacts: true,
         followMemoryEvents: true,
+        excludePathPrefixes: ["memory/archive/", "memory/events/"],
       },
       unsafeLocal: {
         allowPrivateMemoryCoreAccess: true,

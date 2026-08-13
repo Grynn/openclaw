@@ -905,6 +905,54 @@ describe("short-term promotion", () => {
     });
   });
 
+  it("omits untrusted candidates before ranking and dreaming work", async () => {
+    await withTempWorkspace(async (workspaceDir) => {
+      await recordShortTermRecalls({
+        workspaceDir,
+        query: "promotion trust boundary",
+        results: [
+          {
+            path: "memory/2026-04-01.md",
+            startLine: 1,
+            endLine: 1,
+            score: 0.99,
+            snippet: "Assistant: I'll start by reading the job script.",
+            source: "memory",
+            provenance: {
+              originClass: "untrusted",
+              sessionKind: "interactive",
+              observedAt: Date.parse("2026-04-01T12:00:00.000Z"),
+            },
+          },
+          {
+            path: "memory/2026-04-02.md",
+            startLine: 1,
+            endLine: 1,
+            score: 0.8,
+            snippet: "Gateway maintenance requires an authorized restart.",
+            source: "memory",
+            provenance: {
+              originClass: "agent",
+              sessionKind: "interactive",
+              observedAt: Date.parse("2026-04-02T12:00:00.000Z"),
+            },
+          },
+        ],
+      });
+
+      const ranked = await rankShortTermPromotionCandidates({
+        workspaceDir,
+        minScore: 0,
+        minRecallCount: 0,
+        minUniqueQueries: 0,
+      });
+
+      expect(ranked).toHaveLength(1);
+      expect(ranked[0]?.path).toBe("memory/2026-04-02.md");
+      expect(ranked[0] && isPromotionOriginBlocked(ranked[0])).toBe(false);
+    });
+  });
+
   it("reads only light-staged keys that have not already gone through REM", async () => {
     await withTempWorkspace(async (workspaceDir) => {
       const nowMs = Date.parse("2026-04-05T10:00:00.000Z");

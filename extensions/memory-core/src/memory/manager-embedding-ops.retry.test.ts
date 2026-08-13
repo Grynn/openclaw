@@ -75,4 +75,20 @@ describe("memory embedding query retry cancellation", () => {
     });
     expect(embedQuery).not.toHaveBeenCalled();
   });
+
+  it("reuses successful query embeddings for the same live provider", async () => {
+    const embedQuery = vi.fn<EmbeddingProvider["embedQuery"]>().mockResolvedValue([0.25, 0.75]);
+    const manager = createEmbeddingQueryRetryHarness(embedQuery);
+
+    await expect(manager.embedQueryWithRetry("repeated search terms")).resolves.toEqual([
+      0.25, 0.75,
+    ]);
+    const cached = await manager.embedQueryWithRetry("repeated search terms");
+    cached[0] = 1;
+    await expect(manager.embedQueryWithRetry("repeated search terms")).resolves.toEqual([
+      0.25, 0.75,
+    ]);
+
+    expect(embedQuery).toHaveBeenCalledOnce();
+  });
 });

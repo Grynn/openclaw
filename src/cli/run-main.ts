@@ -95,6 +95,7 @@ const loadRootHelpLiveConfigModule = async () => await import("./root-help-live-
 const loadRootHelpMetadataModule = async () => await import("./root-help-metadata.js");
 const loadLoggingModule = async () => await import("../logging.js");
 const loadCliRegistryLoaderModule = async () => await import("../plugins/cli-registry-loader.js");
+const loadProgramRoutesModule = async () => await import("./program/routes.js");
 const loadManifestCommandAliasesRuntimeModule = async () =>
   await import("../plugins/manifest-command-aliases.runtime.js");
 const loadProxyLifecycleModule = async () => await import("../infra/net/proxy/proxy-lifecycle.js");
@@ -1150,6 +1151,14 @@ async function runCliWithPreparedOutputMode(
   const loadGlobalEnv = !isGatewayRunInvocation;
   startupTrace.mark("argv");
 
+  let routeFirstOwnershipPromise: Promise<boolean> | null = null;
+  const isRouteFirstOwnedInvocation = (): Promise<boolean> => {
+    routeFirstOwnershipPromise ??= loadProgramRoutesModule().then(({ findRoutedCommand }) =>
+      Boolean(findRoutedCommand(normalizedInvocation.commandPath, normalizedArgv)),
+    );
+    return routeFirstOwnershipPromise;
+  };
+
   // Enforce the minimum supported runtime before gateway selection can read or recover config.
   assertSupportedRuntime();
 
@@ -1237,7 +1246,8 @@ async function runCliWithPreparedOutputMode(
     !isHelpOrVersionInvocation &&
     !bareSessionInvocation &&
     normalizedInvocation.primary &&
-    !isKnownBuiltInCommandRoot(normalizedInvocation.primary)
+    !isKnownBuiltInCommandRoot(normalizedInvocation.primary) &&
+    !(await isRouteFirstOwnedInvocation())
   ) {
     const config = await withConsoleLogsRoutedToStderr(readBestEffortCliConfig);
     if (
@@ -1376,7 +1386,7 @@ async function runCliWithPreparedOutputMode(
     // still dispatch normally. See #81077.
     {
       const unownedPrimaryCandidate = resolveUnownedCliPrimaryCandidate(normalizedArgv);
-      if (unownedPrimaryCandidate) {
+      if (unownedPrimaryCandidate && !(await isRouteFirstOwnedInvocation())) {
         const config = await readBestEffortCliConfig();
         const unownedPrimary = await resolveUnownedCliPrimary({ argv: normalizedArgv, config });
         if (unownedPrimary) {

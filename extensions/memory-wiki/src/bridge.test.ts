@@ -476,6 +476,138 @@ describe("syncMemoryWikiBridgeSources", () => {
     expect(page).toContain('"type":"memory.recall.recorded"');
   });
 
+  it("excludes configured artifact path prefixes without matching sibling names", async () => {
+    const workspaceDir = await createBridgeWorkspace("excluded-prefix-workspace");
+    const { config } = await createVault({
+      rootDir: nextCaseRoot("excluded-prefix-vault"),
+      config: {
+        vaultMode: "bridge",
+        bridge: {
+          enabled: true,
+          indexDailyNotes: true,
+          followMemoryEvents: true,
+          excludePathPrefixes: ["memory/archive/", "memory/events/"],
+        },
+      },
+    });
+
+    const relativePaths = [
+      "memory/2026-08-12.md",
+      "memory/archive/old.md",
+      "memory/archive-old/current.md",
+      "memory/events/memory-host-events.jsonl",
+    ];
+    for (const relativePath of relativePaths) {
+      const absolutePath = path.join(workspaceDir, relativePath);
+      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+      await fs.writeFile(absolutePath, `# ${relativePath}\n`, "utf8");
+    }
+    registerBridgeArtifacts(
+      relativePaths.map((relativePath) => ({
+        kind: relativePath.startsWith("memory/events/") ? "event-log" : "daily-note",
+        workspaceDir,
+        relativePath,
+        absolutePath: path.join(workspaceDir, relativePath),
+        agentIds: ["main"],
+        contentType: relativePath.endsWith(".jsonl") ? "json" : "markdown",
+      })),
+    );
+
+    const appConfig: OpenClawConfig = {
+      agents: { list: [{ id: "main", default: true, workspace: workspaceDir }] },
+    };
+    const result = await syncMemoryWikiBridgeSources({ config, appConfig });
+
+    expect(result.artifactCount).toBe(2);
+    expect(result.importedCount).toBe(2);
+    expect(result.pagePaths).toHaveLength(2);
+  });
+
+  it("excludes configured artifact path patterns without matching canonical daily notes", async () => {
+    const workspaceDir = await createBridgeWorkspace("excluded-pattern-workspace");
+    const { config } = await createVault({
+      rootDir: nextCaseRoot("excluded-pattern-vault"),
+      config: {
+        vaultMode: "bridge",
+        bridge: {
+          enabled: true,
+          indexDailyNotes: true,
+          excludePathPatterns: ["memory/????-??-??-????.md"],
+        },
+      },
+    });
+
+    const relativePaths = [
+      "memory/2026-08-12.md",
+      "memory/2026-08-12-0955.md",
+      "memory/2026-08-12-955.md",
+    ];
+    for (const relativePath of relativePaths) {
+      const absolutePath = path.join(workspaceDir, relativePath);
+      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+      await fs.writeFile(absolutePath, `# ${relativePath}\n`, "utf8");
+    }
+    registerBridgeArtifacts(
+      relativePaths.map((relativePath) => ({
+        kind: "daily-note",
+        workspaceDir,
+        relativePath,
+        absolutePath: path.join(workspaceDir, relativePath),
+        agentIds: ["main"],
+        contentType: "markdown",
+      })),
+    );
+
+    const appConfig: OpenClawConfig = {
+      agents: { list: [{ id: "main", default: true, workspace: workspaceDir }] },
+    };
+    const result = await syncMemoryWikiBridgeSources({ config, appConfig });
+
+    expect(result.artifactCount).toBe(2);
+    expect(result.importedCount).toBe(2);
+    expect(result.pagePaths).toHaveLength(2);
+  });
+
+  it("prunes a managed bridge page after its path prefix becomes excluded", async () => {
+    const workspaceDir = await createBridgeWorkspace("exclude-prune-workspace");
+    const { rootDir: vaultDir, config } = await createVault({
+      rootDir: nextCaseRoot("exclude-prune-vault"),
+      config: {
+        vaultMode: "bridge",
+        bridge: { enabled: true, indexDailyNotes: true },
+      },
+    });
+    const relativePath = "memory/archive/old.md";
+    const absolutePath = path.join(workspaceDir, relativePath);
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.writeFile(absolutePath, "# Archived memory\n", "utf8");
+    registerBridgeArtifacts([
+      {
+        kind: "daily-note",
+        workspaceDir,
+        relativePath,
+        absolutePath,
+        agentIds: ["main"],
+        contentType: "markdown",
+      },
+    ]);
+    const appConfig: OpenClawConfig = {
+      agents: { list: [{ id: "main", default: true, workspace: workspaceDir }] },
+    };
+
+    const first = await syncMemoryWikiBridgeSources({ config, appConfig });
+    expect(first.importedCount).toBe(1);
+    expect(first.removedCount).toBe(0);
+    const pagePath = first.pagePaths[0] ?? "";
+    await expect(fs.stat(path.join(vaultDir, pagePath))).resolves.toBeDefined();
+
+    config.bridge.excludePathPrefixes = ["memory/archive/"];
+    const second = await syncMemoryWikiBridgeSources({ config, appConfig });
+    expect(second.artifactCount).toBe(0);
+    expect(second.removedCount).toBe(1);
+    await expect(fs.stat(path.join(vaultDir, pagePath))).rejects.toThrow();
+  });
+
   it.each([
     {
       name: "prunes stale bridge pages when the source artifact disappears",

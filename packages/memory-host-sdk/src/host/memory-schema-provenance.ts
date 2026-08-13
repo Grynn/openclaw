@@ -15,7 +15,40 @@ export const MEMORY_INDEX_CHUNK_PROVENANCE_SCHEMA_SQL = `
   ) STRICT;
 `;
 
+function hasCurrentMemoryChunkProvenance(db: DatabaseSync): boolean {
+  const tableExists = db
+    .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ? LIMIT 1")
+    .get(MEMORY_INDEX_CHUNK_PROVENANCE_TABLE);
+  if (!tableExists) {
+    return false;
+  }
+  const legacyTriggerExists = db
+    .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'trigger' AND name = ? LIMIT 1")
+    .get("memory_index_chunk_provenance_after_insert");
+  if (legacyTriggerExists) {
+    return false;
+  }
+  const missingProvenance = db
+    .prepare(
+      `SELECT 1
+       FROM memory_index_chunks AS chunk
+       LEFT JOIN ${MEMORY_INDEX_CHUNK_PROVENANCE_TABLE} AS provenance
+         ON provenance.chunk_id = chunk.id
+       WHERE provenance.chunk_id IS NULL
+       LIMIT 1`,
+    )
+    .get();
+  return !missingProvenance;
+}
+
 export function ensureMemoryChunkProvenance(db: DatabaseSync): void {
+  // Schema checks happen on every memory-manager open. Avoid acquiring the
+  // immediate write lock and replaying the full backfill once provenance is
+  // already complete; the indexed join remains cheap and keeps this safe when
+  // an older writer inserts a chunk without provenance.
+  if (hasCurrentMemoryChunkProvenance(db)) {
+    return;
+  }
   const ensure = () => {
     // The former chunk trigger made the additive table visible to older schema
     // validators. Writers upsert provenance explicitly; this backfill covers

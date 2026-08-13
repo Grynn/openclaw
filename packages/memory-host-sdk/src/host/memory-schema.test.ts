@@ -5,10 +5,38 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { readMemoryRecallMetadata } from "./memory-recall-metadata.js";
+import { ensureMemoryChunkProvenance } from "./memory-schema-provenance.js";
 import { ensureMemoryRecallMetadataSchema } from "./memory-schema-recall.js";
 import { ensureMemoryIndexSchema } from "./memory-schema.js";
 
 describe("memory index schema", () => {
+  it("keeps provenance ensure read-only when every chunk is covered", () => {
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-memory-provenance-schema-"));
+    const databasePath = path.join(rootDir, "memory.sqlite");
+    const writable = new DatabaseSync(databasePath);
+    try {
+      ensureMemoryIndexSchema({ db: writable, cacheEnabled: false, ftsEnabled: false });
+      writable
+        .prepare(
+          `INSERT INTO memory_index_chunks
+            (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run("chunk-1", "MEMORY.md", "memory", 1, 1, "hash", "model", "body", "[]", 7);
+      ensureMemoryChunkProvenance(writable);
+    } finally {
+      writable.close();
+    }
+
+    const readOnly = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      expect(() => ensureMemoryChunkProvenance(readOnly)).not.toThrow();
+    } finally {
+      readOnly.close();
+      fs.rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("migrates unreleased inline recall metadata without changing chunk rows", () => {
     const db = new DatabaseSync(":memory:");
     try {
