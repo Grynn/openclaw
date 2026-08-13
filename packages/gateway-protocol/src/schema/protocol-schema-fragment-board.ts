@@ -24,6 +24,8 @@ export const BoardProtocolSchemas = {
   BoardWidgetPutContent: board.BoardWidgetPutContentSchema,
   BoardWidgetGeneratedIdentity: board.BoardWidgetGeneratedIdentitySchema,
   BoardGetParams: board.BoardGetParamsSchema,
+  BoardMetadataParams: board.BoardMetadataParamsSchema,
+  BoardMetadataResult: board.BoardMetadataResultSchema,
   BoardUpdateParams: board.BoardUpdateParamsSchema,
   BoardWidgetPutParams: board.BoardWidgetPutParamsSchema,
   BoardWidgetPutResult: board.BoardWidgetPutResultSchema,

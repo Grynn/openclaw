@@ -72,7 +72,7 @@ describe("listGatewayMethods", () => {
   });
 
   it("appends new methods after model probing without shifting older method indices", () => {
-    expect(listGatewayMethods().slice(-62)).toEqual([
+    expect(listGatewayMethods().slice(-63)).toEqual([
       "models.probe",
       "migrations.memory.plan",
       "migrations.memory.apply",
@@ -135,6 +135,7 @@ describe("listGatewayMethods", () => {
       "diagnostics.lanes",
       "users.setGitHubIdentity",
       "users.clearGitHubIdentity",
+      "board.metadata",
     ]);
     const methods = listGatewayMethods();
     expect(methods.indexOf("node.pluginSurface.refresh")).toBe(
@@ -240,7 +241,7 @@ describe("listGatewayMethods", () => {
       "exec.approval.get",
     ]);
     expect(methods).toContain("tts.speak");
-    expect(coreMethods.slice(-69)).toEqual([
+    expect(coreMethods.slice(-70)).toEqual([
       "sessions.catalog.continue",
       "sessions.catalog.archive",
       "approval.get",
@@ -310,6 +311,7 @@ describe("listGatewayMethods", () => {
       "diagnostics.lanes",
       "users.setGitHubIdentity",
       "users.clearGitHubIdentity",
+      "board.metadata",
     ]);
     expect(methods.indexOf("approval.get")).toBeGreaterThan(methods.indexOf("tts.speak"));
     expect(methods.indexOf("approval.resolve")).toBe(methods.indexOf("approval.get") + 1);
@@ -355,6 +357,9 @@ describe("listGatewayMethods", () => {
     );
     expect(methods.indexOf("users.clearGitHubIdentity")).toBe(
       methods.indexOf("users.setGitHubIdentity") + 1,
+    );
+    expect(methods.indexOf("board.metadata")).toBe(
+      methods.indexOf("users.clearGitHubIdentity") + 1,
     );
   });
 

@@ -811,6 +811,34 @@ public struct BoardGetParams: Codable, Sendable {
     }
 }
 
+public struct BoardMetadataParams: Codable, Sendable {
+    public let sessionkeys: [String]
+
+    public init(
+        sessionkeys: [String])
+    {
+        self.sessionkeys = sessionkeys
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionkeys = "sessionKeys"
+    }
+}
+
+public struct BoardMetadataResult: Codable, Sendable {
+    public let outcomes: [AnyCodable]
+
+    public init(
+        outcomes: [AnyCodable])
+    {
+        self.outcomes = outcomes
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case outcomes
+    }
+}
+
 public struct BoardUpdateParams: Codable, Sendable {
     public let sessionkey: String
     public let agentid: String?

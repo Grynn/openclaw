@@ -594,6 +594,7 @@ enum class GatewayMethod(
   DiagnosticsLanes("diagnostics.lanes"),
   UsersSetGitHubIdentity("users.setGitHubIdentity"),
   UsersClearGitHubIdentity("users.clearGitHubIdentity"),
+  BoardMetadata("board.metadata"),
 }
 
 enum class GatewayEvent(

@@ -193,6 +193,9 @@ class AppSidebar extends AppSidebarSessionNavigationElement implements SessionLi
           client: availabilityClient,
           connected: snapshot?.phase === "connected",
           available: snapshot ? isGatewayMethodAdvertised(snapshot, "board.get") !== false : false,
+          metadataAvailable: snapshot
+            ? isGatewayMethodAdvertised(snapshot, "board.metadata") === true
+            : false,
           key: `${this.context?.gateway.connection?.gatewayUrl ?? ""}\u0000${
             snapshot?.hello?.server?.version ?? ""
           }`,

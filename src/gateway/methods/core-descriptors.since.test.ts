@@ -118,6 +118,7 @@ const CURRENT_TRAIN_METHODS = [
   "tools.github.configure",
   "users.setGitHubIdentity",
   "users.clearGitHubIdentity",
+  "board.metadata",
 ] as const;
 
 describe("core gateway method release trains", () => {
