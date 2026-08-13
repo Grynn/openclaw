@@ -581,6 +581,7 @@ enum class GatewayMethod(
   PortalList("portal.list"),
   PortalOpen("portal.open"),
   PortalClose("portal.close"),
+  BoardMetadata("board.metadata"),
 }
 
 enum class GatewayEvent(

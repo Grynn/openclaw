@@ -36,6 +36,38 @@ const VISIBILITY_REFRESH_MIN_AGE_MS = 60_000;
 // Always-visible windows (the macOS app) never fire visibilitychange, so a
 // slow lifecycle-owned interval keeps the chips from going permanently stale.
 const IDLE_REFRESH_INTERVAL_MS = 10 * 60_000;
+// Legacy Gateways omit cron job snapshots. Collapse their lifecycle bursts
+// into one inventory recovery instead of recreating the per-event request storm.
+const CRON_EVENT_FALLBACK_DEBOUNCE_MS = 50;
+const CRON_SNAPSHOT_ACTION_PATTERN = /^(?:added|updated|removed|started|finished|scheduled)$/;
+
+type CronSnapshotEvent = { removed: boolean; job: CronJob };
+
+function readCronSnapshotEvent(payload: unknown): CronSnapshotEvent | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+  const event = payload as { action?: unknown; jobId?: unknown; job?: Partial<CronJob> };
+  const job = event.job;
+  return typeof event.action === "string" &&
+    CRON_SNAPSHOT_ACTION_PATTERN.test(event.action) &&
+    typeof job?.id === "string" &&
+    job.id.length > 0 &&
+    job.id === event.jobId &&
+    typeof job.name === "string" &&
+    typeof job.enabled === "boolean" &&
+    Boolean(job.state && typeof job.state === "object" && !Array.isArray(job.state))
+    ? { removed: event.action === "removed", job: job as CronJob }
+    : null;
+}
+
+function projectCronJobSnapshot(jobs: CronJob[], jobId: string, job: CronJob | null): CronJob[] {
+  const index = jobs.findIndex((candidate) => candidate.id === jobId);
+  if (!job) {
+    return index === -1 ? jobs : jobs.toSpliced(index, 1);
+  }
+  return index === -1 ? [...jobs, job] : jobs.with(index, job);
+}
 
 class SidebarAttention extends OpenClawLightDomContentsElement {
   @consume({ context: applicationContext, subscribe: true })
@@ -53,6 +85,8 @@ class SidebarAttention extends OpenClawLightDomContentsElement {
   private loadedAtMs = 0;
   private dismissedScope: string | null = null;
   private idleRefreshTimer: ReturnType<typeof globalThis.setInterval> | null = null;
+  private cronFallbackRefreshTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  private readonly cronEventOverlays = new Map<string, CronJob | null>();
 
   private readonly loadTask = new Task(this, {
     autoRun: false,
@@ -64,15 +98,22 @@ class SidebarAttention extends OpenClawLightDomContentsElement {
         true as boolean,
       ] as const,
     task: async ([gateway, client, refreshModelAuth], { signal }) => {
+      this.cronEventOverlays.clear();
       if (!gateway || !client) {
         return initialState;
       }
       const cron = createInitialCronState({ client, connected: true });
       const loads: Promise<unknown>[] = [
         loadCronJobsPage(cron).then(() => {
-          if (!signal.aborted) {
-            this.cronJobs = cron.cronJobs;
+          if (signal.aborted) {
+            return;
           }
+          let cronJobs = cron.cronJobs;
+          for (const [jobId, job] of this.cronEventOverlays) {
+            cronJobs = projectCronJobSnapshot(cronJobs, jobId, job);
+          }
+          this.cronJobs = cronJobs;
+          this.cronEventOverlays.clear();
         }),
       ];
       if (refreshModelAuth) {
@@ -95,6 +136,7 @@ class SidebarAttention extends OpenClawLightDomContentsElement {
       return true;
     },
     onComplete: () => {
+      this.cronEventOverlays.clear();
       this.loadedAtMs = Date.now();
       this.pruneAfterRefresh();
     },
@@ -115,10 +157,15 @@ class SidebarAttention extends OpenClawLightDomContentsElement {
           if (this.context?.gateway !== gateway || event.event !== "cron") {
             return;
           }
-          // The Automations page refreshes from the same event. Refresh this
-          // independent snapshot too so its ambient alert cannot contradict it.
-          this.loadedClient = null;
-          this.synchronize(gateway, { refreshModelAuth: false });
+          const cronEvent = readCronSnapshotEvent(event.payload);
+          if (cronEvent) {
+            const job = cronEvent.removed ? null : cronEvent.job;
+            this.cronEventOverlays.set(cronEvent.job.id, job);
+            this.cronJobs = projectCronJobSnapshot(this.cronJobs, cronEvent.job.id, job);
+            this.pruneAfterRefresh();
+          } else {
+            this.queueCronFallbackRefresh(gateway);
+          }
         }),
     )
     .watch(
@@ -162,6 +209,7 @@ class SidebarAttention extends OpenClawLightDomContentsElement {
       globalThis.clearInterval(this.idleRefreshTimer);
       this.idleRefreshTimer = null;
     }
+    this.clearCronFallbackRefresh();
     this.subscriptions.clear();
     void this.loadTask.run([null, null, false]);
     this.loadedClient = null;
@@ -180,6 +228,7 @@ class SidebarAttention extends OpenClawLightDomContentsElement {
       this.dismissed = loadDismissals(gatewayUrl);
     }
     if (snapshot.phase !== "connected" || !snapshot.client) {
+      this.clearCronFallbackRefresh();
       void this.loadTask.run([null, null, false]);
       this.loadedClient = null;
       this.loadedGateway = null;
@@ -192,14 +241,38 @@ class SidebarAttention extends OpenClawLightDomContentsElement {
     }
     this.loadedGateway = gateway;
     this.loadedClient = snapshot.client;
+    this.clearCronFallbackRefresh();
     void this.loadTask.run([gateway, snapshot.client, options.refreshModelAuth !== false]);
   }
 
-  // Re-arm stale snoozes only right after this tab's own data refresh: fresh
-  // data is the only safe basis for deciding a chip is gone. Pruning from
-  // render/update hooks would let a hidden tab with stale data clobber a
-  // dismissal another tab just wrote (its storage event triggers an update
-  // here). Against the persisted map, not the in-memory snapshot, for the
+  private queueCronFallbackRefresh(gateway: ApplicationContext["gateway"]) {
+    this.clearCronFallbackRefresh();
+    const timer = globalThis.setTimeout(() => {
+      void this.loadTask.taskComplete
+        .catch(() => undefined)
+        .then(() => {
+          if (this.cronFallbackRefreshTimer !== timer || this.context?.gateway !== gateway) {
+            return;
+          }
+          this.cronFallbackRefreshTimer = null;
+          this.loadedClient = null;
+          this.synchronize(gateway, { refreshModelAuth: false });
+        });
+    }, CRON_EVENT_FALLBACK_DEBOUNCE_MS);
+    this.cronFallbackRefreshTimer = timer;
+  }
+
+  private clearCronFallbackRefresh() {
+    if (this.cronFallbackRefreshTimer !== null) {
+      globalThis.clearTimeout(this.cronFallbackRefreshTimer);
+      this.cronFallbackRefreshTimer = null;
+    }
+  }
+
+  // Re-arm stale snoozes only from an authoritative refresh or lifecycle job
+  // snapshot. Render/update hooks would let a hidden tab with stale data
+  // clobber a dismissal another tab just wrote (its storage event triggers an
+  // update here). Against the persisted map, not the in-memory snapshot, for the
   // same lost-update reason as addDismissal. A failed fetch (empty cron list,
   // null auth status) prunes those kinds, which fails safe — re-nag, never
   // stay hidden.

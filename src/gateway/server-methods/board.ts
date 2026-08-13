@@ -6,16 +6,20 @@ import {
   type BoardDataReadParams,
   type BoardEventParams,
   type BoardGetParams,
+  type BoardMetadataParams,
+  type BoardMetadataResult,
   type BoardPromptAuthorizeParams,
   type BoardWidgetAppViewParams,
   type BoardUpdateParams,
   type BoardWidgetGrantParams,
   type BoardWidgetMaterializedPutParams,
   type BoardWidgetPutParams,
+  type ErrorShape,
   validateBoardActionParams,
   validateBoardDataReadParams,
   validateBoardEventParams,
   validateBoardGetParams,
+  validateBoardMetadataParams,
   validateBoardPromptAuthorizeParams,
   validateBoardUpdateParams,
   validateBoardWidgetContent,
@@ -97,11 +101,14 @@ function respondBoardError(
   error: unknown,
   respond: Parameters<GatewayRequestHandlers[string]>[0]["respond"],
 ): void {
+  respond(false, undefined, boardErrorShape(error));
+}
+
+function boardErrorShape(error: unknown): ErrorShape {
   if (error instanceof BoardValidationError || error instanceof BoardEventPayloadError) {
-    respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, error.message));
-    return;
+    return errorShape(ErrorCodes.INVALID_REQUEST, error.message);
   }
-  respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, String(error)));
+  return errorShape(ErrorCodes.UNAVAILABLE, String(error));
 }
 
 function resolveBoardSessionKey(
@@ -211,6 +218,29 @@ export function createBoardHandlers(
         }
       }
       respond(true, snapshot);
+    },
+    "board.metadata": ({ params, respond }) => {
+      if (!validateBoardMetadataParams(params)) {
+        invalidParams("board.metadata", validateBoardMetadataParams.errors, respond);
+        return;
+      }
+      const boardParams = params as BoardMetadataParams;
+      const outcomes: BoardMetadataResult["outcomes"] = boardParams.sessionKeys.map(
+        (sessionKey) => {
+          try {
+            const snapshot = store.getSnapshot(sessionKey);
+            return {
+              ok: true,
+              sessionKey,
+              revision: snapshot.revision,
+              hasBoard: snapshot.tabs.length > 0 || snapshot.widgets.length > 0,
+            };
+          } catch (error) {
+            return { ok: false, sessionKey, error: boardErrorShape(error) };
+          }
+        },
+      );
+      respond(true, { outcomes });
     },
     "board.update": ({ params, respond, context }) => {
       if (!validateBoardUpdateParams(params)) {

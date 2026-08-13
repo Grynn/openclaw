@@ -1,6 +1,6 @@
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { AgentsListResult } from "../../api/types.ts";
-import { fetchAssistantIdentity } from "../../app/assistant-identity.ts";
+import { applyLocalAssistantIdentity } from "../../app/assistant-identity.ts";
 import {
   dispatchCommandClientPresentation,
   type CommandClientPresentationAction,
@@ -75,6 +75,7 @@ export function invalidateImageLightbox(state: ChatPageHost) {
 
 async function loadPageAssistantIdentity(
   state: ChatPageHost,
+  context: ApplicationContext,
   opts?: { sessionKey?: string; expectedSessionKey?: string },
 ) {
   if (!state.client || !state.connected) {
@@ -94,7 +95,8 @@ async function loadPageAssistantIdentity(
   }
   const requestVersion = ++state.assistantIdentityRequestVersion;
   try {
-    const identity = await fetchAssistantIdentity(client, agentId);
+    await context.agentIdentity.ensure([agentId]);
+    const identity = applyLocalAssistantIdentity(context.agentIdentity.get(agentId));
     if (
       state.client !== client ||
       !state.connected ||
@@ -288,7 +290,7 @@ export function createPageState(
     renderLifecycle.invalidate();
   };
   attachChatRealtimeActions(state);
-  state.loadAssistantIdentity = () => loadPageAssistantIdentity(state);
+  state.loadAssistantIdentity = () => loadPageAssistantIdentity(state, context);
   state.handleSendChat = (messageOverride, options) => {
     const message = messageOverride ?? state.chatMessage;
     const isCommand =

@@ -105,6 +105,7 @@ const CURRENT_TRAIN_METHODS = [
   "portal.list",
   "portal.open",
   "portal.close",
+  "board.metadata",
 ] as const;
 
 describe("core gateway method release trains", () => {
