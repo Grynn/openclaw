@@ -26,6 +26,77 @@ const INTERNAL_COMPACT_COMMAND_TRACE_LINE_RE =
   /^(?:>\s*)?🛠️\s*(?:(?:(?:elevated|pty)\b\s*(?:·|,)\s*)+)?(?:`{1,2}\s*\S|(?:run|check|fetch|pull|push|view|show|list|switch|create|merge|rebase|stage|restore|reset|stash|search|find|print|copy|move|remove|install|start|cd|git|pnpm|npm|yarn|bun|node|python|python3|bash|sh)\b)/i;
 const INTERNAL_CHANNEL_TRACE_LINE_RE =
   /^(?:>\s*)?(?:tool[-_ ]?call|tool[-_ ]?result|function[-_ ]?call)\s*[:=]/i;
+const DEEPSEEK_DSML_TOOL_KINDS = [
+  "tool_use_error",
+  "tool_calls",
+  "tool_call",
+  "function_calls",
+] as const;
+// Recovery turns have emitted both one- and two-pipe DSML variants. Keep the
+// longest forms first so equal-index searches consume the complete marker.
+const DEEPSEEK_DSML_BARS = ["||", "｜｜", "|", "｜"] as const;
+const DEEPSEEK_DSML_TOOL_OPEN_TOKENS = DEEPSEEK_DSML_BARS.flatMap((bar) =>
+  DEEPSEEK_DSML_TOOL_KINDS.map((kind) => `<${bar}DSML${bar}${kind}>`),
+);
+const DEEPSEEK_DSML_TOOL_CLOSE_TOKENS = DEEPSEEK_DSML_BARS.flatMap((bar) =>
+  DEEPSEEK_DSML_TOOL_KINDS.map((kind) => `</${bar}DSML${bar}${kind}>`),
+);
+const DEEPSEEK_DSML_TOOL_QUICK_RE = /<(?:\|{1,2}|｜{1,2})DSML/i;
+
+function findEarliestDeepSeekDsmlToken(text: string, tokens: readonly string[], fromIndex: number) {
+  let best: { index: number; token: string } | null = null;
+  for (const token of tokens) {
+    const index = text.indexOf(token, fromIndex);
+    if (index !== -1 && (!best || index < best.index)) {
+      best = { index, token };
+    }
+  }
+  return best;
+}
+
+/**
+ * Final delivery-boundary safeguard for provider-emitted DeepSeek DSML tool
+ * blocks. Provider transports should recover/filter these earlier, but a
+ * downgraded recovery answer must never expose the tool payload to a chat.
+ */
+function stripDeepSeekDsmlToolCallBlocks(text: string): string {
+  if (!text || !DEEPSEEK_DSML_TOOL_QUICK_RE.test(text)) {
+    return text;
+  }
+
+  const codeRegions = findCodeRegions(text);
+  let output = "";
+  let cursor = 0;
+  let searchFrom = 0;
+
+  while (searchFrom < text.length) {
+    const open = findEarliestDeepSeekDsmlToken(text, DEEPSEEK_DSML_TOOL_OPEN_TOKENS, searchFrom);
+    if (!open) {
+      break;
+    }
+    if (isInsideCode(open.index, codeRegions)) {
+      searchFrom = open.index + open.token.length;
+      continue;
+    }
+
+    output += text.slice(cursor, open.index);
+    const close = findEarliestDeepSeekDsmlToken(
+      text,
+      DEEPSEEK_DSML_TOOL_CLOSE_TOKENS,
+      open.index + open.token.length,
+    );
+    if (!close) {
+      return output;
+    }
+    cursor = close.index + close.token.length;
+    searchFrom = cursor;
+  }
+
+  if (cursor === 0) {
+    return text;
+  }
+  return output + text.slice(cursor);
+}
 
 /**
  * Strip XML-style tool call tags that models sometimes emit as plain text.
@@ -1048,6 +1119,7 @@ function applyAssistantVisibleTextStagePipeline(
     if (!options.preserveMinimaxToolXml) {
       cleaned = stripMinimaxToolCallXml(cleaned);
     }
+    cleaned = stripDeepSeekDsmlToolCallBlocks(cleaned);
     cleaned = stripModelSpecialTokens(cleaned);
     cleaned = stripRelevantMemoriesTags(cleaned);
     cleaned = stripToolCallXmlTags(cleaned, {

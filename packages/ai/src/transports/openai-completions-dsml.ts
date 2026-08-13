@@ -10,7 +10,10 @@ export type RecoveredDeepSeekDsmlToolCall = {
 
 type DeepSeekDsmlRecoveredPart = { kind: "text"; text: string } | RecoveredDeepSeekDsmlToolCall;
 
-const DEEPSEEK_DSML_BARS = ["|", "｜"] as const;
+// DeepSeek normally uses one pipe around DSML, but recovery turns can emit a
+// doubled ASCII/full-width variant (for example `<｜｜DSML｜｜tool_calls>`).
+// Keep longest variants first so equal-index token searches select the full tag.
+const DEEPSEEK_DSML_BARS = ["||", "｜｜", "|", "｜"] as const;
 const DEEPSEEK_DSML_TOOL_KINDS = ["tool_calls", "tool_call", "function_calls"] as const;
 const DEEPSEEK_DSML_TOOL_OPEN_TOKENS = DEEPSEEK_DSML_BARS.flatMap((bar) =>
   DEEPSEEK_DSML_TOOL_KINDS.map((kind) => `<${bar}DSML${bar}${kind}>`),
@@ -175,14 +178,14 @@ export function createDsmlRecoverer() {
 
 function parseDeepSeekDsmlToolCallBlock(body: string): RecoveredDeepSeekDsmlToolCall[] {
   const toolCalls: RecoveredDeepSeekDsmlToolCall[] = [];
-  const invokeOpenRegex = /<[|｜]DSML[|｜]invoke\b([^<>]*)>/g;
+  const invokeOpenRegex = /<(?:\|{1,2}|｜{1,2})DSML(?:\|{1,2}|｜{1,2})invoke\b([^<>]*)>/g;
   let openMatch: RegExpExecArray | null;
   while ((openMatch = invokeOpenRegex.exec(body)) !== null) {
     const invokeBodyStart = openMatch.index + openMatch[0].length;
-    const invokeClose = findEarliestStringToken(body.slice(invokeBodyStart), [
-      "</|DSML|invoke>",
-      "</｜DSML｜invoke>",
-    ]);
+    const invokeClose = findEarliestStringToken(
+      body.slice(invokeBodyStart),
+      DEEPSEEK_DSML_INVOKE_CLOSE_TOKENS,
+    );
     if (!invokeClose) {
       break;
     }
@@ -208,7 +211,8 @@ function parseDeepSeekDsmlToolCallBlock(body: string): RecoveredDeepSeekDsmlTool
 
 function parseDeepSeekDsmlInvokeArguments(body: string): Record<string, unknown> | null {
   const args: Record<string, unknown> = {};
-  const parameterRegex = /<[|｜]DSML[|｜]parameter\b([^>]*)>([\s\S]*?)<\/[|｜]DSML[|｜]parameter>/g;
+  const parameterRegex =
+    /<(?:\|{1,2}|｜{1,2})DSML(?:\|{1,2}|｜{1,2})parameter\b([^>]*)>([\s\S]*?)<\/(?:\|{1,2}|｜{1,2})DSML(?:\|{1,2}|｜{1,2})parameter>/g;
   let parameterMatch: RegExpExecArray | null;
   while ((parameterMatch = parameterRegex.exec(body)) !== null) {
     const name = parseXmlAttribute(parameterMatch[1] ?? "", "name");
@@ -305,7 +309,7 @@ function scanDeepSeekDsmlToolBlock(
         continue;
       }
       const invokeOpenTag = text.slice(state.invokeOpenStart, nextClose + 1);
-      if (!/^<[|｜]DSML[|｜]invoke\b[^<>]*>$/.test(invokeOpenTag)) {
+      if (!/^<(?:\|{1,2}|｜{1,2})DSML(?:\|{1,2}|｜{1,2})invoke\b[^<>]*>$/.test(invokeOpenTag)) {
         state.mode = "outer";
         state.offset = state.invokeOpenStart + 1;
         state.invokeOpenStart = -1;
