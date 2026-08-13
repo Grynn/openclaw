@@ -435,6 +435,21 @@ describe("projectContextEngineAssemblyForCodex", () => {
     ).toBe(160_000);
   });
 
+  it("only narrows the token-derived projection cap", () => {
+    expect(
+      resolveCodexContextEngineProjectionMaxChars({
+        contextTokenBudget: 258_400,
+        contextProjectionMaxChars: 304_000,
+      }),
+    ).toBe(304_000);
+    expect(
+      resolveCodexContextEngineProjectionMaxChars({
+        contextTokenBudget: 80_000,
+        contextProjectionMaxChars: 500_000,
+      }),
+    ).toBe(240_000);
+  });
+
   it("caps very large runtime budgets to a bounded projection size", () => {
     expect(resolveCodexContextEngineProjectionMaxChars({ contextTokenBudget: 1_000_000 })).toBe(
       1_000_000,

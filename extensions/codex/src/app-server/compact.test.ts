@@ -12,7 +12,7 @@ import {
   ensureCodexAppServerClientRuntime,
   retainCodexAppServerLiveThread,
 } from "./client-runtime.js";
-import { CodexAppServerRpcError, type CodexAppServerClient } from "./client.js";
+import { CodexAppServerClient, CodexAppServerRpcError } from "./client.js";
 import { maybeCompactCodexAppServerSession as maybeCompactCodexAppServerSessionImpl } from "./compact.js";
 import { resolveCodexSupervisionAppServerRuntimeOptions } from "./config.js";
 import { buildCodexAppServerConnectionFingerprint } from "./plugin-app-cache-key.js";
@@ -28,7 +28,14 @@ import {
   testCodexAppServerBindingStore,
   writeCodexAppServerBinding,
 } from "./session-binding.test-helpers.js";
-import type { CodexAppServerClientFactory } from "./shared-client.js";
+import {
+  getLeasedSharedCodexAppServerClient,
+  releaseLeasedSharedCodexAppServerClient,
+  resetSharedCodexAppServerClientForTests,
+  retireSharedCodexAppServerClientIfCurrent,
+  type CodexAppServerClientFactory,
+} from "./shared-client.js";
+import { createClientHarness } from "./test-support.js";
 import { CODEX_APP_SERVER_VERSION } from "./version.js";
 
 let tempDir: string;
@@ -208,6 +215,8 @@ describe("maybeCompactCodexAppServerSession", () => {
 
   afterEach(async () => {
     resetCodexAppServerClientFactoryForTest();
+    resetSharedCodexAppServerClientForTests();
+    vi.restoreAllMocks();
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
@@ -268,6 +277,184 @@ describe("maybeCompactCodexAppServerSession", () => {
       result: { details: { reason: "native_tool_policy_restricted" } },
     });
     expect(fake.request).not.toHaveBeenCalled();
+  });
+
+  it("selects the exact bound owner across two shared keys and balances its lease", async () => {
+    const boundHarness = createClientHarness();
+    const currentHarness = createClientHarness();
+    vi.spyOn(CodexAppServerClient, "start")
+      .mockReturnValueOnce(boundHarness.client)
+      .mockReturnValueOnce(currentHarness.client);
+    const boundClient = await acquireSharedHarnessClient(boundHarness, "codex-bound");
+    const currentClient = await acquireSharedHarnessClient(currentHarness, "codex-current");
+    await retainCodexAppServerLiveThread(boundClient, "thread-1", undefined, "config-thread-1");
+    const boundRequest = vi.spyOn(boundClient, "request").mockImplementation(async (method) => {
+      if (method === "thread/compact/start") {
+        setImmediate(() => emitHarnessCompactionCompletion(boundHarness, "thread-1"));
+      }
+      return {};
+    });
+    const currentRequest = vi.spyOn(currentClient, "request");
+    const sessionFile = await writeTestBinding({ clientId: boundClient.getInstanceId() });
+
+    await expect(
+      maybeCompactCodexAppServerSession({
+        sessionId: "session-1",
+        sessionKey: "agent:main:session-1",
+        sessionFile,
+        workspaceDir: tempDir,
+        trigger: "manual",
+        provider: "openai",
+        model: "gpt-5.5",
+        runtimeAuthPlan: {
+          providerForAuth: "openai",
+          authProfileProviderForAuth: "openai",
+          harnessAuthProvider: "openai",
+          selectedAuthMode: "api-key",
+          modelRoute: {
+            provider: "openai",
+            modelId: "gpt-5.5",
+            api: "openai-responses",
+            baseUrl: "https://api.openai.com/v1",
+            authRequirement: "api-key",
+            requestTransportOverrides: "none",
+          },
+        },
+      }),
+    ).resolves.toMatchObject({ ok: true, compacted: true });
+
+    expect(boundRequest).toHaveBeenCalledWith("thread/compact/start", { threadId: "thread-1" });
+    expect(currentRequest).not.toHaveBeenCalled();
+    expect(retireSharedCodexAppServerClientIfCurrent(boundClient)).toEqual({
+      activeLeases: 1,
+      closed: false,
+    });
+    expect(releaseLeasedSharedCodexAppServerClient(boundClient)).toBe(true);
+    await vi.waitFor(() => expect(boundHarness.stdinDestroyed).toBe(true));
+    expect(releaseLeasedSharedCodexAppServerClient(currentClient)).toBe(true);
+  });
+
+  it("does not select a same-key successor while the exact bound owner is live-retired", async () => {
+    const boundHarness = createClientHarness();
+    const successorHarness = createClientHarness();
+    const startSpy = vi.spyOn(CodexAppServerClient, "start");
+    startSpy.mockReturnValueOnce(boundHarness.client).mockReturnValueOnce(successorHarness.client);
+    const boundClient = await acquireSharedHarnessClient(boundHarness, "codex-bound");
+    const sessionFile = await writeTestBinding({ clientId: boundClient.getInstanceId() });
+    expect(retireSharedCodexAppServerClientIfCurrent(boundClient)).toEqual({
+      activeLeases: 1,
+      closed: false,
+    });
+    const successorClient = await acquireSharedHarnessClient(successorHarness, "codex-bound");
+    const successorRequest = vi.spyOn(successorClient, "request");
+
+    await expect(startCompaction(sessionFile)).resolves.toMatchObject({
+      ok: false,
+      compacted: false,
+      reason: expect.stringContaining("still live while retiring"),
+    });
+
+    expect(startSpy).toHaveBeenCalledTimes(2);
+    expect(successorRequest).not.toHaveBeenCalled();
+    expect(releaseLeasedSharedCodexAppServerClient(boundClient)).toBe(true);
+    await vi.waitFor(() => expect(boundHarness.stdinDestroyed).toBe(true));
+    expect(releaseLeasedSharedCodexAppServerClient(successorClient)).toBe(true);
+  });
+
+  it("does not fall back when a matching live owner lacks lifecycle metadata", async () => {
+    const boundHarness = createClientHarness();
+    const startSpy = vi
+      .spyOn(CodexAppServerClient, "start")
+      .mockReturnValueOnce(boundHarness.client);
+    const boundClient = await acquireSharedHarnessClient(boundHarness, "codex-bound");
+    const sessionFile = await writeTestBinding({ clientId: boundClient.getInstanceId() });
+    eraseSharedClientLifecycleMetadataForTest(boundClient);
+
+    await expect(startCompaction(sessionFile)).resolves.toMatchObject({
+      ok: false,
+      compacted: false,
+      reason: expect.stringContaining("lifecycle metadata is unavailable"),
+    });
+
+    expect(startSpy).toHaveBeenCalledOnce();
+    expect(releaseLeasedSharedCodexAppServerClient(boundClient)).toBe(true);
+  });
+
+  it("uses the selected owner's transport facts and preserves a same-thread successor", async () => {
+    const remoteHarness = createClientHarness();
+    vi.spyOn(CodexAppServerClient, "start").mockReturnValueOnce(remoteHarness.client);
+    const remoteClient = await acquireSharedHarnessClient(
+      remoteHarness,
+      "codex-remote",
+      "websocket",
+    );
+    await retainCodexAppServerLiveThread(remoteClient, "thread-1", undefined, "config-thread-1");
+    const sessionFile = await writeTestBinding({
+      clientId: remoteClient.getInstanceId(),
+      networkProxyConfigFingerprint: "proxy-before",
+    });
+    vi.spyOn(remoteClient, "request").mockRejectedValueOnce(
+      new Error("thread/compact/start timed out"),
+    );
+    vi.spyOn(remoteClient, "closeAndWait").mockImplementationOnce(async () => {
+      seedCodexTestBinding(sessionFile, {
+        threadId: "thread-1",
+        clientId: remoteClient.getInstanceId(),
+        cwd: tempDir,
+        networkProxyConfigFingerprint: "proxy-successor",
+      });
+      return false;
+    });
+
+    await expect(startCompaction(sessionFile)).resolves.toMatchObject({
+      ok: false,
+      compacted: false,
+      reason: "thread/compact/start timed out",
+    });
+    await expect(readCodexAppServerBinding(sessionFile)).resolves.toMatchObject({
+      threadId: "thread-1",
+      clientId: remoteClient.getInstanceId(),
+      networkProxyConfigFingerprint: "proxy-successor",
+    });
+    expect(retireSharedCodexAppServerClientIfCurrent(remoteClient)).toEqual({
+      activeLeases: 1,
+      closed: false,
+    });
+    expect(releaseLeasedSharedCodexAppServerClient(remoteClient)).toBe(true);
+  });
+
+  it("preserves an explicit client factory instead of selecting the bound shared owner", async () => {
+    const boundHarness = createClientHarness();
+    vi.spyOn(CodexAppServerClient, "start").mockReturnValueOnce(boundHarness.client);
+    const boundClient = await acquireSharedHarnessClient(boundHarness, "codex-bound");
+    const boundRequest = vi.spyOn(boundClient, "request");
+    const custom = createFakeCodexClient();
+    const customFactory = vi.fn<CodexAppServerClientFactory>(async () => custom.client);
+    const sessionFile = await writeTestBinding({ clientId: boundClient.getInstanceId() });
+
+    await expect(
+      maybeCompactCodexAppServerSession(
+        {
+          sessionId: "session-1",
+          sessionKey: "agent:main:session-1",
+          sessionFile,
+          workspaceDir: tempDir,
+          trigger: "manual",
+        },
+        { clientFactory: customFactory },
+      ),
+    ).resolves.toMatchObject({ ok: true, compacted: true });
+
+    expect(customFactory).toHaveBeenCalledOnce();
+    expect(custom.request).toHaveBeenCalledWith("thread/compact/start", {
+      threadId: "thread-1",
+    });
+    expect(boundRequest).not.toHaveBeenCalled();
+    expect(retireSharedCodexAppServerClientIfCurrent(boundClient)).toEqual({
+      activeLeases: 1,
+      closed: false,
+    });
+    expect(releaseLeasedSharedCodexAppServerClient(boundClient)).toBe(true);
   });
 
   it("compacts a warm session without displacing its independently retained sibling", async () => {
@@ -2242,6 +2429,79 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(compact).not.toHaveBeenCalled();
   });
 });
+
+function eraseSharedClientLifecycleMetadataForTest(client: CodexAppServerClient): void {
+  const symbols = globalThis as typeof globalThis & Record<symbol, unknown>;
+  const state = symbols[Symbol.for("openclaw.codexAppServerClientState")] as
+    | {
+        entriesByClient: WeakMap<CodexAppServerClient, { lifecycle?: unknown }>;
+      }
+    | undefined;
+  const entry = state?.entriesByClient.get(client);
+  if (!entry) {
+    throw new Error("expected shared-client registry entry");
+  }
+  delete entry.lifecycle;
+  const metadata = symbols[Symbol.for("openclaw.codexAppServerClientStartMetadata")] as
+    | WeakMap<CodexAppServerClient, unknown>
+    | undefined;
+  metadata?.delete(client);
+}
+
+async function acquireSharedHarnessClient(
+  harness: ReturnType<typeof createClientHarness>,
+  command: string,
+  transport: "stdio" | "websocket" = "stdio",
+): Promise<CodexAppServerClient> {
+  const acquire = getLeasedSharedCodexAppServerClient({
+    timeoutMs: 1_000,
+    authProfileId: null,
+    startOptions: {
+      transport,
+      command,
+      args: ["app-server"],
+      headers: {},
+      ...(transport === "websocket" ? { url: "ws://127.0.0.1:45001" } : {}),
+    },
+  });
+  await vi.waitFor(() => expect(harness.writes.length).toBeGreaterThanOrEqual(1));
+  const initialize = JSON.parse(harness.writes[0] ?? "{}") as { id?: number };
+  harness.send({
+    id: initialize.id,
+    result: { userAgent: "openclaw/0.147.0 (Linux; compact-test)" },
+  });
+  return await acquire;
+}
+
+function emitHarnessCompactionCompletion(
+  harness: ReturnType<typeof createClientHarness>,
+  threadId: string,
+): void {
+  harness.send({
+    method: "turn/started",
+    params: {
+      threadId,
+      turn: { id: "compact-turn-1", threadId, status: "inProgress" },
+    },
+  });
+  for (const method of ["item/started", "item/completed"] as const) {
+    harness.send({
+      method,
+      params: {
+        threadId,
+        turnId: "compact-turn-1",
+        item: { id: "compact-item-1", type: "contextCompaction" },
+      },
+    });
+  }
+  harness.send({
+    method: "turn/completed",
+    params: {
+      threadId,
+      turn: { id: "compact-turn-1", threadId, status: "completed" },
+    },
+  });
+}
 
 function createFakeCodexClient(
   options: {

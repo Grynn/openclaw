@@ -131,6 +131,7 @@ let getLeasedSharedCodexAppServerClient: typeof import("./shared-client.js").get
 let isCodexAppServerStartSelectionChangedError: typeof import("./shared-client.js").isCodexAppServerStartSelectionChangedError;
 let retainSharedCodexAppServerClientIfCurrent: typeof import("./shared-client.js").retainSharedCodexAppServerClientIfCurrent;
 let retainSharedCodexAppServerClientByInstanceId: typeof import("./shared-client.js").retainSharedCodexAppServerClientByInstanceId;
+let retainSharedCodexAppServerClientOwnerByInstanceId: typeof import("./shared-client.js").retainSharedCodexAppServerClientOwnerByInstanceId;
 let releaseLeasedSharedCodexAppServerClient: typeof import("./shared-client.js").releaseLeasedSharedCodexAppServerClient;
 let releaseCodexAppServerClientLease: typeof import("./shared-client.js").releaseCodexAppServerClientLease;
 let resolveCodexNativeConfigFenceKey: typeof import("./shared-client.js").resolveCodexNativeConfigFenceKey;
@@ -254,6 +255,7 @@ describe("shared Codex app-server client", () => {
       isCodexAppServerStartSelectionChangedError,
       retainSharedCodexAppServerClientIfCurrent,
       retainSharedCodexAppServerClientByInstanceId,
+      retainSharedCodexAppServerClientOwnerByInstanceId,
       releaseLeasedSharedCodexAppServerClient,
       releaseCodexAppServerClientLease,
       resolveCodexNativeConfigFenceKey,
@@ -476,6 +478,78 @@ describe("shared Codex app-server client", () => {
     expect(retained?.client).toBe(client);
     retained?.release();
     expect(releaseLeasedSharedCodexAppServerClient(client)).toBe(true);
+  });
+
+  it("distinguishes retained, live-retired, and absent owners across keyed clients", async () => {
+    const original = createClientHarness();
+    const current = createClientHarness();
+    vi.spyOn(CodexAppServerClient, "start")
+      .mockReturnValueOnce(original.client)
+      .mockReturnValueOnce(current.client);
+    const startOptions = (url: string): CodexAppServerStartOptions => ({
+      transport: "websocket",
+      command: "codex",
+      args: ["app-server"],
+      url,
+      authToken: "not-exposed",
+      headers: { Authorization: "also-not-exposed" },
+    });
+
+    const originalAcquire = getLeasedSharedCodexAppServerClient({
+      timeoutMs: 1_000,
+      startOptions: startOptions("ws://127.0.0.1:45001"),
+    });
+    await sendInitializeResult(original, "openclaw/0.147.0 (Linux; test)");
+    const originalClient = await originalAcquire;
+    const currentAcquire = getLeasedSharedCodexAppServerClient({
+      timeoutMs: 1_000,
+      startOptions: startOptions("ws://127.0.0.1:45002"),
+    });
+    await sendInitializeResult(current, "openclaw/0.147.0 (Linux; test)");
+    const currentClient = await currentAcquire;
+
+    const retained = retainSharedCodexAppServerClientOwnerByInstanceId(
+      originalClient.getInstanceId(),
+    );
+    expect(retained).toMatchObject({
+      state: "retained",
+      client: originalClient,
+      lifecycle: {
+        clientId: originalClient.getInstanceId(),
+        transport: "websocket",
+        connectionClass: "local-loopback",
+        localProcess: false,
+      },
+    });
+    if (retained.state !== "retained") {
+      throw new Error("expected retained physical client");
+    }
+    expect(Object.isFrozen(retained.lifecycle)).toBe(true);
+    expect(JSON.stringify(retained.lifecycle)).not.toContain("not-exposed");
+    expect(JSON.stringify(retained.lifecycle)).not.toContain("also-not-exposed");
+    expect(retireSharedCodexAppServerClientIfCurrent(originalClient)).toEqual({
+      activeLeases: 2,
+      closed: false,
+    });
+    expect(
+      retainSharedCodexAppServerClientOwnerByInstanceId(originalClient.getInstanceId()),
+    ).toMatchObject({ state: "live-retired", lifecycle: retained.lifecycle });
+    const retainedCurrent = retainSharedCodexAppServerClientOwnerByInstanceId(
+      currentClient.getInstanceId(),
+    );
+    expect(retainedCurrent).toMatchObject({ state: "retained", client: currentClient });
+
+    retained.release();
+    expect(releaseLeasedSharedCodexAppServerClient(originalClient)).toBe(true);
+    await vi.waitFor(() => expect(original.stdinDestroyed).toBe(true));
+    expect(
+      retainSharedCodexAppServerClientOwnerByInstanceId(originalClient.getInstanceId()),
+    ).toEqual({ state: "absent" });
+    if (retainedCurrent.state !== "retained") {
+      throw new Error("expected current physical client");
+    }
+    retainedCurrent.release();
+    expect(releaseLeasedSharedCodexAppServerClient(currentClient)).toBe(true);
   });
 
   it("does not consume a co-lease when selection replacement acquisition fails", async () => {

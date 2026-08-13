@@ -262,6 +262,8 @@ export type RunEmbeddedAgentParams = {
   contextWindow?: string;
   /** Route-bound thinking capability resolved from the selected prepared catalog row. */
   modelThinkingCapability?: PreparedModelThinkingCapability;
+  /** Optional per-run cap for prompt projection and compaction accounting. */
+  contextTokenBudget?: number;
   /** Effective model fallback chain for this session attempt. Undefined uses config defaults. */
   modelFallbacksOverride?: string[];
   /** Session-pinned embedded harness id. Prevents runtime hot-switching. */

@@ -19,4 +19,19 @@ describe("resolveCodexDynamicToolDirectNames", () => {
     ]);
     expect(resolveCodexDynamicToolDirectNames(messageParams)).toEqual(["message", "progress_card"]);
   });
+
+  it("exposes the exact memory flush tools without a discovery turn", () => {
+    const params = {
+      trigger: "memory",
+      memoryFlushWritePath: "memory/2026-08-12.md",
+    } as EmbeddedRunAttemptParams;
+
+    expect(resolveCodexDynamicToolDirectNames(params)).toEqual(["read", "write", "progress_card"]);
+  });
+
+  it("does not expose memory tools for an incomplete memory run", () => {
+    const params = { trigger: "memory" } as EmbeddedRunAttemptParams;
+
+    expect(resolveCodexDynamicToolDirectNames(params)).toEqual(["progress_card"]);
+  });
 });

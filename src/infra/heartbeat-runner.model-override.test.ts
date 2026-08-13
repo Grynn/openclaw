@@ -103,6 +103,8 @@ describe("runHeartbeatOnce – heartbeat model override", () => {
     timeoutSeconds?: number;
     lightContext?: boolean;
     isolatedSession?: boolean;
+    skills?: string[];
+    tools?: string[];
   }) {
     return withHeartbeatFixture(async ({ tmpDir, storePath, replySpy, seedSession }) => {
       const cfg: OpenClawConfig = {
@@ -117,9 +119,12 @@ describe("runHeartbeatOnce – heartbeat model override", () => {
               timeoutSeconds: params.timeoutSeconds,
               lightContext: params.lightContext,
               isolatedSession: params.isolatedSession,
+              skills: params.skills,
+              tools: params.tools,
             },
           },
         },
+        messages: { visibleReplies: "automatic" },
         channels: { whatsapp: { allowFrom: ["*"] } },
         session: { store: storePath },
       };
@@ -161,6 +166,7 @@ describe("runHeartbeatOnce – heartbeat model override", () => {
             },
           ],
         },
+        messages: { visibleReplies: "automatic" },
         channels: { whatsapp: { allowFrom: ["*"] } },
         session: { store: storePath },
       };
@@ -243,6 +249,28 @@ describe("runHeartbeatOnce – heartbeat model override", () => {
     expectReplyOptions(replyOpts, {
       isHeartbeat: true,
       bootstrapContextMode: "lightweight",
+    });
+  });
+
+  it.each([
+    { skills: ["gmail", "todo"], expected: ["gmail", "todo"] },
+    { skills: [], expected: [] },
+  ])("passes heartbeat skills as a per-run filter ($skills)", async ({ skills, expected }) => {
+    const replyOpts = await runDefaultsHeartbeat({ skills });
+    expectReplyOptions(replyOpts, {
+      isHeartbeat: true,
+      skillFilter: expected,
+    });
+  });
+
+  it.each([
+    { tools: ["exec", "memory_search"], expected: ["exec", "memory_search"] },
+    { tools: [], expected: [] },
+  ])("passes heartbeat tools as a per-run cap ($tools)", async ({ tools, expected }) => {
+    const replyOpts = await runDefaultsHeartbeat({ tools });
+    expectReplyOptions(replyOpts, {
+      isHeartbeat: true,
+      toolsAllow: expected,
     });
   });
 
@@ -332,10 +360,32 @@ describe("runHeartbeatOnce – heartbeat model override", () => {
     });
   });
 
-  it("does not pass heartbeatModelOverride when no heartbeat model is configured", async () => {
+  it("passes per-agent heartbeat skills after replacing the default heartbeat list", async () => {
+    await expectPerAgentHeartbeatOverride({
+      defaultsHeartbeat: { skills: ["gmail"] },
+      heartbeat: { skills: ["todo"] },
+      expectedOptions: {
+        skillFilter: ["todo"],
+      },
+    });
+  });
+
+  it("passes per-agent heartbeat tools after replacing the default heartbeat list", async () => {
+    await expectPerAgentHeartbeatOverride({
+      defaultsHeartbeat: { tools: ["read"] },
+      heartbeat: { tools: ["exec"] },
+      expectedOptions: {
+        toolsAllow: ["exec"],
+      },
+    });
+  });
+
+  it("does not pass optional model, skill, or tool overrides when none are configured", async () => {
     const replyOpts = await runDefaultsHeartbeat({ model: undefined });
     const actual = expectReplyOptions(replyOpts, { isHeartbeat: true });
     expect(actual.heartbeatModelOverride).toBeUndefined();
+    expect(actual.skillFilter).toBeUndefined();
+    expect(actual.toolsAllow).toBeUndefined();
   });
 
   it("trims heartbeat model override before passing it downstream", async () => {

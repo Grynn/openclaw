@@ -17,19 +17,28 @@ import {
   renderCodexSkillsCollaborationInstructions,
 } from "./attempt-context.js";
 import {
-  resolveCodexContextEngineProjectionMaxChars,
-  resolveCodexContextEngineProjectionReserveTokens,
   resolveCodexContinuityProjectionMaxChars,
   type CodexProjectedContextRange,
 } from "./context-engine-projection.js";
 import { isSystemAgentOnlyCodexDynamicToolAllowlist } from "./dynamic-tool-profile.js";
+import { flattenCodexDynamicToolFunctions } from "./protocol.js";
 import type { CodexAttemptRuntime } from "./run-attempt-runtime.js";
 import { joinPresentSections } from "./run-attempt-state.js";
 import type { CodexAttemptTools } from "./run-attempt-tool-setup.js";
 import {
   buildDeveloperInstructions,
+  resolveCodexContextEngineProjectionMaxCharsForAttempt,
   type CodexContextEngineThreadBootstrapProjection,
 } from "./thread-lifecycle.js";
+
+const CODEX_BOOTSTRAP_FILE_TOOL_NAMES = new Set([
+  "apply_patch",
+  "edit",
+  "exec",
+  "exec_command",
+  "read",
+  "write",
+]);
 
 export async function prepareCodexAttemptContext(
   runtime: CodexAttemptRuntime,
@@ -142,6 +151,11 @@ export async function prepareCodexAttemptContext(
     historyState.messages = (await readFencedHistory()) ?? historyState.messages;
   }
   const memoryToolNames = getCodexWorkspaceMemoryToolNames(toolBridge.availableSpecs);
+  const hasBootstrapFileAccess =
+    runtime.nativeToolSurfaceEnabled ||
+    flattenCodexDynamicToolFunctions(toolBridge.availableSpecs).some((tool) =>
+      CODEX_BOOTSTRAP_FILE_TOOL_NAMES.has(tool.name.trim().toLowerCase()),
+    );
   const workspaceBootstrapContext = await buildCodexWorkspaceBootstrapContext({
     params: runtimeParams,
     resolvedWorkspace: runtimeParams.bootstrapWorkspaceDir ?? resolvedWorkspace,
@@ -153,6 +167,7 @@ export async function prepareCodexAttemptContext(
     ringZeroActive:
       isHostScopedAgentToolActive("openclaw") &&
       isSystemAgentOnlyCodexDynamicToolAllowlist(runtimeParams.toolsAllow),
+    hasBootstrapFileAccess,
     sandboxed: sandbox?.enabled === true,
   });
   // A thread keeps the bounded agent-workspace snapshot captured at creation.
@@ -196,14 +211,17 @@ export async function prepareCodexAttemptContext(
     inactiveThreadBootstrapBindingForcedFreshStart:
       initialInactiveThreadBootstrapBindingForcedFreshStart,
   };
-  const codexContextProjectionMaxChars = resolveCodexContextEngineProjectionMaxChars({
-    contextTokenBudget: effectiveContextTokenBudget,
-    reserveTokens: resolveCodexContextEngineProjectionReserveTokens(),
-  });
-  const codexContinuityProjectionMaxChars = resolveCodexContinuityProjectionMaxChars({
-    contextTokenBudget: effectiveContextTokenBudget,
-    calibration: connection.mutable.continuityCalibration,
-  });
+  const codexContextProjectionMaxChars = resolveCodexContextEngineProjectionMaxCharsForAttempt(
+    runtimeParams,
+    sessionAgentId,
+  );
+  const codexContinuityProjectionMaxChars = Math.min(
+    resolveCodexContinuityProjectionMaxChars({
+      contextTokenBudget: effectiveContextTokenBudget,
+      calibration: connection.mutable.continuityCalibration,
+    }),
+    codexContextProjectionMaxChars,
+  );
   return {
     runtime,
     attemptTools,

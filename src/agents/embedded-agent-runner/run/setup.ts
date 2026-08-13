@@ -293,18 +293,60 @@ export function resolveEmbeddedRuntimeModelPolicy(params: {
   runtimeModel: ProviderRuntimeModel;
   nativeModelOwned: boolean;
   contextWindow?: string;
+  requestedContextTokenBudget?: number;
 }): {
   contextWindowInfo?: ContextWindowInfo;
   contextTokenBudget?: number;
   effectiveModel: ProviderRuntimeModel;
 } {
+  const requestedContextTokenBudget =
+    typeof params.requestedContextTokenBudget === "number" &&
+    Number.isFinite(params.requestedContextTokenBudget) &&
+    params.requestedContextTokenBudget > 0
+      ? Math.floor(params.requestedContextTokenBudget)
+      : undefined;
+  const applyRequestedBudget = (resolved: {
+    contextWindowInfo?: ContextWindowInfo;
+    contextTokenBudget?: number;
+    effectiveModel: ProviderRuntimeModel;
+  }) => {
+    if (requestedContextTokenBudget === undefined) {
+      return resolved;
+    }
+    const ownedContextTokenBudget =
+      resolved.contextTokenBudget ??
+      readAgentModelContextTokens(params.runtimeModel) ??
+      params.runtimeModel.contextWindow;
+    const contextTokenBudget = Math.min(
+      requestedContextTokenBudget,
+      ownedContextTokenBudget ?? Infinity,
+    );
+    const effectiveModel =
+      contextTokenBudget < (resolved.effectiveModel.contextWindow ?? Infinity)
+        ? { ...resolved.effectiveModel, contextWindow: contextTokenBudget }
+        : resolved.effectiveModel;
+    const contextWindowInfo =
+      contextTokenBudget < (ownedContextTokenBudget ?? Infinity)
+        ? {
+            tokens: contextTokenBudget,
+            ...(resolved.contextWindowInfo
+              ? {
+                  referenceTokens:
+                    resolved.contextWindowInfo.referenceTokens ?? resolved.contextWindowInfo.tokens,
+                }
+              : {}),
+            source: "runContextTokenBudget" as const,
+          }
+        : resolved.contextWindowInfo;
+    return { ...resolved, contextWindowInfo, contextTokenBudget, effectiveModel };
+  };
   if (params.nativeModelOwned) {
-    return { effectiveModel: params.runtimeModel };
+    return applyRequestedBudget({ effectiveModel: params.runtimeModel });
   }
   const resolved = resolveEffectiveRuntimeModel(params);
-  return {
+  return applyRequestedBudget({
     contextWindowInfo: resolved.ctxInfo,
     contextTokenBudget: resolved.ctxInfo.tokens,
     effectiveModel: resolved.effectiveModel,
-  };
+  });
 }

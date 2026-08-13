@@ -47,6 +47,7 @@
     "!dist/plugin-sdk/acp-runtime.d.ts",
     "!dist/plugin-sdk/acp-runtime-backend.d.ts",
     "!dist/plugin-sdk/agent-core.d.ts",
+    "!dist/plugin-sdk/agent-bootstrap-runtime.d.ts",
     "!dist/plugin-sdk/agent-harness-exec-review-runtime.d.ts",
     "!dist/plugin-sdk/agent-harness-task-runtime.d.ts",
     "!dist/plugin-sdk/agent-harness-tool-runtime.d.ts",
@@ -797,6 +798,9 @@
     },
     "./plugin-sdk/codex-session-transcript-runtime": {
       "default": "./dist/plugin-sdk/codex-session-transcript-runtime.js"
+    },
+    "./plugin-sdk/agent-bootstrap-runtime": {
+      "default": "./dist/plugin-sdk/agent-bootstrap-runtime.js"
     },
     "./plugin-sdk/agent-harness-task-runtime": {
       "default": "./dist/plugin-sdk/agent-harness-task-runtime.js"

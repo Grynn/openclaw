@@ -31,7 +31,12 @@ import {
   retainCodexAppServerLiveThread,
   type CodexAppServerLiveThreadOwnership,
 } from "./client-runtime.js";
-import { CodexAppServerRpcError, type CodexAppServerClient } from "./client.js";
+import {
+  CodexAppServerRpcError,
+  resolveCodexAppServerClientInstanceId,
+  type CodexAppServerClient,
+} from "./client.js";
+import type { CodexAppServerRuntimeOptions } from "./config.js";
 import { persistCodexContextCompactionActivity } from "./context-compaction-activity.js";
 import { readCodexThreadContextSnapshot } from "./event-projector-usage.js";
 import {
@@ -42,6 +47,7 @@ import { isJsonObject, type JsonObject } from "./protocol.js";
 import { resolveCodexNativeExecutionBlock } from "./sandbox-guard.js";
 import {
   CODEX_APP_SERVER_BINDING_GUARDED_REQUEST_TIMEOUT_MS,
+  isSameCodexAppServerBindingGeneration,
   sessionBindingIdentity,
   type CodexAppServerBindingIdentity,
   type CodexAppServerBindingStore,
@@ -49,10 +55,13 @@ import {
 } from "./session-binding.js";
 import {
   getLeasedSharedCodexAppServerClient,
+  readCodexAppServerClientLifecycleFacts,
+  retainSharedCodexAppServerClientOwnerByInstanceId,
   releaseLeasedSharedCodexAppServerClient,
   type CodexAppServerClientFactory,
+  type CodexAppServerClientLifecycleFacts,
+  type CodexAppServerClientOptions,
 } from "./shared-client.js";
-import { isSameCodexAppServerThreadOwner } from "./thread-ownership.js";
 import { resumeCodexAppServerThread } from "./thread-resume.js";
 
 // ttlMs: 0 retains keys until the 4,096-entry LRU cap evicts them, after which a
@@ -517,8 +526,6 @@ async function compactCodexNativeThread(
     // with another profile risks operating on a different Codex account.
     return { ok: false, compacted: false, reason: "auth profile mismatch for session binding" };
   }
-  const shouldReleaseDefaultLease = !options.clientFactory;
-  const clientFactory = options.clientFactory ?? getLeasedSharedCodexAppServerClient;
   const runtimeAuthPlan = params.runtimeAuthPlan ?? params.runtimePlan?.auth;
   // A user-home app-server keeps its native Codex account; injecting a prepared key
   // would rewrite the CODEX_HOME auth that Codex CLI and Desktop share.
@@ -526,27 +533,69 @@ async function compactCodexNativeThread(
     !usesSupervisionConnection &&
     appServer.start.homeScope !== "user" &&
     runtimeAuthPlan?.modelRoute?.authRequirement === "api-key";
-  const preparedApiKey = usesPreparedApiKey ? params.resolvedApiKey?.trim() : undefined;
-  if (usesPreparedApiKey && !preparedApiKey) {
+  const resolveFallbackClientOptions = (): CodexAppServerClientOptions | undefined => {
+    const preparedApiKey = usesPreparedApiKey ? params.resolvedApiKey?.trim() : undefined;
+    if (usesPreparedApiKey && !preparedApiKey) {
+      return undefined;
+    }
     return {
-      ok: false,
-      compacted: false,
-      reason: "Prepared Codex Platform compaction route is missing its resolved API key.",
+      startOptions: appServer.start,
+      ...(preparedApiKey
+        ? { preparedAuth: { kind: "api-key" as const, apiKey: preparedApiKey } }
+        : { authProfileId: connection.clientAuthProfileId }),
+      agentDir: params.agentDir,
+      config: params.config,
     };
-  }
+  };
   try {
     return await runExclusiveCodexNativeCompaction(
       binding.threadId,
       params.abortSignal,
       async () => {
-        const client = await clientFactory({
-          startOptions: appServer.start,
-          ...(preparedApiKey
-            ? { preparedAuth: { kind: "api-key" as const, apiKey: preparedApiKey } }
-            : { authProfileId: connection.clientAuthProfileId }),
-          agentDir: params.agentDir,
-          config: params.config,
-        });
+        let client: CodexAppServerClient;
+        let lifecycle: CodexAppServerClientLifecycleFacts;
+        let releaseClientLease: (() => void) | undefined;
+        if (options.clientFactory) {
+          const fallbackOptions = resolveFallbackClientOptions();
+          if (!fallbackOptions) {
+            return missingPreparedCodexCompactionApiKeyResult();
+          }
+          client = await options.clientFactory(fallbackOptions);
+          lifecycle =
+            readCodexAppServerClientLifecycleFacts(client) ??
+            configuredCodexAppServerClientLifecycleFacts(client, appServer);
+        } else {
+          // Thread subscriptions are physical-client scoped. A live retired
+          // owner still owns the native writer and must never become fallback.
+          const owner = retainSharedCodexAppServerClientOwnerByInstanceId(binding.clientId);
+          if (owner.state === "live-retired" || owner.state === "live-unknown") {
+            return {
+              ok: false,
+              compacted: false,
+              reason:
+                owner.state === "live-retired"
+                  ? "bound Codex app-server client is still live while retiring; retry compaction after it exits"
+                  : "bound Codex app-server client is still live but its lifecycle metadata is unavailable; refusing fallback",
+            };
+          }
+          if (owner.state === "retained") {
+            client = owner.client;
+            lifecycle = owner.lifecycle;
+            releaseClientLease = owner.release;
+          } else {
+            const fallbackOptions = resolveFallbackClientOptions();
+            if (!fallbackOptions) {
+              return missingPreparedCodexCompactionApiKeyResult();
+            }
+            client = await getLeasedSharedCodexAppServerClient(fallbackOptions);
+            lifecycle =
+              readCodexAppServerClientLifecycleFacts(client) ??
+              configuredCodexAppServerClientLifecycleFacts(client, appServer);
+            releaseClientLease = () => {
+              releaseLeasedSharedCodexAppServerClient(client);
+            };
+          }
+        }
         let releaseThreadSubscription: (() => Promise<void>) | undefined;
         let retainedThreadOwnership: CodexAppServerLiveThreadOwnership | undefined;
         let compactionSucceeded = false;
@@ -579,7 +628,7 @@ async function compactCodexNativeThread(
               exitTimeoutMs: 5_000,
               forceKillDelayMs: 250,
             });
-            if (appServer.start.transport === "stdio") {
+            if (lifecycle.connectionClass === "local-loopback" && lifecycle.localProcess) {
               if (transportStopped) {
                 return;
               }
@@ -596,18 +645,23 @@ async function compactCodexNativeThread(
             // Closing a WebSocket proves only that the connection ended, not
             // that its remote turn stopped. Detach this exact thread before
             // allowing future work to acquire the session lifecycle fence.
-            const bindingCleared = await options.bindingStore.mutate(bindingIdentity, {
-              kind: "clear",
-              threadId: binding.threadId,
-            });
-            if (bindingCleared) {
-              return;
+            const bindingCleared = await options.bindingStore.withLease(
+              bindingIdentity,
+              async () => {
+                const currentBinding = await options.bindingStore.read(bindingIdentity);
+                if (!isSameCodexAppServerBindingGeneration(currentBinding, binding)) {
+                  return true;
+                }
+                return await options.bindingStore.mutate(bindingIdentity, {
+                  kind: "clear",
+                  threadId: binding.threadId,
+                  expectedBinding: binding,
+                });
+              },
+            );
+            if (!bindingCleared) {
+              throw new Error("failed to detach unconfirmed codex app-server thread binding");
             }
-            const currentBinding = await options.bindingStore.read(bindingIdentity);
-            if (currentBinding?.threadId !== binding.threadId) {
-              return;
-            }
-            throw new Error("failed to detach unconfirmed codex app-server thread binding");
           },
         });
         const acquireThreadSubscription = async (timeoutMs?: number) => {
@@ -648,7 +702,10 @@ async function compactCodexNativeThread(
                 }),
               };
             }
-            if (!currentBinding || !isSameNativeCompactionBinding(currentBinding, binding)) {
+            if (
+              !currentBinding ||
+              !isSameCodexAppServerBindingGeneration(currentBinding, binding)
+            ) {
               embeddedAgentLog.warn(
                 "codex app-server compaction could not use the thread binding because it changed",
                 {
@@ -692,7 +749,8 @@ async function compactCodexNativeThread(
                 )
               : undefined;
             await acquireThreadSubscription(guardedRequestTimeoutMs);
-            await clearContextEngineProjectionBeforeNativeCompaction({
+            const bindingBeforeProjectionClear = binding;
+            binding = await clearContextEngineProjectionBeforeNativeCompaction({
               sessionId: params.sessionId,
               bindingStore: options.bindingStore,
               identity: bindingIdentity,
@@ -716,8 +774,9 @@ async function compactCodexNativeThread(
                 // ambiguous transport failure must never restore stale context.
                 await options.bindingStore.mutate(bindingIdentity, {
                   kind: "set",
-                  binding,
+                  binding: bindingBeforeProjectionClear,
                 });
+                binding = bindingBeforeProjectionClear;
                 compactionRequestDefinitelyRejected = !isCodexThreadNotFoundError(error);
               }
               // Retirement can acquire this same generation lease.
@@ -796,10 +855,10 @@ async function compactCodexNativeThread(
               // Reset uses this same generation lease; without it compaction
               // could return an obsolete subscription after its owner ended.
               const retained =
-                isSameCodexAppServerThreadOwner(currentBinding, binding) &&
+                isSameCodexAppServerBindingGeneration(currentBinding, binding) &&
                 (await options.bindingStore.withLease(bindingIdentity, async () => {
                   const leasedBinding = await options.bindingStore.read(bindingIdentity);
-                  if (!isSameCodexAppServerThreadOwner(leasedBinding, binding)) {
+                  if (!isSameCodexAppServerBindingGeneration(leasedBinding, binding)) {
                     return false;
                   }
                   return await retainCodexAppServerLiveThread(
@@ -817,9 +876,7 @@ async function compactCodexNativeThread(
               await releaseThreadSubscription?.();
             }
           } finally {
-            if (shouldReleaseDefaultLease) {
-              releaseLeasedSharedCodexAppServerClient(client);
-            }
+            releaseClientLease?.();
           }
         }
         const details: JsonObject = {
@@ -933,45 +990,56 @@ async function clearContextEngineProjectionBeforeNativeCompaction(params: {
   bindingStore: CodexAppServerBindingStore;
   identity: CodexAppServerBindingIdentity;
   binding: CodexAppServerThreadBinding;
-}): Promise<void> {
+}): Promise<CodexAppServerThreadBinding> {
   const contextEngineBinding = params.binding.contextEngine;
   if (!contextEngineBinding?.projection) {
-    return;
+    return params.binding;
   }
   // Native Codex compaction mutates the thread history outside the projection
   // guard. Clear only the projection marker so the next turn reprojects context.
-  await params.bindingStore.mutate(params.identity, {
+  const nextBinding = {
+    ...params.binding,
+    contextEngine: {
+      ...contextEngineBinding,
+      projection: undefined,
+    },
+  };
+  const cleared = await params.bindingStore.mutate(params.identity, {
     kind: "patch",
     threadId: params.binding.threadId,
-    patch: {
-      contextEngine: {
-        ...contextEngineBinding,
-        projection: undefined,
-      },
-    },
+    patch: { contextEngine: nextBinding.contextEngine },
   });
+  if (!cleared) {
+    throw new Error("failed to clear codex context-engine projection before native compaction");
+  }
   embeddedAgentLog.info("cleared codex context-engine projection before native compaction", {
     sessionId: params.sessionId,
     threadId: params.binding.threadId,
     previousEpoch: contextEngineBinding.projection.epoch,
     previousFingerprint: contextEngineBinding.projection.fingerprint,
   });
+  return nextBinding;
 }
 
-function isSameNativeCompactionBinding(
-  current: CodexAppServerThreadBinding,
-  expected: CodexAppServerThreadBinding,
-): boolean {
-  return (
-    isSameCodexAppServerThreadOwner(current, expected) &&
-    current.authProfileId === expected.authProfileId &&
-    current.contextEngine?.engineId === expected.contextEngine?.engineId &&
-    current.contextEngine?.policyFingerprint === expected.contextEngine?.policyFingerprint &&
-    current.contextEngine?.projection?.mode === expected.contextEngine?.projection?.mode &&
-    current.contextEngine?.projection?.epoch === expected.contextEngine?.projection?.epoch &&
-    current.contextEngine?.projection?.fingerprint ===
-      expected.contextEngine?.projection?.fingerprint
-  );
+function configuredCodexAppServerClientLifecycleFacts(
+  client: CodexAppServerClient,
+  appServer: Pick<CodexAppServerRuntimeOptions, "start" | "connectionClass">,
+): CodexAppServerClientLifecycleFacts {
+  return Object.freeze({
+    clientId: resolveCodexAppServerClientInstanceId(client),
+    transport: appServer.start.transport,
+    connectionClass: appServer.connectionClass,
+    localProcess: appServer.start.transport === "stdio",
+    ...(appServer.start.homeScope ? { homeScope: appServer.start.homeScope } : {}),
+  });
+}
+
+function missingPreparedCodexCompactionApiKeyResult(): EmbeddedAgentCompactResult {
+  return {
+    ok: false,
+    compacted: false,
+    reason: "Prepared Codex Platform compaction route is missing its resolved API key.",
+  };
 }
 
 function isCodexThreadNotFoundError(error: unknown): boolean {

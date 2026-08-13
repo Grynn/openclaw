@@ -130,6 +130,7 @@ async function installedFixture(
           sources: ["memory", "sessions"],
         },
       },
+      heartbeat: { tools: ["exec"] },
     },
   };
   const source: ClawSourceIdentity = {
@@ -301,6 +302,7 @@ describe("exportClawAgent", () => {
       sources: ["memory", "sessions"],
     });
     expect(fixture.config.agents?.entries?.worker).not.toHaveProperty("memorySearch");
+    expect(fixture.config.agents?.entries?.worker?.heartbeat?.tools).toEqual(["exec"]);
     fixture.config.mcp!.servers!.docs!.env = {
       DOCS_TOKEN: "resolved-secret-must-not-be-exported",
     };
@@ -366,6 +368,7 @@ describe("exportClawAgent", () => {
               sources: ["memory", "sessions"],
             },
           },
+          heartbeat: { tools: ["exec"] },
         },
       },
     });
@@ -390,6 +393,7 @@ describe("exportClawAgent", () => {
       agent: { tools: fixture.plan.agent.config.tools },
     });
     expect(exported.openClawProfile?.agent.tools).not.toHaveProperty("alsoAllow");
+    expect(exported.openClawProfile?.agent.heartbeat?.tools).toEqual(["exec"]);
     expect(exported.manifest.workspace.bootstrapFiles).not.toHaveProperty("SOUL.md");
     await expect(readFile(join(out, "profiles", "openclaw.yml"), "utf8")).resolves.toContain(
       "profile: full",

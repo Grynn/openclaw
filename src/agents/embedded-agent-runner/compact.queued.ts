@@ -606,9 +606,18 @@ async function compactResolvedContextEngine(
     promptTokenBudget: contextTokenBudget,
   });
   const contextEngineOwnsCompaction = contextEngine.info.ownsCompaction === true;
+  // The active-transcript byte fuse protects OpenClaw's persisted host transcript,
+  // which native harness compaction leaves unchanged. Reach the host/context-engine
+  // compaction path first for that required preflight unless the native harness is locked.
+  const requiresHostTranscriptCompaction =
+    !lockedNativeHarness &&
+    preparedParams.preflightRequired === true &&
+    preparedParams.preflightCompactionTrigger === "transcript_bytes";
   let requiredPreflightNativeCapabilityUsed = false;
   const harnessResult =
-    attemptNativeHarnessCompaction && (!contextEngineOwnsCompaction || lockedNativeHarness)
+    attemptNativeHarnessCompaction &&
+    !requiresHostTranscriptCompaction &&
+    (!contextEngineOwnsCompaction || lockedNativeHarness)
       ? await maybeCompactAgentHarnessSession(
           {
             ...preparedParams,

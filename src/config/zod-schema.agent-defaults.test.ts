@@ -421,6 +421,7 @@ describe("agent defaults schema", () => {
   it("accepts focused contextLimits on defaults and agent entries", () => {
     const defaults = AgentDefaultsSchema.parse({
       contextLimits: {
+        contextProjectionMaxChars: 304_000,
         memoryGetMaxChars: 20_000,
         postCompactionMaxChars: 4_000,
       },
@@ -431,13 +432,24 @@ describe("agent defaults schema", () => {
         maxSkillsPromptChars: 30_000,
       },
       contextLimits: {
+        contextProjectionMaxChars: 280_000,
         memoryGetMaxChars: 18_000,
       },
     });
 
+    expect(defaults.contextLimits?.contextProjectionMaxChars).toBe(304_000);
     expect(defaults.contextLimits?.memoryGetMaxChars).toBe(20_000);
     expect(agent.skillsLimits?.maxSkillsPromptChars).toBe(30_000);
+    expect(agent.contextLimits?.contextProjectionMaxChars).toBe(280_000);
     expect(agent.contextLimits?.memoryGetMaxChars).toBe(18_000);
+  });
+
+  it("rejects non-positive context projection caps", () => {
+    expect(
+      AgentDefaultsSchema.safeParse({
+        contextLimits: { contextProjectionMaxChars: 0 },
+      }).success,
+    ).toBe(false);
   });
 
   it("accepts positive heartbeat timeoutSeconds on defaults and agent entries", () => {
@@ -453,6 +465,40 @@ describe("agent defaults schema", () => {
     expect(defaults.heartbeat?.timeoutSeconds).toBe(45);
     expect(agent.heartbeat?.timeoutSeconds).toBe(45);
     expect(agent.heartbeat?.timeoutSeconds).toBe(45);
+  });
+
+  it("accepts heartbeat skill allowlists on defaults and agent entries", () => {
+    const defaults = AgentDefaultsSchema.parse({
+      heartbeat: { skills: ["gmail", "todo"] },
+    })!;
+    const agent = AgentEntrySchema.parse({
+      id: "ops",
+      heartbeat: { skills: [] },
+    });
+
+    expect(defaults.heartbeat?.skills).toEqual(["gmail", "todo"]);
+    expect(agent.heartbeat?.skills).toEqual([]);
+    expectSchemaFailurePath(
+      AgentDefaultsSchema.safeParse({ heartbeat: { skills: "gmail" } }),
+      "heartbeat.skills",
+    );
+  });
+
+  it("accepts heartbeat tool allowlists on defaults and agent entries", () => {
+    const defaults = AgentDefaultsSchema.parse({
+      heartbeat: { tools: ["exec", "memory_search"] },
+    })!;
+    const agent = AgentEntrySchema.parse({
+      id: "ops",
+      heartbeat: { tools: [] },
+    });
+
+    expect(defaults.heartbeat?.tools).toEqual(["exec", "memory_search"]);
+    expect(agent.heartbeat?.tools).toEqual([]);
+    expectSchemaFailurePath(
+      AgentDefaultsSchema.safeParse({ heartbeat: { tools: "exec" } }),
+      "heartbeat.tools",
+    );
   });
 
   it("rejects invalid heartbeat activeHours without an explicit cadence", () => {

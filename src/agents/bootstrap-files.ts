@@ -2,10 +2,14 @@
  * Resolves workspace bootstrap files for agent runs and converts them into
  * bounded context files.
  */
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { ChatType } from "../channels/chat-type.js";
-import { readRecentSessionTranscriptActiveEvents } from "../config/sessions/session-accessor.js";
+import {
+  appendTranscriptEvent,
+  readRecentSessionTranscriptActiveEvents,
+} from "../config/sessions/session-accessor.js";
 import type { AgentContextInjection } from "../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isMemoryOriginEligibleForAutomaticInjection } from "../memory-host-sdk/host/types.js";
@@ -98,6 +102,30 @@ export async function hasCompletedBootstrapTurn(
   } catch {
     return false;
   }
+}
+
+/** Persist a clean full-bootstrap marker through the storage-neutral transcript owner. */
+export async function persistCompletedBootstrapTurn(params: {
+  runId: string;
+  sessionTarget?: AgentRunSessionTarget;
+}): Promise<boolean> {
+  const { agentId, sessionId, sessionKey, storePath, threadId } = params.sessionTarget ?? {};
+  if (!agentId || !sessionId || !sessionKey || !storePath) {
+    return false;
+  }
+  await appendTranscriptEvent(
+    { agentId, sessionId, sessionKey, storePath, threadId },
+    {
+      type: "custom",
+      customType: FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE,
+      data: { timestamp: Date.now(), runId: params.runId, sessionId },
+      id: randomUUID(),
+      parentId: null,
+      timestamp: new Date().toISOString(),
+    },
+    { appendIntent: "active-branch" },
+  );
+  return true;
 }
 
 /** Builds a session-scoped warning sink that dedupes repeated bootstrap warnings. */

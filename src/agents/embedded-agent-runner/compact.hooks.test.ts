@@ -3016,6 +3016,77 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     expect(result.result).not.toHaveProperty("summary");
   });
 
+  it("routes an unlocked Codex host byte fuse through legacy semantic compaction", async () => {
+    resolveAgentHarnessPolicyMock.mockReturnValue({
+      runtime: "codex",
+      runtimeSource: "model",
+    } as never);
+    resolveContextEngineMock.mockResolvedValue({
+      info: { id: "legacy", ownsCompaction: false },
+      compact: contextEngineCompactMock,
+    } as never);
+    maybeCompactAgentHarnessSessionMock.mockResolvedValueOnce({
+      ok: true,
+      compacted: false,
+      reason: "codex app-server owns automatic compaction",
+      result: {
+        summary: "",
+        firstKeptEntryId: "",
+        tokensBefore: 333,
+        details: {
+          backend: "codex-app-server",
+          skipped: true,
+          reason: "non_manual_trigger",
+          trigger: "budget",
+        },
+      },
+    });
+
+    const result = await compactEmbeddedAgentSession(
+      wrappedCompactionArgs({
+        provider: "openai",
+        model: "gpt-5.5",
+        trigger: "budget",
+        forcePreflight: true,
+        preflightRequired: true,
+        preflightCompactionTrigger: "transcript_bytes",
+        currentTokenCount: 333,
+        config: {
+          agents: {
+            defaults: {
+              models: { "openai/gpt-5.5": { agentRuntime: { id: "codex" } } },
+            },
+          },
+          models: {
+            providers: {
+              openai: { models: [{ id: "gpt-5.5", contextWindow: 350_000 }] },
+            },
+          },
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      compacted: true,
+      compactionKind: "context-engine",
+      result: { summary: "engine-summary" },
+    });
+    expect(contextEngineCompactMock).toHaveBeenCalledTimes(1);
+    expect(maybeCompactAgentHarnessSessionMock).not.toHaveBeenCalled();
+    const compactArg = mockCallArg(contextEngineCompactMock) as {
+      runtimeContext?: Record<string, unknown>;
+    };
+    expectRecordFields(compactArg, {
+      compactionTarget: "budget",
+      force: true,
+    });
+    expectRecordFields(compactArg.runtimeContext, {
+      forceReason: "preflight_required",
+      preflightCompactionTrigger: "transcript_bytes",
+    });
+  });
+
   it("fails closed for a fallback-owned legacy compaction target", async () => {
     const legacySessionId = "legacy-session-47";
     const legacyStorePath = join(tempDirs.make("openclaw-legacy-compaction-"), "openclaw.sqlite");

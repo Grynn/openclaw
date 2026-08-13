@@ -181,6 +181,26 @@ describe("embedded run retry dispatch", () => {
     },
   );
 
+  it("forwards context metadata without requiring a context engine", async () => {
+    const input = makeDispatchInput({}, createEmbeddedRunReplayState());
+    input.runtime.contextTokenBudget = 64_000;
+    input.runtime.contextWindowInfo = {
+      tokens: 64_000,
+      referenceTokens: 200_000,
+      source: "runContextTokenBudget",
+    };
+
+    const result = await dispatchEmbeddedRunAttempt(input);
+
+    expect(result.preparedAttempt.contextEngine).toBeUndefined();
+    expect(result.preparedAttempt.contextTokenBudget).toBe(64_000);
+    expect(result.preparedAttempt.contextWindowInfo).toEqual({
+      tokens: 64_000,
+      referenceTokens: 200_000,
+      source: "runContextTokenBudget",
+    });
+  });
+
   it.each([true, false])(
     "settles accepted spawns before a late post-compaction abort (yielded: %s)",
     async (yieldDetected) => {

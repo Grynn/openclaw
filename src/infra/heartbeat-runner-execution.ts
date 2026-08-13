@@ -10,6 +10,7 @@ import {
   resolveHeartbeatTerminalToolFailure,
 } from "../auto-reply/heartbeat-reply-payload.js";
 import {
+  HEARTBEAT_RESPONSE_TOOL_NAME,
   resolveHeartbeatScratchProposalFromReplyResult,
   resolveHeartbeatToolResponseFromReplyResult,
 } from "../auto-reply/heartbeat-tool-response.js";
@@ -630,6 +631,12 @@ export async function invokeHeartbeatAgentRun(
   const getReplyFromConfig =
     opts.deps?.getReplyFromConfig ?? (await loadHeartbeatRunnerRuntime()).getReplyFromConfig;
   const heartbeatWakeAbortSignal = getHeartbeatWakeAbortSignal();
+  const heartbeatToolsAllow =
+    heartbeat?.tools === undefined
+      ? undefined
+      : usesHeartbeatResponseTool
+        ? [...new Set([...heartbeat.tools, HEARTBEAT_RESPONSE_TOOL_NAME])]
+        : heartbeat.tools;
   const replyOpts = {
     isHeartbeat: true,
     [REPLY_OPERATION_RUN_STATE]: replyOperationRunState,
@@ -641,6 +648,8 @@ export async function invokeHeartbeatAgentRun(
     // Heartbeat timeout is a per-run override so user turns keep the global default.
     timeoutOverrideSeconds: resolveHeartbeatTimeoutOverrideSeconds(cfg, heartbeat),
     bootstrapContextMode: heartbeat?.lightContext === true ? ("lightweight" as const) : undefined,
+    ...(heartbeat?.skills !== undefined ? { skillFilter: heartbeat.skills } : {}),
+    ...(heartbeatToolsAllow !== undefined ? { toolsAllow: heartbeatToolsAllow } : {}),
     onModelSelected: replyPrefix.onModelSelected,
   };
   const replyResult = await getReplyFromConfig(

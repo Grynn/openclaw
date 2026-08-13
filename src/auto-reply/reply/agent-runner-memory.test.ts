@@ -254,6 +254,7 @@ function modelRoutingProvenance(
 type EmbeddedAgentParams = {
   provider?: string;
   model?: string;
+  contextTokenBudget?: number;
   thinkLevel?: string;
   agentHarnessId?: string;
   agentHarnessRuntimeOverride?: string;
@@ -266,6 +267,7 @@ type EmbeddedAgentParams = {
   allowEmptyAssistantReplyAsSilent?: boolean;
   terminalReplyExpectation?: "required" | "optional";
   extraSystemPrompt?: string;
+  bootstrapContextMode?: "full" | "lightweight";
   bootstrapPromptWarningSignaturesSeen?: string[];
   bootstrapPromptWarningSignature?: string;
   abortSignal?: AbortSignal;
@@ -545,6 +547,8 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(flushCall.silentExpected).toBe(true);
     expect(flushCall.allowEmptyAssistantReplyAsSilent).toBe(true);
     expect(flushCall.terminalReplyExpectation).toBe("optional");
+    expect(flushCall.contextTokenBudget).toBe(64_000);
+    expect(flushCall.bootstrapContextMode).toBe("lightweight");
     expect(registerAgentRunContextMock).toHaveBeenCalledWith(
       "00000000-0000-0000-0000-000000000001",
       expect.objectContaining({
@@ -3209,6 +3213,146 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(replyOperation.setPhase).not.toHaveBeenCalled();
     expect(compactEmbeddedAgentSessionMock).not.toHaveBeenCalled();
     expect(incrementCompactionCountMock).not.toHaveBeenCalled();
+  });
+
+  it("ignores pre-reset SQLite bytes when guarding a Codex runtime session", async () => {
+    const storePath = path.join(rootDir, "sqlite-codex-reset-byte-guard.json");
+    const sessionKey = "agent:main:main";
+    const scope = { agentId: "main", sessionId: "session", sessionKey, storePath };
+    await upsertSessionEntryCore(scope, { sessionId: "session", updatedAt: 10 });
+    await replaceTranscriptEvents(scope, [
+      {
+        id: "old-message",
+        parentId: null,
+        type: "message",
+        message: { role: "user", content: "x".repeat(10_000) },
+      },
+      {
+        id: "reset-boundary",
+        parentId: "old-message",
+        type: "reset",
+        timestamp: "2026-08-11T00:00:00.000Z",
+        reason: "new",
+      },
+      {
+        id: "new-message",
+        parentId: "reset-boundary",
+        type: "message",
+        message: { role: "user", content: "small" },
+      },
+    ]);
+    expect(readTranscriptStatsSync(scope).sizeBytes).toBeGreaterThan(1024);
+
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      totalTokens: 10,
+      totalTokensFresh: true,
+      totalTokensVersion: 1,
+      compactionCount: 0,
+      agentRuntimeOverride: "codex",
+      agentHarnessId: "openclaw",
+    };
+    const entry = await runPreflightCompactionIfNeeded({
+      cfg: {
+        agents: {
+          defaults: {
+            compaction: { maxActiveTranscriptBytes: "1kb" },
+          },
+        },
+      },
+      followupRun: createTestFollowupRun({
+        provider: "openai",
+        model: "gpt-5.5",
+        sessionId: "session",
+        sessionKey,
+      }),
+      defaultModel: "gpt-5.5",
+      modelContextTokens: 1_000_000,
+      sessionEntry,
+      sessionStore: { [sessionKey]: sessionEntry },
+      sessionKey,
+      storePath,
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(entry).toBe(sessionEntry);
+    expect(compactEmbeddedAgentSessionMock).not.toHaveBeenCalled();
+    expect(incrementCompactionCountMock).not.toHaveBeenCalled();
+  });
+
+  it("does not recompact durable SQLite history before the latest compaction boundary", async () => {
+    const storePath = path.join(rootDir, "sqlite-compacted-session.json");
+    const sessionKey = "agent:main:main";
+    const scope = { agentId: "main", sessionId: "session", sessionKey, storePath };
+    await upsertSessionEntryCore(scope, { sessionId: "session", updatedAt: 10 });
+    await replaceTranscriptEvents(scope, [
+      {
+        type: "message",
+        id: "large-old",
+        parentId: null,
+        timestamp: "2026-08-13T00:00:00.000Z",
+        message: { role: "user", content: "x".repeat(8_000) },
+      },
+      {
+        type: "message",
+        id: "kept",
+        parentId: "large-old",
+        timestamp: "2026-08-13T00:00:01.000Z",
+        message: { role: "assistant", content: "kept" },
+      },
+      {
+        type: "compaction",
+        id: "compacted",
+        parentId: "kept",
+        timestamp: "2026-08-13T00:00:02.000Z",
+        summary: "short summary",
+        firstKeptEntryId: "kept",
+        tokensBefore: 2_000,
+      },
+      {
+        type: "message",
+        id: "post-compaction",
+        parentId: "compacted",
+        timestamp: "2026-08-13T00:00:03.000Z",
+        message: { role: "user", content: "continue" },
+      },
+    ]);
+    expect(readTranscriptStatsSync(scope).sizeBytes).toBeGreaterThan(8_000);
+
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      totalTokens: 10,
+      totalTokensFresh: true,
+      totalTokensVersion: 1,
+      compactionCount: 1,
+    };
+    const entry = await runPreflightCompactionIfNeeded({
+      cfg: {
+        agents: {
+          defaults: {
+            compaction: { maxActiveTranscriptBytes: "1kb" },
+          },
+        },
+      },
+      followupRun: createTestFollowupRun({
+        sessionId: "session",
+        sessionKey,
+      }),
+      defaultModel: "anthropic/claude-opus-4-6",
+      modelContextTokens: 100_000,
+      sessionEntry,
+      sessionStore: { [sessionKey]: sessionEntry },
+      sessionKey,
+      storePath,
+      isHeartbeat: false,
+      replyOperation: createReplyOperation(),
+    });
+
+    expect(entry).toBe(sessionEntry);
+    expect(compactEmbeddedAgentSessionMock).not.toHaveBeenCalled();
   });
 
   it("keeps ownsNativeCompaction absolute over the SQLite transcript byte guard", async () => {

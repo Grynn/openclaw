@@ -266,6 +266,8 @@ export {
   isSessionTranscriptProjectionUnavailableError,
   readRecentSessionTranscriptActiveEvents,
   readSessionTranscriptActiveStats,
+  readSessionTranscriptContextByteSize,
+  readSessionTranscriptVisibleStats,
   readSessionTranscriptBoundedMessageTailPage,
   readRecentSessionTranscriptMessageEvents,
   readSessionTranscriptActivePathEntryRelation,

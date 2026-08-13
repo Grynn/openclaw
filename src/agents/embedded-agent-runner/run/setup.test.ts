@@ -422,6 +422,45 @@ describe("resolveEmbeddedRuntimeModelPolicy", () => {
     expect(discovered.contextTokenBudget).toBe(272_000);
     expect(discovered).not.toHaveProperty("authoredContextTokenCap");
   });
+
+  it("applies a per-run context budget as a cap without expanding a smaller configured limit", () => {
+    const runtimeModel = createRuntimeModel();
+    const capped = resolveEmbeddedRuntimeModelPolicy({
+      cfg: {},
+      provider: "openai",
+      modelId: runtimeModel.id,
+      runtimeModel,
+      nativeModelOwned: false,
+      requestedContextTokenBudget: 64_000,
+    });
+    const alreadySmaller = resolveEmbeddedRuntimeModelPolicy({
+      cfg: {
+        models: {
+          providers: {
+            openai: {
+              baseUrl: "https://api.openai.com/v1",
+              models: [createConfiguredModel({ contextTokens: 32_000 })],
+            },
+          },
+        },
+      },
+      provider: "openai",
+      modelId: runtimeModel.id,
+      runtimeModel,
+      nativeModelOwned: false,
+      requestedContextTokenBudget: 64_000,
+    });
+
+    expect(capped.contextTokenBudget).toBe(64_000);
+    expect(capped.effectiveModel.contextWindow).toBe(64_000);
+    expect(capped.contextWindowInfo).toEqual({
+      tokens: 64_000,
+      referenceTokens: 272_000,
+      source: "runContextTokenBudget",
+    });
+    expect(alreadySmaller.contextTokenBudget).toBe(32_000);
+    expect(alreadySmaller.effectiveModel.contextWindow).toBe(32_000);
+  });
 });
 
 describe("native model-owned harness policy", () => {
@@ -476,5 +515,26 @@ describe("native model-owned harness policy", () => {
     });
 
     expect(result).toEqual({ effectiveModel: runtimeModel });
+  });
+
+  it("honors a smaller explicit run budget while keeping native model policy private", () => {
+    const runtimeModel = createRuntimeModel();
+    const result = resolveEmbeddedRuntimeModelPolicy({
+      cfg: {},
+      provider: "openai",
+      modelId: runtimeModel.id,
+      runtimeModel,
+      nativeModelOwned: true,
+      requestedContextTokenBudget: 64_000,
+    });
+
+    expect(result).toEqual({
+      contextWindowInfo: {
+        tokens: 64_000,
+        source: "runContextTokenBudget",
+      },
+      contextTokenBudget: 64_000,
+      effectiveModel: { ...runtimeModel, contextWindow: 64_000 },
+    });
   });
 });

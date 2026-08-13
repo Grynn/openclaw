@@ -27,6 +27,12 @@ import {
 } from "./auth-bridge.js";
 import { ensureCodexAppServerClientRuntime } from "./client-runtime.js";
 import { CodexAppServerClient, isUnsupportedCodexAppServerVersionError } from "./client.js";
+import type {
+  CodexAppServerConnectionClass,
+  CodexAppServerHomeScope,
+  CodexAppServerTransportMode,
+} from "./config-contracts.js";
+import { inferCodexAppServerConnectionClass } from "./config-security.js";
 import {
   codexAppServerStartOptionsKey,
   resolveCodexComputerUseConfig,
@@ -54,6 +60,7 @@ const CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MESSAGE = "codex app-server initialize
 
 type SharedCodexAppServerClientEntry = {
   client?: CodexAppServerClient;
+  lifecycle?: CodexAppServerClientLifecycleFacts;
   startup?: SharedCodexAppServerClientStartup;
   activeLeases: number;
   pendingAcquires: number;
@@ -62,6 +69,29 @@ type SharedCodexAppServerClientEntry = {
   startupAbort?: AbortController;
   onStartedClientCallbacks: Set<(client: CodexAppServerClient) => void>;
 };
+
+/** Secret-free immutable facts describing one physical app-server connection. */
+export type CodexAppServerClientLifecycleFacts = Readonly<{
+  clientId: string;
+  transport: CodexAppServerTransportMode;
+  connectionClass: CodexAppServerConnectionClass;
+  localProcess: boolean;
+  homeScope?: CodexAppServerHomeScope;
+  runtimeFingerprint?: string;
+  connectionFingerprint?: string;
+}>;
+
+/** Result of looking up the exact physical owner recorded in a thread binding. */
+type SharedCodexAppServerClientOwnerRetention =
+  | {
+      state: "retained";
+      client: CodexAppServerClient;
+      release: () => void;
+      lifecycle: CodexAppServerClientLifecycleFacts;
+    }
+  | { state: "live-retired"; lifecycle: CodexAppServerClientLifecycleFacts }
+  | { state: "live-unknown"; clientId: string }
+  | { state: "absent" };
 
 type SharedCodexAppServerClientStartup = {
   initialized: Promise<void>;
@@ -212,6 +242,33 @@ export async function waitForCodexAppServerClientDesktopGenerationDrain(params: 
   } finally {
     drain.cancel();
   }
+}
+
+function buildCodexAppServerClientLifecycleFacts(
+  client: CodexAppServerClient,
+  startOptions: CodexAppServerStartOptions,
+): CodexAppServerClientLifecycleFacts {
+  return Object.freeze({
+    clientId: client.getInstanceId(),
+    transport: startOptions.transport,
+    connectionClass: inferCodexAppServerConnectionClass(startOptions),
+    localProcess: startOptions.transport === "stdio",
+    ...(startOptions.homeScope ? { homeScope: startOptions.homeScope } : {}),
+  });
+}
+
+/** Reads immutable, secret-free physical lifecycle facts for an initialized client. */
+export function readCodexAppServerClientLifecycleFacts(
+  client: CodexAppServerClient,
+): CodexAppServerClientLifecycleFacts | undefined {
+  const entry = getSharedCodexAppServerClientState().entriesByClient.get(client);
+  if (entry?.lifecycle) {
+    return entry.lifecycle;
+  }
+  const metadata = getCodexAppServerClientStartMetadata().get(client);
+  return metadata
+    ? buildCodexAppServerClientLifecycleFacts(client, metadata.startOptions)
+    : undefined;
 }
 
 /** Resolves non-secret spawn identity before startup; argv is represented only by its hash. */
@@ -997,6 +1054,7 @@ function createSharedCodexAppServerClientStartup(params: {
     (client) => {
       const state = getSharedCodexAppServerClientState();
       params.entry.client = client;
+      params.entry.lifecycle = readCodexAppServerClientLifecycleFacts(client);
       state.entriesByClient.set(client, params.entry);
       return client;
     },
@@ -1416,18 +1474,53 @@ export function retainSharedCodexAppServerClientIfCurrent(
 export function retainSharedCodexAppServerClientByInstanceId(
   clientId: string | undefined,
 ): { client: CodexAppServerClient; release: () => void } | undefined {
+  const retained = retainSharedCodexAppServerClientOwnerByInstanceId(clientId);
+  return retained.state === "retained"
+    ? { client: retained.client, release: retained.release }
+    : undefined;
+}
+
+/**
+ * Retains the exact current owner, while preserving the distinction between a
+ * physically live retired owner and one that is no longer present.
+ */
+export function retainSharedCodexAppServerClientOwnerByInstanceId(
+  clientId: string | undefined,
+): SharedCodexAppServerClientOwnerRetention {
   const normalizedClientId = clientId?.trim();
   if (!normalizedClientId) {
-    return undefined;
+    return { state: "absent" };
   }
-  for (const entry of getSharedCodexAppServerClientState().clients.values()) {
+  const state = getSharedCodexAppServerClientState();
+  for (const entry of state.clients.values()) {
     const client = entry.client;
-    if (client?.getInstanceId() !== normalizedClientId || entry.closeWhenIdle || entry.closeError) {
+    if (client?.getInstanceId() !== normalizedClientId) {
       continue;
     }
-    return { client, release: retainSharedClientEntry(entry) };
+    const lifecycle = entry.lifecycle ?? readCodexAppServerClientLifecycleFacts(client);
+    if (!lifecycle) {
+      return { state: "live-unknown", clientId: normalizedClientId };
+    }
+    if (!entry.closeWhenIdle && !entry.closeError) {
+      return {
+        state: "retained",
+        client,
+        release: retainSharedClientEntry(entry),
+        lifecycle,
+      };
+    }
+    return { state: "live-retired", lifecycle };
   }
-  return undefined;
+  for (const client of state.liveClients) {
+    if (client.getInstanceId() !== normalizedClientId) {
+      continue;
+    }
+    const lifecycle = readCodexAppServerClientLifecycleFacts(client);
+    return lifecycle
+      ? { state: "live-retired", lifecycle }
+      : { state: "live-unknown", clientId: normalizedClientId };
+  }
+  return { state: "absent" };
 }
 
 /**

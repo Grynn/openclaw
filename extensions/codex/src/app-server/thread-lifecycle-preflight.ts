@@ -71,7 +71,11 @@ export async function prepareCodexThreadLifecyclePreflight(params: CodexStartOrR
   const webSearchThreadConfigFingerprint = fingerprintJsonObject(webSearchPlan.threadConfig);
   const networkProxyConfigFingerprint = params.appServer.networkProxy?.configFingerprint;
   const contextEngineBinding = lifecycleTiming.measureSync("context-engine-binding", () =>
-    buildContextEngineBinding(params.params, params.contextEngineProjection),
+    buildContextEngineBinding(
+      params.params,
+      params.contextEngineProjection,
+      params.agentId ?? params.params.agentId,
+    ),
   );
   const userMcpServersConfigPatch =
     params.userMcpServersEnabled === false

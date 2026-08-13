@@ -1,7 +1,12 @@
 // Codex tests cover attempt context plugin behavior.
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import {
+  hasCompletedBootstrapTurn,
+  persistCompletedBootstrapTurn,
+} from "openclaw/plugin-sdk/agent-bootstrap-runtime";
 import {
   embeddedAgentLog,
   type EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,
@@ -10,6 +15,11 @@ import {
   clearMemoryPluginState,
   registerMemoryCapability,
 } from "openclaw/plugin-sdk/memory-host-core";
+import {
+  appendSqliteSessionTranscriptEventForTest,
+  closeOpenClawAgentDatabasesForTest,
+  closeOpenClawStateDatabaseForTest,
+} from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildCodexOpenClawPromptContext,
@@ -18,15 +28,71 @@ import {
   buildCodexSystemPromptReport,
   readContextEngineThreadBootstrapProjection,
   readMirroredSessionHistoryMessages,
+  renderCodexSkillsCollaborationInstructions,
   resolveContextEngineBootstrapProjectionDecision,
 } from "./attempt-context.js";
 import type { CodexDynamicToolSpec } from "./protocol.js";
 import type { CodexAppServerContextEngineBinding } from "./session-binding.js";
 
-afterEach(() => {
+const continuationTempDirs = new Set<string>();
+
+afterEach(async () => {
   vi.restoreAllMocks();
   clearMemoryPluginState();
+  closeOpenClawAgentDatabasesForTest();
+  closeOpenClawStateDatabaseForTest();
+  await Promise.all(
+    [...continuationTempDirs].map((dir) => fs.rm(dir, { recursive: true, force: true })),
+  );
+  continuationTempDirs.clear();
 });
+
+async function createContinuationFixture() {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-continuation-bootstrap-"));
+  continuationTempDirs.add(tempDir);
+  const workspaceDir = path.join(tempDir, "workspace");
+  await fs.mkdir(workspaceDir, { recursive: true });
+  await fs.writeFile(path.join(workspaceDir, "AGENTS.md"), "workspace rules", "utf8");
+  const sessionId = randomUUID();
+  const sessionKey = `agent:main:${sessionId}`;
+  const sessionTarget = {
+    agentId: "main",
+    sessionId,
+    sessionKey,
+    storePath: path.join(tempDir, "sessions.json"),
+  };
+  await persistCompletedBootstrapTurn({ runId: "completed-bootstrap", sessionTarget });
+  return { sessionId, sessionKey, sessionTarget, workspaceDir };
+}
+
+async function buildContinuationFixtureContext(
+  fixture: Awaited<ReturnType<typeof createContinuationFixture>>,
+) {
+  return await buildCodexWorkspaceBootstrapContext({
+    params: {
+      runId: "continuation-run",
+      sessionId: fixture.sessionId,
+      sessionKey: fixture.sessionKey,
+      sessionTarget: fixture.sessionTarget,
+      trigger: "user",
+      isCanonicalWorkspace: true,
+      config: {
+        agents: {
+          defaults: {
+            contextInjection: "continuation-skip",
+            workspace: fixture.workspaceDir,
+          },
+        },
+      },
+    } as EmbeddedRunAttemptParams,
+    resolvedWorkspace: fixture.workspaceDir,
+    effectiveWorkspace: fixture.workspaceDir,
+    sessionKey: fixture.sessionKey,
+    sessionAgentId: "main",
+    memoryToolNames: [],
+    hasBootstrapFileAccess: true,
+  });
+}
 
 describe("Codex app-server attempt context", () => {
   it("treats missing mirrored session history as empty without hook warning", async () => {
@@ -275,6 +341,66 @@ describe("Codex app-server attempt context", () => {
     }
   });
 
+  it("injects newly pending BOOTSTRAP.md despite an older completion marker", async () => {
+    const fixture = await createContinuationFixture();
+    await fs.writeFile(
+      path.join(fixture.workspaceDir, "BOOTSTRAP.md"),
+      "complete the new onboarding ritual",
+      "utf8",
+    );
+
+    const context = await buildContinuationFixtureContext(fixture);
+
+    expect(context.contextFiles.map((file) => path.basename(file.path))).toContain("BOOTSTRAP.md");
+    expect(context.shouldRecordCompletedBootstrapTurn).toBe(true);
+  });
+
+  it("skips ordinary continuation context after a completion marker", async () => {
+    const fixture = await createContinuationFixture();
+
+    expect(await hasCompletedBootstrapTurn(fixture.sessionTarget)).toBe(true);
+    await expect(buildContinuationFixtureContext(fixture)).resolves.toMatchObject({
+      bootstrapFiles: [],
+      contextFiles: [],
+      shouldRecordCompletedBootstrapTurn: false,
+    });
+  });
+
+  it.each(["compaction", "reset"] as const)(
+    "reinjects context after a %s boundary invalidates the completion marker",
+    async (boundaryType) => {
+      const fixture = await createContinuationFixture();
+      const boundaryId = `${boundaryType}-${randomUUID()}`;
+      await appendSqliteSessionTranscriptEventForTest({
+        ...fixture.sessionTarget,
+        event:
+          boundaryType === "compaction"
+            ? {
+                type: "compaction",
+                id: boundaryId,
+                parentId: null,
+                timestamp: new Date().toISOString(),
+                summary: "trimmed",
+                firstKeptEntryId: boundaryId,
+                tokensBefore: 10,
+              }
+            : {
+                type: "reset",
+                id: boundaryId,
+                parentId: null,
+                timestamp: new Date().toISOString(),
+                reason: "new",
+                firstKeptEntryId: boundaryId,
+              },
+      });
+
+      expect(await hasCompletedBootstrapTurn(fixture.sessionTarget)).toBe(false);
+      const context = await buildContinuationFixtureContext(fixture);
+      expect(context.contextFiles.map((file) => path.basename(file.path))).toContain("AGENTS.md");
+      expect(context.shouldRecordCompletedBootstrapTurn).toBe(true);
+    },
+  );
+
   it("reads and compares thread-bootstrap context-engine projections", () => {
     const projection = readContextEngineThreadBootstrapProjection({
       mode: "thread_bootstrap",
@@ -371,5 +497,33 @@ describe("Codex app-server attempt context", () => {
         sessionKey: "agent:codex-test:main",
       }),
     ).toBe(undefined);
+  });
+
+  it("omits broad OpenClaw context from exact memory flush turns", () => {
+    const attempt = {
+      trigger: "memory",
+      memoryFlushWritePath: "memory/2026-08-12.md",
+    } as EmbeddedRunAttemptParams;
+
+    expect(
+      buildCodexOpenClawPromptContext({
+        params: attempt,
+        workspacePromptContext: "large workspace context",
+        watchedSessionsContext: "large watched-session context",
+      }),
+    ).toBeUndefined();
+    expect(
+      buildCodexWatchedSessionsContext({
+        attempt,
+        dynamicTools: [],
+        sessionKey: "agent:main:main",
+      }),
+    ).toBeUndefined();
+    expect(
+      renderCodexSkillsCollaborationInstructions({
+        attempt,
+        skillsPrompt: "large skill catalog",
+      }),
+    ).toBeUndefined();
   });
 });

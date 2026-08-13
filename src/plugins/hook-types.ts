@@ -323,6 +323,7 @@ export type PluginHookContextWindowSource =
   | "model"
   | "modelsConfig"
   | "agentContextTokens"
+  | "runContextTokenBudget"
   | "default";
 
 export type PluginHookBeforeAgentReplyEvent = {

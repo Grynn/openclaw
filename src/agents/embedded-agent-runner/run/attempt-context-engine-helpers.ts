@@ -31,6 +31,7 @@ export async function resolveAttemptBootstrapContext<TBootstrapFile, TContextFil
   bootstrapContextMode?: string;
   bootstrapContextRunKind?: BootstrapContextRunKind;
   bootstrapMode?: BootstrapMode;
+  isPrimaryRun: boolean;
   hasCompletedBootstrapTurn: () => Promise<boolean>;
   resolveBootstrapContextForRun: () => Promise<
     AttemptBootstrapContext<TBootstrapFile, TContextFile>
@@ -51,15 +52,19 @@ export async function resolveAttemptBootstrapContext<TBootstrapFile, TContextFil
   // but only a clean full bootstrap later records a durable completion marker.
   const shouldSkipBootstrapInjection =
     params.contextInjectionMode === "never" || isContinuationTurn;
-  const shouldRecordCompletedBootstrapTurn =
-    !shouldSkipBootstrapInjection &&
-    params.bootstrapContextMode !== "lightweight" &&
-    !isHeartbeatLifecycleRun &&
-    params.bootstrapMode === "full";
-
   const context = shouldSkipBootstrapInjection
     ? { bootstrapFiles: [], contextFiles: [] }
     : await params.resolveBootstrapContextForRun();
+  // Established workspaces report onboarding mode "none"; their first full
+  // continuation-skip injection must still seed durable continuation state.
+  const shouldRecordCompletedBootstrapTurn =
+    params.isPrimaryRun &&
+    params.bootstrapContextMode !== "lightweight" &&
+    !isHeartbeatLifecycleRun &&
+    params.bootstrapContextRunKind !== "cron" &&
+    (params.bootstrapMode === "full" ||
+      (params.bootstrapMode === "none" && params.contextInjectionMode === "continuation-skip")) &&
+    context.contextFiles.length > 0;
 
   return {
     ...context,

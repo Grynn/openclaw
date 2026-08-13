@@ -1,6 +1,7 @@
 export {
   buildContextEngineBinding,
   isContextEngineBindingCompatible,
+  resolveCodexContextEngineProjectionMaxCharsForAttempt,
   type CodexContextEngineThreadBootstrapProjection,
 } from "./thread-context-engine.js";
 export {

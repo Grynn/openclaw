@@ -3,6 +3,7 @@ import {
   formatErrorMessage,
   type AgentMessage,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { isSilentReplyText } from "openclaw/plugin-sdk/reply-runtime";
 import type { EmbeddedRunAttemptResult } from "./attempt-terminal.js";
 import {
   readCodexMirroredSessionHistoryMessages,
@@ -20,6 +21,23 @@ import {
 } from "./upstream-prompt-provenance.js";
 
 type SettledTurnFinalizationContext = EmbeddedRunAttemptResult["settledTurnFinalizationContext"];
+
+/** Whether a completed tool turn owes a visible answer that may need isolated finalization. */
+export function shouldCaptureCodexSettledTurnFinalizationContext(
+  result: Pick<EmbeddedRunAttemptResult, "assistantTexts" | "messagesSnapshot">,
+  options: { silentExpected?: boolean } = {},
+): boolean {
+  const nonEmptyAssistantTexts = result.assistantTexts.filter((text) => text.trim());
+  const expectedExplicitSilence =
+    options.silentExpected === true &&
+    nonEmptyAssistantTexts.length > 0 &&
+    nonEmptyAssistantTexts.every((text) => isSilentReplyText(text));
+  return (
+    !expectedExplicitSilence &&
+    result.assistantTexts.every((text) => !text.trim() || isSilentReplyText(text)) &&
+    result.messagesSnapshot.some((message) => message.role === "toolResult")
+  );
+}
 
 function collectUniqueMessageIdentities(
   messages: readonly AgentMessage[],

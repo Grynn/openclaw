@@ -25,6 +25,7 @@ import {
   FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE,
   hasCompletedBootstrapTurn,
   makeBootstrapWarn,
+  persistCompletedBootstrapTurn,
   resolveBootstrapContextForRun,
   resolveBootstrapFilesForRun,
   resolveContextInjectionMode,
@@ -770,6 +771,25 @@ describe("hasCompletedBootstrapTurn", () => {
     sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, { timestamp: 2 });
 
     expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(true);
+  });
+
+  it("persists a completion marker through the storage-neutral transcript target", async () => {
+    sessionManager.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+
+    await expect(
+      persistCompletedBootstrapTurn({ runId: "bootstrap-run", sessionTarget }),
+    ).resolves.toBe(true);
+    expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(true);
+  });
+
+  it("does not persist without a complete transcript identity", async () => {
+    await expect(
+      persistCompletedBootstrapTurn({
+        runId: "bootstrap-run",
+        sessionTarget: { ...sessionTarget, storePath: undefined },
+      }),
+    ).resolves.toBe(false);
+    expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(false);
   });
 
   it("invalidates a completion marker after compaction", async () => {

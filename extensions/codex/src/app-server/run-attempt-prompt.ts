@@ -72,6 +72,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     agentDir,
     appServer,
     contextSessionKey,
+    sessionAgentId,
     effectiveWorkspace,
     sandbox,
   } = connection;
@@ -137,6 +138,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
           expectedBinding: buildContextEngineBinding(
             buildActiveRunAttemptParams(),
             contextEngineProjection,
+            sessionAgentId,
           ),
           projection: contextEngineProjection,
           dynamicToolsFingerprint: codexDynamicToolsFingerprint(toolBridge.specs),

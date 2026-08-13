@@ -305,6 +305,8 @@ export const CORE_FIELD_HELP: Record<string, string> = {
     "Per-agent override for lean local-model mode. Enable it for one smaller local-model agent without trimming tools from every agent.",
   "agents.defaults.contextLimits":
     "Focused per-agent-context budget defaults for selected high-volume excerpts and injected prompt blocks. Use this to tune bounded read/injection sizes without reopening any unbounded call paths.",
+  "agents.defaults.contextLimits.contextProjectionMaxChars":
+    "Optional upper bound for assembled conversation characters projected into Codex continuity prompts. This only narrows the token-derived projection cap; it does not change the model context window, context-engine token budget, provider guards, or compaction thresholds.",
   "agents.defaults.contextLimits.memoryGetMaxChars":
     "Default max characters returned by memory_get before truncation metadata and continuation notice are added. Increase to approximate older larger excerpts, but keep it bounded.",
   "agents.defaults.contextLimits.postCompactionMaxChars":
@@ -317,6 +319,8 @@ export const CORE_FIELD_HELP: Record<string, string> = {
     "Per-agent override for the skills prompt character budget. This extends the existing skills.limits.maxSkillsPromptChars path instead of routing the same budget through contextLimits.",
   "agents.entries.*.contextLimits":
     "Optional per-agent overrides for the focused context budget knobs. Omitted fields inherit agents.defaults.contextLimits.",
+  "agents.entries.*.contextLimits.contextProjectionMaxChars":
+    "Per-agent upper bound for Codex continuity projection characters. Omit to inherit the default; setting it above the token-derived cap never widens the projection.",
   "agents.entries.*.contextLimits.memoryGetMaxChars":
     "Per-agent override for the default memory_get max character budget.",
   "agents.entries.*.contextLimits.postCompactionMaxChars":

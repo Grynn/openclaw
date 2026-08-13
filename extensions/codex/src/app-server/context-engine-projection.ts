@@ -94,21 +94,31 @@ export function projectContextEngineAssemblyForCodex(params: {
 /** Resolves rendered context size from a token budget and reserve. */
 export function resolveCodexContextEngineProjectionMaxChars(params: {
   contextTokenBudget?: number;
+  contextProjectionMaxChars?: number;
   reserveTokens?: number;
 }): number {
   const contextTokenBudget =
     typeof params.contextTokenBudget === "number" && Number.isFinite(params.contextTokenBudget)
       ? Math.floor(params.contextTokenBudget)
       : undefined;
-  if (!contextTokenBudget || contextTokenBudget <= 0) {
-    return DEFAULT_RENDERED_CONTEXT_CHARS;
-  }
-  const scaledChars =
-    resolveProjectionPromptBudgetTokens({
-      contextTokenBudget,
-      reserveTokens: params.reserveTokens,
-    }) * APPROX_RENDERED_CHARS_PER_TOKEN;
-  return normalizeRenderedContextMaxChars(scaledChars);
+  const tokenDerivedMaxChars =
+    !contextTokenBudget || contextTokenBudget <= 0
+      ? DEFAULT_RENDERED_CONTEXT_CHARS
+      : normalizeRenderedContextMaxChars(
+          resolveProjectionPromptBudgetTokens({
+            contextTokenBudget,
+            reserveTokens: params.reserveTokens,
+          }) * APPROX_RENDERED_CHARS_PER_TOKEN,
+        );
+  const configuredMaxChars =
+    typeof params.contextProjectionMaxChars === "number" &&
+    Number.isFinite(params.contextProjectionMaxChars) &&
+    params.contextProjectionMaxChars >= 1
+      ? Math.floor(params.contextProjectionMaxChars)
+      : undefined;
+  return configuredMaxChars === undefined
+    ? tokenDerivedMaxChars
+    : Math.min(tokenDerivedMaxChars, configuredMaxChars);
 }
 
 /** Returns the fixed reserve used for Codex context-engine projections. */
