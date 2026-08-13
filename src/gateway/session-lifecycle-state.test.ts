@@ -59,6 +59,10 @@ async function persistExactCronLifecycle(options: {
   entry: SessionEntry;
   eventRunId: string;
   eventSessionId?: string;
+  eventPhase?: "end" | "error";
+  eventStartedAt?: number;
+  eventEndedAt?: number;
+  eventError?: string;
 }): Promise<SessionEntry | undefined> {
   let currentEntry = structuredClone(options.entry);
   persistenceMocks.loadSessionEntry.mockReset().mockReturnValue({
@@ -82,7 +86,14 @@ async function persistExactCronLifecycle(options: {
       ts: 2_000,
       sessionId: options.eventSessionId ?? "cron-session-id",
       runId: options.eventRunId,
-      data: { phase: "end", startedAt: 1_300, endedAt: 1_950 },
+      data: {
+        phase: options.eventPhase ?? "end",
+        startedAt: options.eventStartedAt ?? 1_300,
+        endedAt: options.eventEndedAt ?? 1_950,
+        ...(options.eventPhase === "error"
+          ? { error: options.eventError ?? "provider timed out" }
+          : {}),
+      },
     },
   });
   return currentEntry;
@@ -767,6 +778,42 @@ describe("session lifecycle state", () => {
     expect(persisted.lifecycleRunId).toBe("interrupted-run");
   });
 
+  it("settles a sealed running cron owner once and ignores its duplicate error", async () => {
+    const settled = await persistExactCronLifecycle({
+      entry: {
+        ...cronSessionEntry("ready"),
+        lifecycleRunId: "initial-run",
+      },
+      eventRunId: "initial-run",
+      eventSessionId: "cron-session-id",
+      eventPhase: "error",
+    });
+
+    expect(settled).toMatchObject({
+      status: "failed",
+      startedAt: 1_300,
+      endedAt: 1_950,
+      runtimeMs: 650,
+      lastRunError: "provider timed out",
+    });
+    expect(settled?.lifecycleRunId).toBeUndefined();
+    if (!settled) {
+      throw new Error("sealed cron terminal persistence test invariant");
+    }
+
+    const replayed = await persistExactCronLifecycle({
+      entry: settled,
+      eventRunId: "initial-run",
+      eventSessionId: "cron-session-id",
+      eventPhase: "error",
+      eventStartedAt: 1_400,
+      eventEndedAt: 2_400,
+      eventError: "late duplicate error",
+    });
+
+    expect(replayed).toEqual(settled);
+  });
+
   it.each([
     {
       name: "accepts the initial owner while running",
@@ -783,10 +830,40 @@ describe("session lifecycle state", () => {
       expectedStatus: "done",
     },
     {
-      name: "ignores events once ready",
+      name: "ignores unidentified events once ready",
       entry: cronSessionEntry("ready"),
       eventRunId: "continuation-run",
       eventSessionId: "cron-session-id",
+      expectedStatus: "running",
+    },
+    {
+      name: "accepts the sealed initial owner's end event while still running",
+      entry: {
+        ...cronSessionEntry("ready"),
+        lifecycleRunId: "initial-run",
+      },
+      eventRunId: "initial-run",
+      eventSessionId: "cron-session-id",
+      expectedStatus: "done",
+    },
+    {
+      name: "ignores a mismatched initial owner once ready",
+      entry: {
+        ...cronSessionEntry("ready"),
+        lifecycleRunId: "current-owner",
+      },
+      eventRunId: "stale-owner",
+      eventSessionId: "cron-session-id",
+      expectedStatus: "running",
+    },
+    {
+      name: "ignores the matching initial owner from a stale session id once ready",
+      entry: {
+        ...cronSessionEntry("ready"),
+        lifecycleRunId: "initial-run",
+      },
+      eventRunId: "initial-run",
+      eventSessionId: "stale-session-id",
       expectedStatus: "running",
     },
     {
