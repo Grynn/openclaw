@@ -741,17 +741,55 @@ describe("createCodexDynamicToolBridge", () => {
 
   it("keeps configured direct tools in the initial Codex tool context", () => {
     const bridge = createCodexDynamicToolBridge({
-      tools: [createTool({ name: "message" }), createTool({ name: "web_search" })],
+      tools: [
+        createTool({
+          name: "message",
+          description: "Full message manager.",
+          parameters: {
+            type: "object",
+            properties: {
+              action: { type: "string" },
+              message: { type: "string" },
+              media: { type: "string" },
+              pollId: { type: "string" },
+            },
+          },
+        }),
+        createTool({ name: "web_search" }),
+      ],
       signal: new AbortController().signal,
       directToolNames: ["message"],
     });
 
     const specs = flattenSpecsWithNamespace(bridge.specs);
-    expect(bridge.specs).toHaveLength(2);
-    expectDynamicSpec(
-      specs.find((tool) => tool.name === "message"),
-      { name: "message" },
+    const directMessage = specs.find(
+      (tool) => tool.name === "message" && tool.namespace === undefined,
     );
+    const deferredMessage = specs.find(
+      (tool) => tool.name === "message" && tool.namespace === CODEX_OPENCLAW_DYNAMIC_TOOL_NAMESPACE,
+    );
+    expect(bridge.specs).toHaveLength(2);
+    expectDynamicSpec(directMessage, { name: "message" });
+    expect(directMessage?.description).toContain("current source conversation");
+    expect(directMessage?.inputSchema).toEqual(
+      expect.objectContaining({
+        type: "object",
+        required: ["action", "message"],
+        properties: expect.objectContaining({
+          action: expect.objectContaining({ enum: ["send"] }),
+          message: expect.objectContaining({ type: "string" }),
+          final: expect.objectContaining({ type: "boolean" }),
+        }),
+      }),
+    );
+    expect(JSON.stringify(directMessage?.inputSchema)).not.toContain("pollId");
+    expectDynamicSpec(deferredMessage, {
+      name: "message",
+      namespace: CODEX_OPENCLAW_DYNAMIC_TOOL_NAMESPACE,
+      deferLoading: true,
+    });
+    expect(deferredMessage?.description).toBe("Full message manager.");
+    expect(JSON.stringify(deferredMessage?.inputSchema)).toContain("pollId");
     expectDynamicSpec(
       specs.find((tool) => tool.name === "web_search"),
       {
@@ -760,7 +798,31 @@ describe("createCodexDynamicToolBridge", () => {
         deferLoading: true,
       },
     );
-    expectNoNamespace(specs.find((tool) => tool.name === "message"));
+    expectNoNamespace(directMessage);
+  });
+
+  it("keeps the full message schema directly visible in compatibility direct mode", () => {
+    const bridge = createCodexDynamicToolBridge({
+      tools: [
+        createTool({
+          name: "message",
+          description: "Full message manager.",
+          parameters: {
+            type: "object",
+            properties: { pollId: { type: "string" } },
+          },
+        }),
+      ],
+      signal: new AbortController().signal,
+      loading: "direct",
+      directToolNames: ["message"],
+    });
+
+    const specs = flattenSpecsWithNamespace(bridge.specs);
+    expect(specs).toHaveLength(1);
+    expectNoNamespace(specs[0]);
+    expect(specs[0]?.description).toBe("Full message manager.");
+    expect(JSON.stringify(specs[0]?.inputSchema)).toContain("pollId");
   });
 
   it("isolates direct-only tools in Codex's model-only namespace", () => {
