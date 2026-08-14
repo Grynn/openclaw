@@ -1388,6 +1388,29 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     expect(firstAttempt.fastModeStartedAtMs).toBe(secondAttempt.fastModeStartedAtMs);
   });
 
+  it("blocks an explicit run fast mode when the selected model forbids it", async () => {
+    state.runtimeConfigMock = {
+      agents: {
+        defaults: {
+          model: { primary: "anthropic/claude" },
+          models: {
+            "anthropic/claude": { params: { fastModeAllowed: false } },
+          },
+        },
+      },
+    };
+    setupSingleAttemptFallback();
+    state.runAgentAttemptMock.mockResolvedValue(makeSuccessResult("anthropic", "claude"));
+
+    await agentCommand({
+      message: "hello",
+      to: "+1234567890",
+      fastMode: true,
+    });
+
+    expectRecordFields(mockCallArg(state.runAgentAttemptMock), { fastMode: false });
+  });
+
   it("reuses durable user-turn proof across live model switch retries", async () => {
     let fallbackInvocation = 0;
     state.runWithModelFallbackMock.mockImplementation(async (params: FallbackRunnerParams) => {

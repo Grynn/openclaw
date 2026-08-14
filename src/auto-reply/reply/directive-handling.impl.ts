@@ -193,10 +193,11 @@ export async function handleDirectiveOnly(
     agentId: activeAgentId,
     sessionEntry: directives.clearFastMode ? undefined : sessionEntry,
   });
-  const effectiveFastMode =
-    directives.fastMode ??
-    (directives.clearFastMode ? fastModeState.mode : currentFastMode) ??
-    fastModeState.mode;
+  const effectiveFastMode = !fastModeState.allowed
+    ? false
+    : (directives.fastMode ??
+      (directives.clearFastMode ? fastModeState.mode : currentFastMode) ??
+      fastModeState.mode);
   const effectiveFastModeSource =
     directives.fastMode !== undefined ? "session" : fastModeState.source;
 
@@ -280,6 +281,17 @@ export async function handleDirectiveOnly(
       {
         text: `Unrecognized fast mode "${directives.rawFastMode}". Valid levels: on, off, auto, default, status.`,
       },
+      "hasFastDirective",
+    );
+  }
+  if (
+    directives.hasFastDirective &&
+    directives.fastMode !== undefined &&
+    directives.fastMode !== false &&
+    !fastModeState.allowed
+  ) {
+    return acknowledgeIgnoredDirective(
+      { text: "Fast mode is disabled by policy for the current model." },
       "hasFastDirective",
     );
   }

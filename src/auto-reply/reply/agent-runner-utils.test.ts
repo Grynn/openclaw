@@ -22,8 +22,12 @@ vi.mock("../../utils/provider-utils.js", () => ({
   isReasoningTagProvider: (...args: unknown[]) => hoisted.isReasoningTagProviderMock(...args),
 }));
 
-const { buildThreadingToolContext, buildEmbeddedRunExecutionParams, resolveModelFallbackOptions } =
-  await import("./agent-runner-utils.js");
+const {
+  buildThreadingToolContext,
+  buildEmbeddedRunExecutionParams,
+  resolveModelFallbackOptions,
+  resolveRunFastModeForFallbackCandidate,
+} = await import("./agent-runner-utils.js");
 const { resolveProviderScopedAuthProfile } = await import("./agent-runner-auth-profile.js");
 const { buildEmbeddedRunBaseParams: buildEmbeddedRunBaseParamsCore } =
   await import("./agent-runner-run-params.js");
@@ -141,6 +145,32 @@ describe("agent-runner-utils", () => {
       hasAutoFallbackProvenance: false,
     });
     expect(resolved.fallbacksOverride).toEqual(["fallback-model"]);
+  });
+
+  it("hard-disables a fast override when a fallback model forbids fast mode", () => {
+    const run = makeRun({
+      fastMode: true,
+      fastModeOverride: true,
+      config: {
+        agents: {
+          defaults: {
+            models: {
+              "anthropic/claude-sonnet-5": { params: { fastModeAllowed: false } },
+            },
+          },
+        },
+      },
+    });
+
+    expect(
+      resolveRunFastModeForFallbackCandidate({
+        run,
+        config: run.config,
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        sessionEntry: { fastMode: true },
+      }),
+    ).toEqual({ fastMode: false, fastModeAutoOnSeconds: 60 });
   });
 
   it("builds embedded run base params with auth profile and run metadata", () => {

@@ -40,6 +40,8 @@ describe("OpenAI runtime routing policy", () => {
     ["thinking", { thinking: "xhigh" }],
     ["fastMode", { fastMode: true }],
     ["fast_mode", { fast_mode: true }],
+    ["fastModeAllowed", { fastModeAllowed: false }],
+    ["fast_mode_allowed", { fast_mode_allowed: false }],
     ["fastAutoOnSeconds", { fastMode: "auto", fastAutoOnSeconds: 30 }],
     ["fast_auto_on_seconds", { fastMode: "auto", fast_auto_on_seconds: 30 }],
     ["fastSeconds", { fastMode: "auto", fastSeconds: 30 }],

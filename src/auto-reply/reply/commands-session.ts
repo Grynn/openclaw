@@ -454,6 +454,22 @@ export const handleFastCommand: CommandHandler = defineAuthorizedTextCommand(
       return sessionCommandReply("⚙️ Usage: /fast status|auto|on|off|default");
     }
 
+    if (nextMode !== false) {
+      const sessionAgentId = params.sessionKey
+        ? resolveSessionAgentId({ sessionKey: params.sessionKey, config: params.cfg })
+        : params.agentId;
+      const prospectiveState = resolveFastModeState({
+        cfg: params.cfg,
+        provider: params.provider,
+        model: params.model,
+        agentId: sessionAgentId,
+        sessionEntry: { fastMode: nextMode },
+      });
+      if (!prospectiveState.allowed) {
+        return sessionCommandReply("⚙️ Fast mode is disabled by policy for the current model.");
+      }
+    }
+
     if (targetSessionEntry && params.sessionStore && params.sessionKey) {
       targetSessionEntry.fastMode = nextMode;
       if (

@@ -16,11 +16,19 @@ type FastModeModelConfig = {
   params?: Record<string, unknown>;
 };
 
+type FastModeProviderConfig = {
+  params?: Record<string, unknown>;
+  models?: Array<{ id?: string; params?: Record<string, unknown> }>;
+};
+
 type FastModeConfig = {
   agents?: {
     defaults?: {
       models?: Record<string, FastModeModelConfig | undefined>;
     };
+  };
+  models?: {
+    providers?: Record<string, FastModeProviderConfig | undefined>;
   };
 };
 
@@ -50,6 +58,60 @@ export function resolveFastModeModelParams(params: {
     return undefined;
   }
   return models[modelConfigKey(params.provider, params.model)]?.params;
+}
+
+/** Whether a model/provider param is the shared fast-mode allow policy. */
+export function isFastModeAllowedParam(key: string, value: unknown): boolean {
+  return (key === "fastModeAllowed" || key === "fast_mode_allowed") && typeof value === "boolean";
+}
+
+function readFastModeAllowed(params: Record<string, unknown> | undefined): boolean | undefined {
+  const value = params?.fastModeAllowed ?? params?.fast_mode_allowed;
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function resolveFastModeProviderConfig(params: {
+  cfg: FastModeConfig | undefined;
+  provider?: string;
+}): FastModeProviderConfig | undefined {
+  const provider = normalizeLowercaseStringOrEmpty(params.provider);
+  if (!provider) {
+    return undefined;
+  }
+  return Object.entries(params.cfg?.models?.providers ?? {}).find(
+    ([providerId]) => normalizeLowercaseStringOrEmpty(providerId) === provider,
+  )?.[1];
+}
+
+function resolveFastModeProviderModelParams(params: {
+  cfg: FastModeConfig | undefined;
+  provider?: string;
+  model?: string;
+}): Record<string, unknown> | undefined {
+  const provider = normalizeLowercaseStringOrEmpty(params.provider);
+  const model = normalizeLowercaseStringOrEmpty(params.model);
+  if (!provider || !model) {
+    return undefined;
+  }
+  const modelId = model.startsWith(`${provider}/`) ? model.slice(provider.length + 1) : model;
+  return resolveFastModeProviderConfig(params)?.models?.find((entry) => {
+    const candidate = normalizeLowercaseStringOrEmpty(entry.id);
+    return candidate === modelId || candidate === model;
+  })?.params;
+}
+
+/** Whether the selected model permits fast mode at all. Defaults to allowed. */
+export function resolveFastModeModelAllowed(params: {
+  cfg: FastModeConfig | undefined;
+  provider?: string;
+  model?: string;
+}): boolean {
+  return (
+    readFastModeAllowed(resolveFastModeProviderModelParams(params)) ??
+    readFastModeAllowed(resolveFastModeModelParams(params)) ??
+    readFastModeAllowed(resolveFastModeProviderConfig(params)?.params) ??
+    true
+  );
 }
 
 function normalizeFastModeAutoOnSeconds(value: unknown): number | undefined {
