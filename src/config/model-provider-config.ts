@@ -1,6 +1,7 @@
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { asOptionalRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
 import type { ProviderRouteOverridePresence } from "../plugin-sdk/provider-model-types.js";
+import { isFastModeAllowedParam } from "../shared/fast-mode.js";
 import type { ModelDefinitionConfig, ModelProviderConfig } from "./types.models.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
@@ -129,6 +130,13 @@ function hasNonEmptyRecord(value: unknown): boolean {
   return record !== undefined && Object.keys(record).length > 0;
 }
 
+function hasAuthoredRequestParams(value: unknown): boolean {
+  const record = readRecord(value);
+  return Boolean(
+    record && Object.entries(record).some(([key, param]) => !isFastModeAllowedParam(key, param)),
+  );
+}
+
 /** Projects authored request behavior without exposing values or local commands. */
 export function resolveModelProviderRouteOverridePresence(params: {
   provider: string;
@@ -144,7 +152,7 @@ export function resolveModelProviderRouteOverridePresence(params: {
     readRecord(providerConfig.localService) !== undefined ||
     hasNonEmptyRecord(providerConfig.headers) ||
     hasNonEmptyRecord(providerConfig.request) ||
-    hasNonEmptyRecord(providerConfig.params) ||
+    hasAuthoredRequestParams(providerConfig.params) ||
     typeof providerConfig.authHeader === "boolean" ||
     typeof providerConfig.timeoutSeconds === "number"
   ) {
@@ -165,7 +173,7 @@ export function resolveModelProviderRouteOverridePresence(params: {
   }).get(modelId);
   return configuredModel &&
     (hasNonEmptyRecord(configuredModel.headers) ||
-      hasNonEmptyRecord(configuredModel.params) ||
+      hasAuthoredRequestParams(configuredModel.params) ||
       hasNonEmptyRecord(configuredModel.compat))
     ? "present"
     : "none";

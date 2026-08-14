@@ -1,6 +1,7 @@
 import { normalizeFastMode } from "@openclaw/normalization-core/string-coerce";
 import { normalizeThinkLevel } from "../auto-reply/thinking.shared.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { isFastModeAllowedParam } from "../shared/fast-mode.js";
 import { modelKey } from "../shared/model-key.js";
 import { resolveAgentConfig } from "./agent-scope-config.js";
 
@@ -30,6 +31,9 @@ export function isAgentRuntimeModelParam(key: string, value: unknown): boolean {
   }
   if (key === "fastMode" || key === "fast_mode") {
     return normalizeFastMode(value) !== undefined;
+  }
+  if (isFastModeAllowedParam(key, value)) {
+    return true;
   }
   return (
     FAST_MODE_CUTOFF_MODEL_PARAM_KEYS.has(key) &&

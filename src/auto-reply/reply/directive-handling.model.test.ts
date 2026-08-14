@@ -2804,6 +2804,26 @@ describe("handleDirectiveOnly model persist behavior (fixes #1435)", () => {
     expect(sessionEntry.fastMode).toBeUndefined();
   });
 
+  it("rejects a fast-mode directive when the selected model forbids fast mode", async () => {
+    const sessionEntry = createSessionEntry();
+    const result = await runHandleCommand("/fast on", {
+      cfg: {
+        commands: { text: true },
+        agents: {
+          defaults: {
+            models: {
+              "anthropic/claude-opus-4-6": { params: { fastModeAllowed: false } },
+            },
+          },
+        },
+      },
+      sessionEntry,
+    });
+
+    expect(result?.text).toBe("Fast mode is disabled by policy for the current model.");
+    expect(sessionEntry.fastMode).toBeUndefined();
+  });
+
   it("persists and reports elevated-mode directives when allowed", async () => {
     const sessionEntry = createSessionEntry();
     const base = {

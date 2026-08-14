@@ -36,6 +36,7 @@ const loadCostUsageSummaryMock = vi.hoisted(() =>
 type FastModeStateMockResult = {
   mode: boolean | "auto" | undefined;
   enabled: boolean;
+  allowed: boolean;
   source: "session" | "agent" | "config" | "default";
   fastAutoOnSeconds?: number;
 };
@@ -53,6 +54,7 @@ const resolveFastModeStateMock = vi.hoisted(() =>
   vi.fn<() => FastModeStateMockResult>(() => ({
     mode: true,
     enabled: true,
+    allowed: true,
     source: "agent",
   })),
 );
@@ -326,6 +328,7 @@ describe("handleFastCommand", () => {
     resolveFastModeStateMock.mockReturnValue({
       mode: true,
       enabled: true,
+      allowed: true,
       source: "agent",
     });
   });
@@ -350,6 +353,7 @@ describe("handleFastCommand", () => {
     resolveFastModeStateMock.mockReturnValue({
       mode: "auto",
       enabled: true,
+      allowed: true,
       source: "config",
       fastAutoOnSeconds: 30,
     });
@@ -427,6 +431,30 @@ describe("handleFastCommand", () => {
 
     expect(result?.reply?.text).toBe("⚙️ Fast mode reset to default.");
     expect(params.sessionEntry.fastMode).toBe(false);
+    expect(params.sessionStore[params.sessionKey]?.fastMode).toBeUndefined();
+  });
+
+  it("rejects /fast on when the current model forbids fast mode", async () => {
+    resolveFastModeStateMock.mockReturnValue({
+      mode: false,
+      enabled: false,
+      allowed: false,
+      source: "config",
+      fastAutoOnSeconds: 60,
+    });
+    const params = buildUsageParams();
+    params.command.commandBodyNormalized = "/fast on";
+    params.provider = "anthropic";
+    params.model = "claude-sonnet-5";
+    params.sessionEntry = {
+      sessionId: "target-session",
+      updatedAt: Date.now(),
+    };
+    params.sessionStore = { [params.sessionKey]: params.sessionEntry };
+
+    const result = await handleFastCommand(params, true);
+
+    expect(result?.reply?.text).toBe("⚙️ Fast mode is disabled by policy for the current model.");
     expect(params.sessionStore[params.sessionKey]?.fastMode).toBeUndefined();
   });
 });

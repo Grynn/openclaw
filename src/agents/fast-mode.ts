@@ -7,6 +7,7 @@ import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   type FastModeSource,
+  resolveFastModeModelAllowed,
   resolveFastModeModelAutoOnSeconds,
   resolveFastModeModelParams,
 } from "../shared/fast-mode.js";
@@ -29,6 +30,7 @@ export type { FastModeAutoProgressState } from "../shared/fast-mode.js";
 type FastModeState = {
   mode: FastMode;
   enabled: boolean;
+  allowed: boolean;
   source: FastModeSource;
   fastAutoOnSeconds: number;
 };
@@ -51,11 +53,22 @@ export function resolveFastModeState(params: {
   sessionEntry?: Pick<SessionEntry, "fastMode"> | undefined;
 }): FastModeState {
   const fastAutoOnSeconds = resolveFastModeModelAutoOnSeconds(params);
+  const allowed = resolveFastModeModelAllowed(params);
+  if (!allowed) {
+    return {
+      mode: false,
+      enabled: false,
+      allowed: false,
+      source: "config",
+      fastAutoOnSeconds,
+    };
+  }
   const sessionOverride = normalizeFastMode(params.sessionEntry?.fastMode);
   if (sessionOverride !== undefined) {
     return {
       mode: sessionOverride,
       enabled: sessionOverride === "auto" ? true : sessionOverride,
+      allowed: true,
       source: "session",
       fastAutoOnSeconds,
     };
@@ -70,6 +83,7 @@ export function resolveFastModeState(params: {
     return {
       mode: normalizedAgentDefault,
       enabled: normalizedAgentDefault === "auto" ? true : normalizedAgentDefault,
+      allowed: true,
       source: "agent",
       fastAutoOnSeconds,
     };
@@ -81,6 +95,7 @@ export function resolveFastModeState(params: {
     return {
       mode: configured,
       enabled: configured === "auto" ? true : configured,
+      allowed: true,
       source: "config",
       fastAutoOnSeconds,
     };
@@ -89,6 +104,7 @@ export function resolveFastModeState(params: {
   return {
     mode: false,
     enabled: false,
+    allowed: true,
     source: "default",
     fastAutoOnSeconds,
   };
