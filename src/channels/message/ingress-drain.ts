@@ -16,6 +16,7 @@ import {
   registerLiveIngressDrainInstance,
 } from "./ingress-claim-owner.js";
 import type { ChannelIngressDispatchLifecycle } from "./ingress-drain-lifecycle.js";
+import { armIngressStallWatchdog } from "./ingress-drain-stall-watchdog.js";
 import {
   activeClaimKey,
   createIngressDispatchQuiescence,
@@ -27,7 +28,6 @@ import {
   type ChannelIngressDrainDispatchResult,
 } from "./ingress-drain-state.js";
 import { supersedeActiveStatesIfNeeded } from "./ingress-drain-supersede.js";
-import { armIngressStallWatchdog } from "./ingress-drain-stall-watchdog.js";
 import type {
   ChannelIngressQueue,
   ChannelIngressQueueClaim,
@@ -470,9 +470,10 @@ export function createChannelIngressDrain<
           state.quiescence.markDeferredSettled();
           return;
         }
-        // Keep recovery armed until disposition commits; removeActive clears it after success.
         state.quiescence.markDeferredSettled();
-        clearStallTimer(state);
+        // Keep the stall watchdog armed until disposition commits: a failed
+        // settlement (release/dead-letter write error) must leave recovery
+        // live, or the claim wedges forever. removeActive clears it on success.
         await state.settleOnce(async () => {
           await applyFailureDisposition(state.claim, error);
         });

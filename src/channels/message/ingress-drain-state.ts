@@ -25,6 +25,7 @@ type IngressDispatchQuiescence = {
 export function createIngressDispatchQuiescence(): IngressDispatchQuiescence {
   let dispatchSettled = false;
   let deferred = false;
+  let deferredSettled = false;
   let resolved = false;
   let resolveTask!: () => void;
   const task = new Promise<void>((resolve) => {
@@ -43,11 +44,15 @@ export function createIngressDispatchQuiescence(): IngressDispatchQuiescence {
       resolveIfQuiesced();
     },
     markDeferred: () => {
-      if (!resolved) {
+      // A deferred participant can fail/settle before the dispatcher returns
+      // "deferred" (debounced flushes). Settlement is sticky: re-arming here
+      // would leave quiescence unresolvable and wedge the stall watchdog.
+      if (!resolved && !deferredSettled) {
         deferred = true;
       }
     },
     markDeferredSettled: () => {
+      deferredSettled = true;
       deferred = false;
       resolveIfQuiesced();
     },

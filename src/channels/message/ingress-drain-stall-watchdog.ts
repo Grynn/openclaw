@@ -48,7 +48,7 @@ type IngressStallWatchdogDeps<TPayload, TMetadata> = {
   ) => Promise<void>;
   releaseClaim: (
     claim: ChannelIngressQueueClaim<TPayload, TMetadata>,
-    lastError?: string,
+    releaseOptions?: { lastError?: string; recordAttempt?: boolean },
   ) => Promise<void>;
 };
 
@@ -151,7 +151,18 @@ export function armIngressStallWatchdog<TPayload, TMetadata>(
         );
       }
       await state.settleOnce(async () => {
-        await deps.releaseClaim(state.claim, message);
+        try {
+          await deps.releaseClaim(state.claim, { lastError: message });
+        } catch (err) {
+          // A broken release store must not wedge the lane forever: fall back
+          // to the terminal dead-letter write so recovery stays guaranteed
+          // whenever any disposition path still works.
+          deps.log(
+            `ingress drain: release for retry failed for stalled event ${displayId}; ` +
+              `dead-lettering (handler-timeout) so the lane recovers: ${deps.formatError(err)}`,
+          );
+          await deps.failClaim(state.claim, "handler-timeout", message);
+        }
       });
     })();
     state.stallSettlementTask = settlementTask;

@@ -17,68 +17,12 @@ describe("channel ingress drain watchdog", () => {
     closeOpenClawStateDatabaseForTest();
   });
 
-  it("guillotines pre-adoption stalls with handler-timeout", async () => {
-    await withTempState(async (stateDir) => {
-      let clock = 10_000;
-      const queue = createTestIngressQueue(stateDir, { now: () => clock });
-      await queue.enqueue("evt-stall", { text: "x" }, { laneKey: "l1" });
-
-      const drain = createChannelIngressDrain<Payload>({
-        queue,
-        now: () => clock,
-        adoptionStallTimeoutMs: 5_000,
-        dispatchClaimedEvent: async () => {
-          // Never adopt, never return -- stall until watchdog.
-          await new Promise(() => {});
-        },
-      });
-
-      await drain.drainOnce();
-      clock += 5_000;
-      await vi.advanceTimersByTimeAsync(5_000);
-      await drain.waitForIdle();
-
-      const reenqueue = await queue.enqueue("evt-stall", { text: "x" });
-      expect(reenqueue.kind).toBe("failed");
-      if (reenqueue.kind === "failed") {
-        expect(reenqueue.record.reason).toBe("handler-timeout");
-      }
-      drain.dispose();
-    });
-  });
-
-  it("guillotines deferred stalls", async () => {
-    await withTempState(async (stateDir) => {
-      let clock = 30_000;
-      const queue = createTestIngressQueue(stateDir, { now: () => clock });
-      await queue.enqueue("evt-def-stall", { text: "x" }, { laneKey: "l1" });
-
-      const drain = createChannelIngressDrain<Payload>({
-        queue,
-        now: () => clock,
-        adoptionStallTimeoutMs: 5_000,
-        dispatchClaimedEvent: async (_event, lifecycle) => {
-          lifecycle.onDeferred();
-          // Stay deferred without adoption -- watchdog must still fire.
-          await new Promise(() => {});
-        },
-      });
-
-      await drain.drainOnce();
-      expect(await queue.listClaims()).toHaveLength(1);
-      clock += 5_000;
-      await vi.advanceTimersByTimeAsync(5_000);
-      await drain.waitForIdle();
-
-      const reenqueue = await queue.enqueue("evt-def-stall", { text: "x" });
-      expect(reenqueue.kind).toBe("failed");
-      if (reenqueue.kind === "failed") {
-        expect(reenqueue.record.reason).toBe("handler-timeout");
-      }
-      drain.dispose();
-    });
-  });
-
+  // The former "guillotines pre-adoption stalls with handler-timeout" and
+  // "guillotines deferred stalls" cases asserted the immediate dead-letter
+  // disposition this change removes: pre-adoption stalls now release under the
+  // shared retry policy and dead-letter only on budget exhaustion. That
+  // behavior (same scenarios, corrected expectations) is owned by
+  // ingress-drain-stall.test.ts.
   it("does not kill healthy long turns after adoption", async () => {
     await withTempState(async (stateDir) => {
       let clock = 20_000;

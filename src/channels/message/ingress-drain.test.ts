@@ -2,10 +2,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
-import {
-  createChannelIngressDrain,
-  isIngressAdoptionLostError,
-} from "./ingress-drain.js";
+import { createChannelIngressDrain, isIngressAdoptionLostError } from "./ingress-drain.js";
 import {
   createTestIngressQueue,
   type IngressDrainTestPayload as Payload,
