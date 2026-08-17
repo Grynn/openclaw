@@ -102,6 +102,8 @@ export type ChannelIngressDrain = {
   recoverStaleClaims: () => Promise<number>;
   drainOnce: (options?: { shouldStop?: () => boolean }) => Promise<{ started: number }>;
   activeLaneKeys: () => ReadonlySet<string>;
+  /** True while a stall-watchdog settlement (release/dead-letter) is still committing. */
+  hasPendingStallSettlements: () => boolean;
   waitForIdle: () => Promise<void>;
   dispose: () => void;
 };
@@ -757,6 +759,10 @@ export function createChannelIngressDrain<
     recoverStaleClaims,
     drainOnce,
     activeLaneKeys: () => new Set(laneOwnerByKey.keys()),
+    hasPendingStallSettlements: () =>
+      [...activeByClaim.values()].some(
+        (state) => state.stallSettlementTask !== undefined && state.phase !== "settled",
+      ),
     waitForIdle: async () => {
       const tasks = [...activeByClaim.values()].flatMap((state) =>
         state.stallSettlementTask ? [state.task, state.stallSettlementTask] : [state.task],
