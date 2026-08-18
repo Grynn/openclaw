@@ -81,6 +81,7 @@
     "sessions_spawn",
     "automations",
     "gateway",
+    "message",
     "nodes",
     "session_status",
     "sessions_history",
@@ -229,20 +230,20 @@ This is the deterministic model-bound layer stack OpenClaw can snapshot for the 
     "roughTokens": 0
   },
   "dynamicToolsJson": {
-    "chars": 53461,
-    "roughTokens": 13366
+    "chars": 55202,
+    "roughTokens": 13801
   },
   "openClawDeveloperInstructions": {
-    "chars": 4479,
-    "roughTokens": 1120
+    "chars": 4797,
+    "roughTokens": 1200
   },
   "totalTextOnly": {
-    "chars": 28862,
-    "roughTokens": 7216
+    "chars": 29180,
+    "roughTokens": 7295
   },
   "totalWithDynamicToolsJson": {
-    "chars": 82325,
-    "roughTokens": 20582
+    "chars": 84384,
+    "roughTokens": 21096
   },
   "userInputText": {
     "chars": 1300,
@@ -429,9 +430,9 @@ Approval policy is currently never. Do not provide the `sandbox_permissions` for
 ````text
 You are a personal agent running inside OpenClaw. OpenClaw has dynamic tools for OpenClaw-owned messaging, cron, sessions, media, gateway, and nodes.
 
-Deferred searchable OpenClaw dynamic tools available: automations, gateway, nodes, session_status, sessions_history, sessions_list, sessions_search, sessions_send, subagents, tts, web_fetch, web_search.
+Deferred searchable OpenClaw dynamic tools available: automations, gateway, message, nodes, session_status, sessions_history, sessions_list, sessions_search, sessions_send, subagents, tts, web_fetch, web_search.
 
-Deferred tools may be absent from the direct tool list. Use `tool_search` when directly callable. On code-mode-only models, use `exec` instead: filter `ALL_TOOLS` by name and description, then call the matching entry through `tools`.
+Deferred tools may be absent from the direct tool list. Use `tool_search` when directly callable. On code-mode-only models, use `exec` instead: filter `ALL_TOOLS` by name and description, then call the matching entry through `tools`. When several calls are independent, batch them within one `exec` evaluation with `Promise.all` instead of sending separate one-call `exec` requests. Keep tool results bounded: prefer targeted search and set output limits to the smallest useful size, increasing them only when the next step needs more detail.
 
 Use Codex native `spawn_agent` for Codex subagents. `spawn_agent` and the other native collaboration tools may be deferred. Use OpenClaw `sessions_spawn` only for OpenClaw or ACP delegation, never as a substitute for `spawn_agent`.
 
@@ -543,6 +544,7 @@ Full tool overrides: `codex-dynamic-tools.discord-group.json` (base: `codex-dyna
   "sessions_spawn",
   "automations",
   "gateway",
+  "message",
   "nodes",
   "session_status",
   "sessions_history",
@@ -562,6 +564,40 @@ Full tool overrides: `codex-dynamic-tools.discord-group.json` (base: `codex-dyna
 ```json
 [
   {
+    "description": "Send a text reply to the current source conversation. Load openclaw.message for media, rich presentation, message management, or another destination.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "description": "Send a text reply to the current source conversation.",
+          "enum": ["send"],
+          "type": "string"
+        },
+        "final": {
+          "description": "True for the completed reply; false for progress.",
+          "type": "boolean"
+        },
+        "message": {
+          "description": "Visible reply text.",
+          "type": "string"
+        },
+        "replyTo": {
+          "description": "Optional current-conversation message id to reply to.",
+          "type": "string"
+        },
+        "threadId": {
+          "description": "Optional current-conversation thread id.",
+          "type": "string"
+        }
+      },
+      "required": ["action", "message"],
+      "type": "object"
+    },
+    "name": "message",
+    "type": "function"
+  },
+  {
+    "deferLoading": true,
     "description": "Send/manage channel messages. Supports actions: send.",
     "inputSchema": {
       "properties": {
