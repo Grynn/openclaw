@@ -318,6 +318,88 @@ describe("channel ingress drain: pre-adoption stall watchdog", () => {
     });
   });
 
+  it("releases a watchdog-held claim when the deferred participant is cancelled", async () => {
+    await withTempState(async (stateDir) => {
+      let clock = 10_000;
+      const queue = createTestIngressQueue(stateDir, { now: () => clock });
+      await queue.enqueue("evt-guillotine-cancel", { text: "cancel me" }, { laneKey: "l1" });
+
+      let cancelLifecycle: (() => Promise<void> | void) | undefined;
+      const drain = createChannelIngressDrain<Payload>({
+        queue,
+        now: () => clock,
+        adoptionStallTimeoutMs: 5_000,
+        dispatchClaimedEvent: async (_event, lifecycle) => {
+          cancelLifecycle = () => lifecycle.onCancelled?.();
+          lifecycle.onDeferred();
+          return { kind: "deferred" };
+        },
+      });
+
+      await drain.drainOnce();
+      clock += 5_000;
+      await vi.advanceTimersByTimeAsync(5_000);
+      // Watchdog fired and now awaits dispatch quiescence with the claim held.
+      expect(await queue.listClaims()).toHaveLength(1);
+
+      // Debounce-style cancellation after the guillotine must settle quiescence
+      // so the fenced release completes; otherwise claim, lease, and lane stay
+      // held forever.
+      await cancelLifecycle?.();
+      await drain.waitForIdle();
+      expect(await queue.listClaims()).toEqual([]);
+      expect(await queue.listFailed?.()).toHaveLength(0);
+      drain.dispose();
+    });
+  });
+
+  it("clears the pending stall settlement when release and dead-letter writes both exhaust", async () => {
+    await withTempState(async (stateDir) => {
+      let clock = 10_000;
+      const queue = createTestIngressQueue(stateDir, { now: () => clock });
+      await queue.enqueue("evt-wedged-writes", { text: "wedged" }, { laneKey: "l1" });
+      queue.release = async () => {
+        throw new Error("persistent release failure");
+      };
+      queue.fail = async () => {
+        throw new Error("persistent dead-letter failure");
+      };
+
+      const drain = createChannelIngressDrain<Payload>({
+        queue,
+        now: () => clock,
+        adoptionStallTimeoutMs: 5_000,
+        dispatchClaimedEvent: async (_event, lifecycle) => {
+          // Cooperative dispatch: exits on the watchdog abort so quiescence
+          // resolves and the fenced settlement (release, then dead-letter
+          // fallback) actually runs against the broken writes.
+          await new Promise<void>((resolve) => {
+            if (lifecycle.abortSignal.aborted) {
+              resolve();
+              return;
+            }
+            lifecycle.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        },
+      });
+
+      await drain.drainOnce();
+      clock += 5_000;
+      await vi.advanceTimersByTimeAsync(5_000);
+      // Drain the bounded write-retry backoff for release, then the fallback
+      // dead-letter attempts (both persistently failing).
+      clock += 300_000;
+      await vi.advanceTimersByTimeAsync(300_000);
+      await drain.waitForIdle();
+
+      // Wedged-but-owned: the claim is held, but the settlement must no longer
+      // read as pending or the monitor rearms its idle wake and pumps forever.
+      expect(await queue.listClaims()).toHaveLength(1);
+      expect(drain.hasPendingStallSettlements?.()).toBe(false);
+      drain.dispose();
+    });
+  });
+
   it("exports default adoption stall matching Telegram product default", () => {
     expect(DEFAULT_INGRESS_ADOPTION_STALL_MS).toBe(5 * 60 * 1000);
   });

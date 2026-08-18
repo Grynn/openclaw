@@ -102,8 +102,12 @@ export type ChannelIngressDrain = {
   recoverStaleClaims: () => Promise<number>;
   drainOnce: (options?: { shouldStop?: () => boolean }) => Promise<{ started: number }>;
   activeLaneKeys: () => ReadonlySet<string>;
-  /** True while a stall-watchdog settlement (release/dead-letter) is still committing. */
-  hasPendingStallSettlements: () => boolean;
+  /**
+   * True while a stall-watchdog settlement (release/dead-letter) is still
+   * committing. Optional: the drain type is SDK-exported and external
+   * structural implementations predate this observation hook.
+   */
+  hasPendingStallSettlements?: () => boolean;
   waitForIdle: () => Promise<void>;
   dispose: () => void;
 };
@@ -402,6 +406,10 @@ export function createChannelIngressDrain<
       return;
     }
     if (state.guillotined || state.superseded) {
+      // The stall watchdog (or supersede) owns settlement, but it still awaits
+      // dispatch quiescence: this caller's participant is done, so mark it
+      // settled or a cancelled debounce leaves claim, lease, and lane held.
+      state.quiescence.markDeferredSettled();
       return;
     }
     clearStallTimer(state);

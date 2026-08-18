@@ -482,7 +482,7 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
         // the next inbound POST. Deferred claims alone must NOT re-arm — their
         // settled tasks would resolve the new wait instantly and spin.
         const shouldRearm =
-          (drainIdleWakeRequested || activeDrain.hasPendingStallSettlements()) &&
+          (drainIdleWakeRequested || (activeDrain.hasPendingStallSettlements?.() ?? false)) &&
           running &&
           !isAborted();
         drainIdleWake = undefined;

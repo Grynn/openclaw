@@ -167,6 +167,10 @@ export function armIngressStallWatchdog<TPayload, TMetadata>(
     })();
     state.stallSettlementTask = settlementTask;
     void settlementTask.catch((err: unknown) => {
+      // Terminal write failure: the claim stays held (wedged > lost), but the
+      // settlement is no longer pending — clearing it stops the monitor from
+      // rearming its idle wake and pumping forever on an unsettleable lane.
+      state.stallSettlementTask = undefined;
       deps.log(
         `ingress drain: failed to settle stalled event ${displayId}; ` +
           `holding claim: ${deps.formatError(err)}`,
