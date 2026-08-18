@@ -315,7 +315,7 @@ board rows. `/new`/`/reset` does not touch them.
 RPCs (core method table, typebox schemas in `gateway-protocol`):
 
 - `board.get { sessionKey }` → tabs + widget metadata (no bytes) — `operator.read`
-- `board.metadata { sessionKeys[] }` → bounded per-session board presence + revision
+- `board.metadata { targets: [{ sessionKey, agentId? }] }` → bounded per-session board presence + revision
   outcomes (including isolated errors) — `operator.read`
 - `board.update { sessionKey, ops[] }` — tab CRUD/reorder, widget move/resize/
   remove/unpin, dock state, focus-tab — `operator.write`

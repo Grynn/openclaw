@@ -850,16 +850,12 @@ public struct BoardGetParams: Codable, Sendable {
 }
 
 public struct BoardMetadataParams: Codable, Sendable {
-    public let sessionkeys: [String]
+    public let targets: [BoardGetParams]
 
     public init(
-        sessionkeys: [String])
+        targets: [BoardGetParams])
     {
-        self.sessionkeys = sessionkeys
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case sessionkeys = "sessionKeys"
+        self.targets = targets
     }
 }
 
@@ -870,10 +866,6 @@ public struct BoardMetadataResult: Codable, Sendable {
         outcomes: [AnyCodable])
     {
         self.outcomes = outcomes
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case outcomes
     }
 }
 

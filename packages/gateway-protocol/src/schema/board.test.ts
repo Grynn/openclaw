@@ -17,18 +17,21 @@ describe("BoardMetadata schemas", () => {
   it("bounds unique session lookups and preserves per-session failures", () => {
     expect(
       Value.Check(BoardMetadataParamsSchema, {
-        sessionKeys: ["agent:main:main", "agent:main:work"],
+        targets: [
+          { sessionKey: "agent:main:main" },
+          { sessionKey: "agent:main:work", agentId: "main" },
+        ],
       }),
     ).toBe(true);
-    expect(Value.Check(BoardMetadataParamsSchema, { sessionKeys: [] })).toBe(false);
+    expect(Value.Check(BoardMetadataParamsSchema, { targets: [] })).toBe(false);
     expect(
       Value.Check(BoardMetadataParamsSchema, {
-        sessionKeys: ["agent:main:main", "agent:main:main"],
+        targets: [{ sessionKey: "agent:main:main", unknown: true }],
       }),
     ).toBe(false);
     expect(
       Value.Check(BoardMetadataParamsSchema, {
-        sessionKeys: Array.from({ length: 101 }, (_, index) => `agent:main:${index}`),
+        targets: Array.from({ length: 101 }, (_, index) => ({ sessionKey: `agent:main:${index}` })),
       }),
     ).toBe(false);
 

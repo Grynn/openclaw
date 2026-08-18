@@ -19,7 +19,11 @@ describe("board.metadata gateway method", () => {
     });
 
     const response = await invoke("board.metadata", {
-      sessionKeys: ["agent:main:with-board", "agent:main:unavailable", "agent:main:empty"],
+      targets: [
+        { sessionKey: "agent:main:with-board" },
+        { sessionKey: "agent:main:unavailable" },
+        { sessionKey: "agent:main:empty" },
+      ],
     });
 
     expect(response).toHaveBeenCalledWith(true, {
@@ -51,7 +55,9 @@ describe("board.metadata gateway method", () => {
     const getSnapshot = vi.spyOn(store, "getSnapshot");
 
     const response = await invoke("board.metadata", {
-      sessionKeys: Array.from({ length: 101 }, (_, index) => `agent:main:${index}`),
+      targets: Array.from({ length: 101 }, (_, index) => ({
+        sessionKey: `agent:main:${index}`,
+      })),
     });
 
     expect(response).toHaveBeenCalledWith(
