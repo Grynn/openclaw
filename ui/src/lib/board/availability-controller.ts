@@ -1,12 +1,7 @@
-import type {
-  BoardChangedEvent,
-  BoardMetadataResult,
-  BoardSnapshot,
-} from "@openclaw/gateway-protocol";
+import type { BoardChangedEvent, BoardMetadataResult } from "@openclaw/gateway-protocol";
 import type { ReactiveController, ReactiveControllerHost } from "lit";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import {
-  boardExists,
   boardProviderOwnsGatewaySnapshot,
   boardProviderCacheKey,
   boardProviderForSession,
@@ -21,7 +16,6 @@ type AvailabilitySource = {
   client: AvailabilityClient | null;
   connected: boolean;
   available: boolean;
-  metadataAvailable?: boolean;
   key: string;
 };
 type SourceResolver = () => AvailabilitySource;
@@ -34,7 +28,6 @@ const disconnectedSource: SourceResolver = () => ({
   client: null,
   connected: false,
   available: false,
-  metadataAvailable: false,
   key: "",
 });
 
@@ -53,7 +46,6 @@ export class BoardAvailabilityController implements ReactiveController {
   private sourceUnsubscribe: (() => void) | undefined;
   private sourceActive = false;
   private available = false;
-  private metadataAvailable = false;
   private connected = false;
 
   constructor(
@@ -144,26 +136,20 @@ export class BoardAvailabilityController implements ReactiveController {
   private synchronizeSource(): void {
     const source = this.resolveSource();
     const active = source.connected && source.available && source.client !== null;
-    const metadataAvailable = source.metadataAvailable === true;
     if (
       this.sourceClient === source.client &&
       this.sourceActive === active &&
       this.available === source.available &&
-      this.metadataAvailable === metadataAvailable &&
       this.sourceKey === source.key
     ) {
       return;
     }
     const availabilitySourceChanged =
-      this.sourceClient !== source.client ||
-      this.sourceKey !== source.key ||
-      this.metadataAvailable !== metadataAvailable ||
-      !source.available;
+      this.sourceClient !== source.client || this.sourceKey !== source.key || !source.available;
     this.disconnectSource();
     this.sourceClient = source.client;
     this.sourceActive = active;
     this.available = source.available;
-    this.metadataAvailable = metadataAvailable;
     this.sourceKey = source.key;
     if (availabilitySourceChanged && clearSessionBoardAvailability()) {
       this.host.requestUpdate();
@@ -211,7 +197,6 @@ export class BoardAvailabilityController implements ReactiveController {
     this.sourceClient = null;
     this.sourceActive = false;
     this.available = false;
-    this.metadataAvailable = false;
     this.lookedUpSessions.clear();
     this.lookupGeneration.clear();
     this.knownRevisions.clear();
@@ -224,9 +209,8 @@ export class BoardAvailabilityController implements ReactiveController {
     if (sessionKeys.length === 0) {
       return;
     }
-    const batchSize = this.metadataAvailable ? BOARD_METADATA_BATCH_SIZE : 1;
-    for (let index = 0; index < sessionKeys.length; index += batchSize) {
-      this.lookupBatch(sessionKeys.slice(index, index + batchSize), client);
+    for (let index = 0; index < sessionKeys.length; index += BOARD_METADATA_BATCH_SIZE) {
+      this.lookupBatch(sessionKeys.slice(index, index + BOARD_METADATA_BATCH_SIZE), client);
     }
   }
 
@@ -238,20 +222,11 @@ export class BoardAvailabilityController implements ReactiveController {
         return [sessionKey, generation] as const;
       }),
     );
-    const outcomesRequest: Promise<BoardMetadataResult["outcomes"]> = this.metadataAvailable
-      ? client
-          .request<BoardMetadataResult>("board.metadata", { sessionKeys })
-          .then((result) => result.outcomes)
-      : client
-          .request<BoardSnapshot>("board.get", { sessionKey: sessionKeys[0]! })
-          .then((snapshot) => [
-            {
-              ok: true,
-              sessionKey: sessionKeys[0]!,
-              revision: snapshot.revision,
-              hasBoard: boardExists(snapshot),
-            },
-          ]);
+    const outcomesRequest: Promise<BoardMetadataResult["outcomes"]> = client
+      .request<BoardMetadataResult>("board.metadata", {
+        targets: sessionKeys.map((sessionKey) => ({ sessionKey })),
+      })
+      .then((result) => result.outcomes);
     void outcomesRequest
       .then((result) => {
         const outcomes = new Map(result.map((outcome) => [outcome.sessionKey, outcome]));

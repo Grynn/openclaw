@@ -850,16 +850,12 @@ public struct BoardGetParams: Codable, Sendable {
 }
 
 public struct BoardMetadataParams: Codable, Sendable {
-    public let sessionkeys: [String]
+    public let targets: [BoardGetParams]
 
     public init(
-        sessionkeys: [String])
+        targets: [BoardGetParams])
     {
-        self.sessionkeys = sessionkeys
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case sessionkeys = "sessionKeys"
+        self.targets = targets
     }
 }
 
@@ -870,10 +866,6 @@ public struct BoardMetadataResult: Codable, Sendable {
         outcomes: [AnyCodable])
     {
         self.outcomes = outcomes
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case outcomes
     }
 }
 
@@ -5993,12 +5985,6 @@ public struct SessionsSearchQueryState: Codable, Sendable {
         self.indexing = indexing
         self.truncated = truncated
     }
-
-    private enum CodingKeys: String, CodingKey {
-        case results
-        case indexing
-        case truncated
-    }
 }
 
 public struct SessionsSearchBatchResult: Codable, Sendable {
@@ -6008,10 +5994,6 @@ public struct SessionsSearchBatchResult: Codable, Sendable {
         states: [SessionsSearchQueryState])
     {
         self.states = states
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case states
     }
 }
 

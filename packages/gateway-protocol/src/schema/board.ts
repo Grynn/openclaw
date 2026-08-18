@@ -169,12 +169,11 @@ export const BoardGetParamsSchema = closedObject({
 });
 export type BoardGetParams = Static<typeof BoardGetParamsSchema>;
 
-export const BOARD_METADATA_MAX_SESSION_KEYS = 100;
+export const BOARD_METADATA_MAX_TARGETS = 100;
 export const BoardMetadataParamsSchema = closedObject({
-  sessionKeys: Type.Array(NonEmptyString, {
+  targets: Type.Array(BoardGetParamsSchema, {
     minItems: 1,
-    maxItems: BOARD_METADATA_MAX_SESSION_KEYS,
-    uniqueItems: true,
+    maxItems: BOARD_METADATA_MAX_TARGETS,
   }),
 });
 export type BoardMetadataParams = Static<typeof BoardMetadataParamsSchema>;
@@ -195,7 +194,7 @@ export const BoardMetadataResultSchema = closedObject({
         error: ErrorShapeSchema,
       }),
     ]),
-    { maxItems: BOARD_METADATA_MAX_SESSION_KEYS },
+    { maxItems: BOARD_METADATA_MAX_TARGETS },
   ),
 });
 export type BoardMetadataResult = Static<typeof BoardMetadataResultSchema>;
