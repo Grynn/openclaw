@@ -12,7 +12,7 @@
 # Environment:
 #   OPENCLAW_UPDATE_RESTART_CMD  restart command (default: openclaw gateway restart)
 #   OPENCLAW_UPDATE_STOP_CMD     stop command run before replacing live build output
-#                                (default: openclaw gateway stop)
+#                                (default: openclaw gateway stop --force)
 #   OPENCLAW_UPDATE_REMOTE       git remote to update from (default: origin)
 set -euo pipefail
 
@@ -20,7 +20,9 @@ log() { echo "[update-gateway] $*"; }
 gateway_stopped=0
 build_backup=""
 restart_cmd="${OPENCLAW_UPDATE_RESTART_CMD-openclaw gateway restart}"
-stop_cmd="${OPENCLAW_UPDATE_STOP_CMD-openclaw gateway stop}"
+# --force: gateway stop refuses non-interactive runs without it, and this
+# script's documented entry point is non-interactive (ssh ... update-gateway.sh).
+stop_cmd="${OPENCLAW_UPDATE_STOP_CMD-openclaw gateway stop --force}"
 on_exit() {
   local code=$?
   if [ "$code" -ne 0 ]; then
