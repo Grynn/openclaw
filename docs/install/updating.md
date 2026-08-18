@@ -131,6 +131,10 @@ building a source checkout.
 ssh you@server 'cd /path/to/openclaw && scripts/update-gateway.sh'
 ```
 
+The default stop command is `openclaw gateway stop --force`: the CLI refuses a
+non-interactive `gateway stop` without `--force`, and this script's documented
+entry point runs over SSH without a TTY.
+
 Override the stop/restart commands for custom service units:
 
 ```bash
