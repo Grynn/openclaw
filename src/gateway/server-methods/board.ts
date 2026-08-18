@@ -111,23 +111,44 @@ function boardErrorShape(error: unknown): ErrorShape {
   return errorShape(ErrorCodes.UNAVAILABLE, String(error));
 }
 
-function resolveBoardSessionKey(
+type BoardSessionKeyOutcome =
+  | { ok: true; key: string }
+  | {
+      ok: false;
+      error: NonNullable<Parameters<Parameters<GatewayRequestHandlers[string]>[0]["respond"]>[2]>;
+    };
+
+// Single canonical ownership path for every board read: agent resolution and
+// ambiguity rejection must match board.get exactly, or a batch key can read
+// (or reveal the presence of) another agent's board.
+function resolveBoardSessionKeyOutcome(
   params: { sessionKey: string; agentId?: string | undefined },
   context: Parameters<GatewayRequestHandlers[string]>[0]["context"],
-  respond: Parameters<GatewayRequestHandlers[string]>[0]["respond"],
-): string | undefined {
+): BoardSessionKeyOutcome {
   const cfg = context.getRuntimeConfig();
   const requested = resolveRequestedSessionAgentId(cfg, params.sessionKey, params.agentId);
   if (!requested.ok) {
-    respond(false, undefined, requested.error);
-    return undefined;
+    return { ok: false, error: requested.error };
   }
   const canonicalKey = resolveSessionStoreKey({
     cfg,
     sessionKey: params.sessionKey,
     storeAgentId: requested.agentId,
   });
-  return sessionObserverScopeKey(canonicalKey, requested.agentId);
+  return { ok: true, key: sessionObserverScopeKey(canonicalKey, requested.agentId) };
+}
+
+function resolveBoardSessionKey(
+  params: { sessionKey: string; agentId?: string | undefined },
+  context: Parameters<GatewayRequestHandlers[string]>[0]["context"],
+  respond: Parameters<GatewayRequestHandlers[string]>[0]["respond"],
+): string | undefined {
+  const outcome = resolveBoardSessionKeyOutcome(params, context);
+  if (!outcome.ok) {
+    respond(false, undefined, outcome.error);
+    return undefined;
+  }
+  return outcome.key;
 }
 
 function assertCapabilityParamsSize(
@@ -219,27 +240,32 @@ export function createBoardHandlers(
       }
       respond(true, snapshot);
     },
-    "board.metadata": ({ params, respond }) => {
+    "board.metadata": ({ params, respond, context }) => {
       if (!validateBoardMetadataParams(params)) {
         invalidParams("board.metadata", validateBoardMetadataParams.errors, respond);
         return;
       }
       const boardParams = params as BoardMetadataParams;
-      const outcomes: BoardMetadataResult["outcomes"] = boardParams.sessionKeys.map(
-        (sessionKey) => {
-          try {
-            const snapshot = store.getSnapshot(sessionKey);
-            return {
-              ok: true,
-              sessionKey,
-              revision: snapshot.revision,
-              hasBoard: snapshot.tabs.length > 0 || snapshot.widgets.length > 0,
-            };
-          } catch (error) {
-            return { ok: false, sessionKey, error: boardErrorShape(error) };
-          }
-        },
-      );
+      const outcomes: BoardMetadataResult["outcomes"] = boardParams.targets.map((target) => {
+        // Same canonical ownership path as board.get, per key: ambiguous
+        // unscoped keys in explicit multi-agent setups become isolated
+        // per-target errors instead of reading the wrong board.
+        const resolved = resolveBoardSessionKeyOutcome(target, context);
+        if (!resolved.ok) {
+          return { ok: false, sessionKey: target.sessionKey, error: resolved.error };
+        }
+        try {
+          const snapshot = store.getSnapshot(resolved.key);
+          return {
+            ok: true,
+            sessionKey: target.sessionKey,
+            revision: snapshot.revision,
+            hasBoard: snapshot.tabs.length > 0 || snapshot.widgets.length > 0,
+          };
+        } catch (error) {
+          return { ok: false, sessionKey: target.sessionKey, error: boardErrorShape(error) };
+        }
+      });
       respond(true, { outcomes });
     },
     "board.update": ({ params, respond, context }) => {

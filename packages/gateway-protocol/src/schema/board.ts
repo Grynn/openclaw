@@ -166,11 +166,16 @@ export type BoardGetParams = Static<typeof BoardGetParamsSchema>;
 
 export const BOARD_METADATA_MAX_SESSION_KEYS = 100;
 export const BoardMetadataParamsSchema = closedObject({
-  sessionKeys: Type.Array(NonEmptyString, {
-    minItems: 1,
-    maxItems: BOARD_METADATA_MAX_SESSION_KEYS,
-    uniqueItems: true,
-  }),
+  targets: Type.Array(
+    closedObject({
+      sessionKey: NonEmptyString,
+      agentId: Type.Optional(NonEmptyString),
+    }),
+    {
+      minItems: 1,
+      maxItems: BOARD_METADATA_MAX_SESSION_KEYS,
+    },
+  ),
 });
 export type BoardMetadataParams = Static<typeof BoardMetadataParamsSchema>;
 

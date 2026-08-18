@@ -58,7 +58,13 @@ describe("BoardAvailabilityController", () => {
       host,
       () => [sessionKey],
       boardProviderForSession,
-      () => ({ client: client as never, connected: true, available: true, key: "gateway-a" }),
+      () => ({
+        client: client as never,
+        connected: true,
+        available: true,
+        metadataAvailable: true,
+        key: "gateway-a",
+      }),
     );
 
     try {
@@ -79,12 +85,14 @@ describe("BoardAvailabilityController", () => {
     let listener: ((event: { event: string; payload: unknown }) => void) | undefined;
     const client = {
       request: vi.fn(async () => ({
-        sessionKey,
-        revision: hasBoard ? 1 : 2,
-        tabs: hasBoard
-          ? [{ tabId: "main", title: "Main", position: 0, chatDock: "right" as const }]
-          : [],
-        widgets: [],
+        outcomes: [
+          {
+            ok: true as const,
+            sessionKey,
+            revision: hasBoard ? 1 : 2,
+            hasBoard,
+          },
+        ],
       })),
       addEventListener: vi.fn((next) => {
         listener = next as typeof listener;
@@ -107,12 +115,20 @@ describe("BoardAvailabilityController", () => {
       host,
       () => [sessionKey],
       boardProviderForSession,
-      () => ({ client: client as never, connected: true, available: true, key: "gateway-a" }),
+      () => ({
+        client: client as never,
+        connected: true,
+        available: true,
+        metadataAvailable: true,
+        key: "gateway-a",
+      }),
     );
     controller.hostConnected();
 
     await vi.waitFor(() => expect(sessionHasBoard(sessionKey)).toBe(true));
-    expect(client.request).toHaveBeenCalledWith("board.get", { sessionKey });
+    expect(client.request).toHaveBeenCalledWith("board.metadata", {
+      targets: [{ sessionKey }],
+    });
 
     listener?.({ event: "board.changed", payload: { sessionKey, revision: 1 } });
     await Promise.resolve();
@@ -161,21 +177,26 @@ describe("BoardAvailabilityController", () => {
         key: "legacy-gateway",
       }),
     );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     legacyController.hostConnected();
     await vi.advanceTimersByTimeAsync(0);
-    expect(legacyClient.request).toHaveBeenCalledTimes(9);
-    expect(legacyClient.request.mock.calls.every(([method]) => method === "board.get")).toBe(true);
+    // Unsupported skew fails visibly: no per-session board.get storm.
+    expect(legacyClient.request).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("requires a newer Gateway (board.metadata)"),
+    );
+    warn.mockRestore();
     legacyController.hostDisconnected();
     clearSessionBoardAvailability();
 
     let requestCount = 0;
     let listener: ((event: { event: string; payload: unknown }) => void) | undefined;
     const client = {
-      request: vi.fn(async (method: string, params: { sessionKeys: string[] }) => {
+      request: vi.fn(async (method: string, params: { targets: { sessionKey: string }[] }) => {
         expect(method).toBe("board.metadata");
         requestCount += 1;
         return {
-          outcomes: params.sessionKeys.map((sessionKey) =>
+          outcomes: params.targets.map(({ sessionKey }) =>
             requestCount === 1 && sessionKey === sessionKeys[4]
               ? {
                   ok: false as const,
@@ -223,14 +244,16 @@ describe("BoardAvailabilityController", () => {
 
     await vi.advanceTimersByTimeAsync(0);
     expect(client.request).toHaveBeenCalledOnce();
-    expect(client.request).toHaveBeenCalledWith("board.metadata", { sessionKeys });
+    expect(client.request).toHaveBeenCalledWith("board.metadata", {
+      targets: sessionKeys.map((sessionKey) => ({ sessionKey })),
+    });
     expect(sessionHasBoard(sessionKeys[0]!)).toBe(true);
     expect(sessionHasBoard(sessionKeys[4]!)).toBe(false);
 
     await vi.advanceTimersByTimeAsync(1_000);
     expect(client.request).toHaveBeenCalledTimes(2);
     expect(client.request).toHaveBeenLastCalledWith("board.metadata", {
-      sessionKeys: [sessionKeys[4]],
+      targets: [{ sessionKey: sessionKeys[4] }],
     });
     expect(sessionHasBoard(sessionKeys[4]!)).toBe(true);
 
@@ -248,7 +271,7 @@ describe("BoardAvailabilityController", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(client.request).toHaveBeenCalledTimes(3);
     expect(client.request).toHaveBeenLastCalledWith("board.metadata", {
-      sessionKeys: [sessionKeys[0]],
+      targets: [{ sessionKey: sessionKeys[0] }],
     });
 
     controller.hostDisconnected();
@@ -261,14 +284,7 @@ describe("BoardAvailabilityController", () => {
     vi.stubGlobal("location", { search: "" });
     const sessionKey = "agent:main:sidebar-race";
     let visible = true;
-    const resolvers: Array<
-      (snapshot: {
-        sessionKey: string;
-        revision: number;
-        tabs: Array<{ tabId: string; title: string; position: number; chatDock: "right" }>;
-        widgets: [];
-      }) => void
-    > = [];
+    const resolvers: Array<(result: unknown) => void> = [];
     const client = {
       request: vi.fn(
         () =>
@@ -292,7 +308,13 @@ describe("BoardAvailabilityController", () => {
       host,
       () => (visible ? [sessionKey] : []),
       boardProviderForSession,
-      () => ({ client: client as never, connected: true, available: true, key: "gateway-a" }),
+      () => ({
+        client: client as never,
+        connected: true,
+        available: true,
+        metadataAvailable: true,
+        key: "gateway-a",
+      }),
     );
     controller.hostConnected();
     await vi.waitFor(() => expect(resolvers).toHaveLength(1));
@@ -302,14 +324,13 @@ describe("BoardAvailabilityController", () => {
     visible = true;
     controller.hostUpdate();
     await vi.waitFor(() => expect(resolvers).toHaveLength(2));
-    resolvers[1]?.({ sessionKey, revision: 2, tabs: [], widgets: [] });
+    resolvers[1]?.({
+      outcomes: [{ ok: true, sessionKey, revision: 2, hasBoard: false }],
+    });
     await vi.waitFor(() => expect(requestUpdate).toHaveBeenCalledOnce());
 
     resolvers[0]?.({
-      sessionKey,
-      revision: 1,
-      tabs: [{ tabId: "main", title: "Main", position: 0, chatDock: "right" }],
-      widgets: [],
+      outcomes: [{ ok: true, sessionKey, revision: 1, hasBoard: true }],
     });
     await Promise.resolve();
     expect(sessionHasBoard(sessionKey)).toBe(false);
@@ -322,15 +343,13 @@ describe("BoardAvailabilityController", () => {
     const source = {
       client: {
         request: vi.fn(async () => ({
-          sessionKey,
-          revision: 1,
-          tabs: [{ tabId: "main", title: "Main", position: 0, chatDock: "right" as const }],
-          widgets: [],
+          outcomes: [{ ok: true as const, sessionKey, revision: 1, hasBoard: true }],
         })),
         addEventListener: vi.fn(() => () => {}),
       },
       connected: true,
       available: true,
+      metadataAvailable: true,
       key: "gateway-a",
     };
     const requestUpdate = vi.fn();
@@ -374,10 +393,7 @@ describe("BoardAvailabilityController", () => {
         .fn()
         .mockRejectedValueOnce(new Error("gateway busy"))
         .mockResolvedValue({
-          sessionKey,
-          revision: 1,
-          tabs: [{ tabId: "main", title: "Main", position: 0, chatDock: "right" }],
-          widgets: [],
+          outcomes: [{ ok: true, sessionKey, revision: 1, hasBoard: true }],
         }),
       addEventListener: vi.fn(() => () => {}),
     };
@@ -394,7 +410,13 @@ describe("BoardAvailabilityController", () => {
       host,
       () => [sessionKey],
       boardProviderForSession,
-      () => ({ client: client as never, connected: true, available: true, key: "gateway-a" }),
+      () => ({
+        client: client as never,
+        connected: true,
+        available: true,
+        metadataAvailable: true,
+        key: "gateway-a",
+      }),
     );
     controller.hostConnected();
     await vi.advanceTimersByTimeAsync(0);
