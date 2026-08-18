@@ -169,6 +169,18 @@ describe("sessionsTailCommand", () => {
           result: { durationMs: 1_250 },
         },
       }),
+      // Codex dynamic-tool producer shape: durationMs rides the event itself
+      // (run-attempt-server-requests emits it beside success/contentItems).
+      makeEvent({
+        type: "tool.result",
+        ts: "2026-05-18T12:04:22.000Z",
+        data: {
+          name: "automations",
+          success: true,
+          durationMs: 2_300,
+          contentItems: [],
+        },
+      }),
       makeEvent({
         type: "model.completed",
         ts: "2026-05-18T12:04:29.000Z",
@@ -206,6 +218,7 @@ describe("sessionsTailCommand", () => {
     expect(output).toContain("bash {...redacted...}");
     expect(output).toContain("tool.result");
     expect(output).toContain("bash ok result=10B duration=1.25s");
+    expect(output).toContain("automations ok result=2B duration=2.3s");
     expect(output).toContain("model.completed");
     expect(output).toContain(
       "openai/gpt-5.2 done tokens(in=1.2K out=30 cacheR=1K cacheW=0 reason=4 total=1.2K) retention=short cacheBroke elapsed=2.5s",

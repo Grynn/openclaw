@@ -264,6 +264,7 @@ export function createCodexAttemptServerRequestController(
           toolCallId: call.callId,
           name: call.tool,
           success: protocolResponse.success,
+          durationMs: toolDurationMs,
           contentItems: protocolResponse.contentItems,
         });
         recordCodexDynamicToolResult(projector, call, response, protocolResponse);
