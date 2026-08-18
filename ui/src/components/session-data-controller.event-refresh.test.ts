@@ -122,6 +122,7 @@ function createFilteredSessionController(statusFilter: "archived" | "all", rowCo
   const host = {
     isConnected: true,
     connected: true,
+    sessionCatalogSurfaceVisible: true,
     sessionDataContext: context,
     addController: () => undefined,
     removeController: () => undefined,

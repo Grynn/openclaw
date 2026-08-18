@@ -167,6 +167,10 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     return this.host.connected;
   }
 
+  get sessionCatalogSurfaceVisible(): boolean {
+    return this.host.sessionCatalogSurfaceVisible;
+  }
+
   expandedAgentId(): string {
     return this.host.expandedAgentId();
   }

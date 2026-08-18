@@ -341,6 +341,7 @@ export function renderApplicationShell(host: ShellViewHost) {
         workboardBoardIdFromPath(host.routeState.location?.pathname ?? "", context.basePath) ?? "",
       sessionKey: host.activeSessionKey,
       connected: gatewayConnected,
+      sessionCatalogSurfaceVisible: !navigationSurfaceHidden,
       offline: gatewaySnapshot.offlineStable,
       outboxAttentionCountForSession,
       hasSessionDraft,
