@@ -423,6 +423,22 @@ function controlUiPrecompressedAssetsPlugin(buildOutDir: string): Plugin {
   };
 }
 
+export function controlUiCloudflareScriptBypassPlugin(): Plugin {
+  return {
+    name: "control-ui-cloudflare-script-bypass",
+    apply: "build",
+    transformIndexHtml: {
+      order: "post",
+      handler(html) {
+        return html.replace(
+          /<script\b(?![^>]*\bdata-cfasync\s*=)/giu,
+          '<script data-cfasync="false"',
+        );
+      },
+    },
+  };
+}
+
 export default function controlUiViteConfig(options: { outDir?: string } = {}): UserConfig {
   const envBase = process.env.OPENCLAW_CONTROL_UI_BASE_PATH?.trim();
   const base = envBase ? normalizeBase(envBase) : "./";
@@ -481,6 +497,7 @@ export default function controlUiViteConfig(options: { outDir?: string } = {}): 
     plugins: [
       controlUiLocaleModulesPlugin(),
       controlUiBrowserOnlySharedModuleAliases(),
+      controlUiCloudflareScriptBypassPlugin(),
       controlUiPrecompressedAssetsPlugin(buildOutDir),
       controlUiServiceWorkerBuildIdPlugin(buildInfo.buildId, buildOutDir),
       {
