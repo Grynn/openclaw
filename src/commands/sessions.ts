@@ -383,10 +383,13 @@ export async function sessionsCommand(
       });
   });
   const acpSessionMetaByEntry = readAcpSessionMetaBatch({
-    entries: sessionEntries.map(({ acpSessionKey, entry }) => ({
+    cfg,
+    entries: sessionEntries.map(({ acpSessionKey, agentId, entry }) => ({
       sessionKey: acpSessionKey,
+      agentId,
       entry,
     })),
+    repairLegacyRows: false,
   });
   const allRows = sessionEntries.map(({ acpSessionKey, agentId, entry, row }) => {
     const acpMeta = acpSessionMetaByEntry.get(entry);

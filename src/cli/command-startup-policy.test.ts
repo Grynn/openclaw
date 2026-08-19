@@ -89,6 +89,13 @@ describe("command-startup-policy", () => {
       ["gateway", "restart"],
       ["gateway", "suspend"],
       ["gateway", "resume"],
+      ["sessions", "list"],
+      ["sessions", "cleanup"],
+      ["sessions", "tail"],
+      ["sessions", "export-trajectory"],
+      ["sessions", "archive"],
+      ["sessions", "delete"],
+      ["sessions", "compact"],
     ]) {
       expect(resolvePolicy({ commandPath })).toMatchObject({
         skipConfigGuard: false,
@@ -146,7 +153,7 @@ describe("command-startup-policy", () => {
       expect(entry.policy?.configGuard, entry.commandPath.join(" ")).toBeDefined();
       for (const jsonOutputMode of [false, true]) {
         const argv = ["node", "openclaw", ...entry.commandPath];
-        const expectedSkip = entry.commandPath.join(" ") !== "config unset";
+        const expectedSkip = !["config unset", "sessions"].includes(entry.commandPath.join(" "));
         const routed = resolveCliExecutionStartupContext({ argv, jsonOutputMode });
         const commander = resolveCliExecutionStartupContext({
           argv,
@@ -159,6 +166,9 @@ describe("command-startup-policy", () => {
         expect(routed.startupPolicy.skipConfigGuard, entry.commandPath.join(" ")).toBe(
           expectedSkip,
         );
+        if (entry.commandPath.join(" ") === "sessions") {
+          expect(routed.startupPolicy.validateConfigOnly).toBe(true);
+        }
       }
     }
   });

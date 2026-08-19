@@ -3,11 +3,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeAcpSessionMetaForMigration } from "../acp/runtime/session-meta.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
+import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  getOpenClawStateDatabaseIfOpen,
+} from "../state/openclaw-state-db.js";
 import { appendSqliteTrajectoryRuntimeEvents } from "../trajectory/runtime-store.sqlite.js";
 import type { TrajectoryEvent } from "../trajectory/types.js";
 import { sessionsTailCommand } from "./sessions-tail.js";
@@ -378,5 +383,108 @@ describe("sessionsTailCommand", () => {
     expect(output).toContain("tool.result");
     expect(output).toContain("bash ok");
     expect(output).not.toContain("No sessions found");
+  });
+
+  it("selects an owner-scoped ACP running session without repairing shared state", async () => {
+    const runtime = makeRuntime();
+    const opsStorePath = path.join(
+      process.env.OPENCLAW_STATE_DIR!,
+      "agents",
+      "ops",
+      "sessions",
+      "sessions.json",
+    );
+    const runningEntry: SessionEntry = {
+      sessionId: "ops-running-session",
+      lifecycleRevision: "ops-running-revision",
+      updatedAt: 2,
+      status: "done",
+    };
+    const recentEntry: SessionEntry = {
+      sessionId: "ops-recent-session",
+      lifecycleRevision: "ops-recent-revision",
+      updatedAt: 3,
+      status: "done",
+    };
+    const cfg = {
+      agents: {
+        ownership: "explicit",
+        defaults: { sessionStore: { agentId: "ops" } },
+        entries: { main: {}, ops: {} },
+      },
+    };
+    mocks.getRuntimeConfig.mockReturnValue(cfg);
+    await upsertSessionEntryCore(
+      { agentId: "ops", sessionKey: "global", storePath: opsStorePath },
+      runningEntry,
+    );
+    await upsertSessionEntryCore(
+      { agentId: "ops", sessionKey: "recent", storePath: opsStorePath },
+      recentEntry,
+    );
+    const stateDatabasePath = path.join(
+      process.env.OPENCLAW_STATE_DIR!,
+      "state",
+      "openclaw.sqlite",
+    );
+    writeAcpSessionMetaForMigration({
+      sessionKey: "@agent:ops:global",
+      lifecycleRevision: runningEntry.sessionId,
+      meta: {
+        backend: "ops-acp",
+        agent: "codex",
+        runtimeSessionName: "ops-running-runtime",
+        mode: "persistent",
+        state: "running",
+        lastActivityAt: Date.now(),
+      },
+    });
+    appendSqliteTrajectoryRuntimeEvents(
+      { agentId: "ops", sessionId: runningEntry.sessionId!, storePath: opsStorePath },
+      [
+        makeEvent({
+          sessionId: runningEntry.sessionId,
+          sessionKey: "global",
+          type: "tool.result",
+          ts: "2026-05-18T12:04:21.000Z",
+          data: { name: "owner-scoped-running", success: true },
+        }),
+      ],
+    );
+    appendSqliteTrajectoryRuntimeEvents(
+      { agentId: "ops", sessionId: recentEntry.sessionId!, storePath: opsStorePath },
+      [
+        makeEvent({
+          sessionId: recentEntry.sessionId,
+          sessionKey: "recent",
+          type: "tool.result",
+          ts: "2026-05-18T12:04:22.000Z",
+          data: { name: "newer-but-idle", success: true },
+        }),
+      ],
+    );
+    closeOpenClawAgentDatabasesForTest();
+    closeOpenClawStateDatabaseForTest();
+
+    await sessionsTailCommand({ agent: "ops", store: opsStorePath }, runtime);
+
+    const output = runtimeOutput(runtime);
+    expect(output).toContain("owner-scoped-running ok");
+    expect(output).not.toContain("newer-but-idle");
+    expect(getOpenClawStateDatabaseIfOpen({ path: stateDatabasePath })).toBeUndefined();
+    const stateDatabase = openNodeSqliteDatabase(stateDatabasePath, { readOnly: true });
+    try {
+      expect(
+        stateDatabase
+          .prepare("SELECT session_key, session_id FROM acp_sessions ORDER BY session_key")
+          .all()
+          .map((row) => {
+            const value = row as { session_key: string; session_id: string | null };
+            return `${value.session_key}|${value.session_id ?? ""}`;
+          }),
+      ).toEqual([`@agent:ops:global|${runningEntry.sessionId}`]);
+    } finally {
+      stateDatabase.close();
+    }
   });
 });

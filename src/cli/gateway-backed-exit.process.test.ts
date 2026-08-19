@@ -6,12 +6,16 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { gatewayOriginScope } from "../../packages/gateway-client/src/gateway-origin-scope.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { buildAcpDatabaseSessionKey } from "../acp/runtime/session-meta-keys.js";
+import { writeAcpSessionMetaForMigration } from "../acp/runtime/session-meta.js";
+import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import {
   loadOriginDeviceTokenReadOnly,
   storeOriginDeviceToken,
 } from "../infra/device-auth-store.js";
 import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
 import { acquireGatewayLock } from "../infra/gateway-lock.js";
+import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { getFreePort } from "../test-utils/ports.js";
 import { runCliProcessChild } from "./cli-process-child.test-helpers.js";
@@ -108,6 +112,46 @@ async function prepareUnreachableGatewayCliFixture(params: {
   return { root, stateDir, configPath };
 }
 
+async function seedSessionsInspectionFixture(
+  fixture: { stateDir: string },
+  options: { withAcp: boolean },
+): Promise<string> {
+  const sessionKey = "agent:main:process-proof";
+  const lifecycleRevision = "process-proof-revision";
+  const storePath = path.join(fixture.stateDir, "agents", "main", "sessions", "sessions.json");
+  const seedEnv = {
+    ...process.env,
+    OPENCLAW_STATE_DIR: path.join(fixture.stateDir, "setup-registry"),
+  };
+  await replaceSessionEntry(
+    { agentId: "main", env: seedEnv, sessionKey, storePath },
+    {
+      sessionId: "process-proof-session",
+      lifecycleRevision,
+      updatedAt: 1_776_000_000_000,
+    },
+  );
+  closeOpenClawAgentDatabasesForTest();
+  closeOpenClawStateDatabaseForTest();
+  if (options.withAcp) {
+    writeAcpSessionMetaForMigration({
+      databasePath: path.join(fixture.stateDir, "state", "openclaw.sqlite"),
+      sessionKey: buildAcpDatabaseSessionKey(sessionKey, "main"),
+      lifecycleRevision,
+      meta: {
+        backend: "process-proof-acp",
+        agent: "codex",
+        runtimeSessionName: "process-proof-runtime",
+        mode: "persistent",
+        state: "idle",
+        lastActivityAt: 1_776_000_000_000,
+      },
+    });
+    closeOpenClawStateDatabaseForTest();
+  }
+  return sessionKey;
+}
+
 function expectUnreachableGatewayTransportFailure(
   result: Awaited<ReturnType<typeof runIsolatedGatewayCli>>,
   output: "json" | "text",
@@ -178,6 +222,43 @@ async function runIsolatedGatewayCli(params: {
 }
 
 describe("gateway-backed CLI process exit", () => {
+  it("keeps bare sessions inspection off writable shared state", async () => {
+    for (const seeded of [false, true]) {
+      const fixture = await prepareUnreachableGatewayCliFixture({
+        label: "sessions-list",
+        seeded,
+      });
+      const sessionKey = await seedSessionsInspectionFixture(fixture, { withAcp: seeded });
+      const before = await snapshotSharedStateArtifacts(fixture.stateDir);
+
+      const result = await runIsolatedGatewayCli({
+        ...fixture,
+        args: ["sessions", "--json"],
+      });
+
+      expect(result, result.stderr).toMatchObject({ code: 0, signal: null, stderr: "" });
+      const payload = JSON.parse(result.stdout) as {
+        sessions?: Array<{ key?: string; acpRuntime?: boolean; agentRuntime?: { id?: string } }>;
+      };
+      expect(payload.sessions).toContainEqual(
+        expect.objectContaining({
+          key: sessionKey,
+          acpRuntime: seeded,
+        }),
+      );
+      const after = await snapshotSharedStateArtifacts(fixture.stateDir);
+      expect(after["openclaw.sqlite"]).toBe(before["openclaw.sqlite"]);
+      expect(
+        Object.keys(after).filter((name) => !name.endsWith("-wal") && !name.endsWith("-shm")),
+      ).toEqual(Object.keys(before));
+      if (after["openclaw.sqlite-wal"] !== undefined) {
+        expect(after["openclaw.sqlite-wal"]).toBe(
+          "file:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        );
+      }
+    }
+  }, 60_000);
+
   it.each([
     { status: "ok" as const, text: "pong", exitCode: 0 },
     { status: "error" as const, text: "provider failed", exitCode: 1 },

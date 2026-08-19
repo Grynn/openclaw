@@ -5,8 +5,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import { loadSessionEntry, replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
+import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  getOpenClawStateDatabaseIfOpen,
+} from "../../state/openclaw-state-db.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import {
   listAcpSessionEntries,
@@ -196,7 +200,7 @@ describe("ACP session metadata SQLite store", () => {
       writeAcpSessionMetaForMigration({
         databasePath,
         sessionKey: "global",
-        lifecycleRevision: "ops-revision",
+        lifecycleRevision: "ops-global",
         meta: {
           backend: "acpx",
           agent: "codex",
@@ -206,6 +210,31 @@ describe("ACP session metadata SQLite store", () => {
           lastActivityAt: 123,
         },
       });
+      closeOpenClawStateDatabaseForTest();
+
+      const inspectionBatch = readAcpSessionMetaBatch({
+        cfg,
+        databasePath,
+        entries: [{ sessionKey: "global", agentId: "ops", entry }],
+        repairLegacyRows: false,
+      });
+
+      expect(inspectionBatch.get(entry)?.runtimeSessionName).toBe("legacy-global");
+      expect(getOpenClawStateDatabaseIfOpen({ path: databasePath })).toBeUndefined();
+      const inspectionDatabase = openNodeSqliteDatabase(databasePath, { readOnly: true });
+      try {
+        expect(
+          inspectionDatabase
+            .prepare("SELECT session_key, session_id FROM acp_sessions ORDER BY session_key")
+            .all()
+            .map((row) => {
+              const value = row as { session_key: string; session_id: string | null };
+              return `${value.session_key}|${value.session_id ?? ""}`;
+            }),
+        ).toEqual(["global|ops-global"]);
+      } finally {
+        inspectionDatabase.close();
+      }
 
       const batch = readAcpSessionMetaBatch({
         cfg,
@@ -226,6 +255,28 @@ describe("ACP session metadata SQLite store", () => {
       expect(
         readAcpSessionMetaForEntry({ databasePath, sessionKey: "global", entry }),
       ).toBeUndefined();
+    });
+  });
+
+  it("treats a missing additive ACP table as empty during read-only inspection", async () => {
+    await withTestDir({ prefix: "openclaw-acp-batch-missing-table-" }, async (dir) => {
+      const databasePath = path.join(dir, "state", "openclaw.sqlite");
+      fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+      openNodeSqliteDatabase(databasePath).close();
+      const entry: SessionEntry = {
+        sessionId: "missing-table-session",
+        lifecycleRevision: "missing-table-revision",
+        updatedAt: 100,
+      };
+
+      const batch = readAcpSessionMetaBatch({
+        databasePath,
+        entries: [{ sessionKey: "global", agentId: "ops", entry }],
+        repairLegacyRows: false,
+      });
+
+      expect(batch.get(entry)).toBeUndefined();
+      expect(getOpenClawStateDatabaseIfOpen({ path: databasePath })).toBeUndefined();
     });
   });
 

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { buildAcpDatabaseSessionKey } from "../acp/runtime/session-meta-keys.js";
 import { writeAcpSessionMetaForMigration } from "../acp/runtime/session-meta.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
@@ -73,6 +74,8 @@ async function readSessionRow(sessionKey: string, store: string) {
       key: string;
       model?: string | null;
       modelProvider?: string | null;
+      acpRuntime?: boolean;
+      agentRuntime?: { id?: string };
     }>;
   }>(sessionsCommand, store);
   return payload.sessions?.find((entry) => entry.key === sessionKey);
@@ -125,6 +128,59 @@ describe("sessionsCommand ACP model display", () => {
     const row = await readSessionRow(sessionKey, store);
 
     expect(row).toMatchObject({ model: "copilot-acp", modelProvider: "acpx" });
+  });
+
+  it("uses the selected store owner when reading canonical ACP metadata", async () => {
+    useTempStateDir();
+    const ownerSessionKey = "agent:ops:acp:owner-proof";
+    const lifecycleRevision = "ops-global-revision";
+    const store = await writeStore(
+      {
+        [ownerSessionKey]: {
+          ...buildAcpBridgeSessionEntry(),
+          lifecycleRevision,
+        },
+      },
+      "sessions-acp-model-display-owner",
+      { agentId: "ops" },
+    );
+    setMockSessionsConfig(() => ({
+      agents: {
+        ownership: "explicit",
+        defaults: {
+          sessionStore: { agentId: "ops" },
+          model: { primary: `${AGENT_CONFIGURED_PROVIDER}/${AGENT_CONFIGURED_MODEL}` },
+        },
+        entries: { ops: {}, research: {} },
+      },
+      session: { store },
+    }));
+    for (const [agentId, backend] of [
+      ["ops", "ops-acp"],
+      ["research", "research-acp"],
+    ] as const) {
+      writeAcpSessionMetaForMigration({
+        sessionKey: buildAcpDatabaseSessionKey(ownerSessionKey, agentId),
+        lifecycleRevision,
+        meta: {
+          backend,
+          agent: "codex",
+          runtimeSessionName: `${agentId}-runtime`,
+          mode: "persistent",
+          state: "idle",
+          lastActivityAt: Date.now(),
+        },
+      });
+    }
+
+    const row = await readSessionRow(ownerSessionKey, store);
+
+    expect(row).toMatchObject({
+      acpRuntime: true,
+      agentRuntime: { id: "ops-acp" },
+      model: "ops-acp",
+      modelProvider: "acpx",
+    });
   });
 
   it("keeps the configured model for ACP-shaped bridge sessions without runtime metadata", async () => {

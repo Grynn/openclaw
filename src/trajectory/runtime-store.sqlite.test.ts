@@ -5,9 +5,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
 import {
   closeOpenClawAgentDatabasesForTest,
+  getOpenClawAgentDatabaseIfOpen,
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
@@ -140,6 +142,78 @@ describe("SQLite trajectory runtime store", () => {
     });
 
     expect(rows.map((row) => row.event.type)).toEqual(["event-3"]);
+  });
+
+  it("does not materialize a missing agent database for reads", () => {
+    const missingStorePath = path.join(tempDir, "agents", "research", "sessions", "sessions.json");
+    const missingSqlitePath = path.join(
+      tempDir,
+      "agents",
+      "research",
+      "agent",
+      "openclaw-agent.sqlite",
+    );
+
+    expect(fs.existsSync(missingSqlitePath)).toBe(false);
+    expect(
+      loadSqliteTrajectoryRuntimeEventRowsSync({
+        agentId: "research",
+        env: { ...process.env, OPENCLAW_STATE_DIR: path.join(tempDir, "state") },
+        sessionId: "missing-session",
+        storePath: missingStorePath,
+      }),
+    ).toEqual([]);
+    expect(fs.existsSync(missingSqlitePath)).toBe(false);
+  });
+
+  it("reads existing rows without registering a writable database handle", () => {
+    appendSqliteTrajectoryRuntimeEvents({ sessionId: "session-1", storePath }, [
+      createTrajectoryEvent({ type: "read-only" }),
+    ]);
+    closeOpenClawAgentDatabasesForTest();
+
+    expect(getOpenClawAgentDatabaseIfOpen({ agentId: "main", path: sqlitePath() })).toBeUndefined();
+    expect(
+      loadSqliteTrajectoryRuntimeEventRowsSync({ sessionId: "session-1", storePath }).map(
+        (row) => row.event.type,
+      ),
+    ).toEqual(["read-only"]);
+    expect(getOpenClawAgentDatabaseIfOpen({ agentId: "main", path: sqlitePath() })).toBeUndefined();
+  });
+
+  it("surfaces a broken-present database without ownership metadata", () => {
+    const brokenStorePath = path.join(tempDir, "agents", "research", "sessions", "sessions.json");
+    const brokenSqlitePath = path.join(
+      tempDir,
+      "agents",
+      "research",
+      "agent",
+      "openclaw-agent.sqlite",
+    );
+    fs.mkdirSync(path.dirname(brokenSqlitePath), { recursive: true });
+    openNodeSqliteDatabase(brokenSqlitePath).close();
+
+    expect(() =>
+      loadSqliteTrajectoryRuntimeEventRowsSync({
+        agentId: "research",
+        sessionId: "missing-session",
+        storePath: brokenStorePath,
+      }),
+    ).toThrow("schema-missing");
+  });
+
+  it("surfaces a broken-present database without trajectory storage", () => {
+    appendSqliteTrajectoryRuntimeEvents({ sessionId: "session-1", storePath }, [
+      createTrajectoryEvent({ type: "before-drop" }),
+    ]);
+    closeOpenClawAgentDatabasesForTest();
+    const database = openNodeSqliteDatabase(sqlitePath());
+    database.exec("DROP TABLE trajectory_runtime_events");
+    database.close();
+
+    expect(() =>
+      loadSqliteTrajectoryRuntimeEventRowsSync({ sessionId: "session-1", storePath }),
+    ).toThrow("table-missing");
   });
 
   it("drops old runs while retaining recent runs", async () => {

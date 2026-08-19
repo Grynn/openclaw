@@ -282,9 +282,16 @@ export const cliCommandCatalog: readonly CliCommandCatalogEntry[] = [
   },
   {
     commandPath: ["sessions"],
+    // Session subcommands either read local state or dispatch ownership-sensitive
+    // work to the Gateway. Validate core config without observing canonical state
+    // before either path; the exact bare-list route below owns its config read.
+    policy: { configGuard: "validate", networkProxy: "bypass" },
+  },
+  {
+    commandPath: ["sessions"],
     exact: true,
     policy: {
-      configGuard: "skip",
+      configGuard: "validate",
       ensureCliPath: false,
       ownsProtocolStdout: true,
       networkProxy: "bypass",

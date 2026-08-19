@@ -14,6 +14,7 @@ import {
 } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
+import { withExistingOpenClawStateDatabaseReadOnly } from "../../state/openclaw-state-db-readonly.js";
 import {
   openOpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
@@ -30,7 +31,9 @@ import {
   parseAcpDatabaseSessionKeyCandidates,
   resolveReadableAcpSessionRow,
   selectAcpSessionRow,
+  selectAcpSessionRowsByKeys,
   selectAcpSessionRowForStoreEntry,
+  withMissingAcpSessionsTableAsEmpty,
 } from "./session-meta-keys.js";
 import { clearLegacyEmbeddedAcpMetadata } from "./session-meta-legacy-cleanup.js";
 import {
@@ -186,6 +189,7 @@ export function readAcpSessionMetaBatch(params: {
   env?: NodeJS.ProcessEnv;
   databasePath?: string;
   cfg?: OpenClawConfig;
+  repairLegacyRows?: boolean;
 }): Map<SessionEntry, SessionAcpMeta | undefined> {
   const result = new Map<SessionEntry, SessionAcpMeta | undefined>();
   const entriesByKey = new Map<
@@ -211,13 +215,8 @@ export function readAcpSessionMetaBatch(params: {
     return result;
   }
 
-  const database = openOpenClawStateDatabase({
-    env: params.env,
-    path: params.databasePath,
-  });
   // Chunked IN keeps each statement under SQLite's bind-variable cap, matching the
   // sharing-store membership precedent; one statement per 500 keys instead of per row.
-  const db = getAcpSessionKysely(database.db);
   const requestedKeySet = new Set<string>();
   for (const [sessionKey, entries] of entriesByKey) {
     requestedKeySet.add(sessionKey);
@@ -228,17 +227,15 @@ export function readAcpSessionMetaBatch(params: {
     }
   }
   const requestedKeys = [...requestedKeySet];
-  const keyChunks: string[][] = [];
-  for (let index = 0; index < requestedKeys.length; index += 500) {
-    keyChunks.push(requestedKeys.slice(index, index + 500));
-  }
-  const rows = keyChunks.flatMap(
-    (chunk) =>
-      executeSqliteQuerySync(
-        database.db,
-        db.selectFrom("acp_sessions").selectAll().where("session_key", "in", chunk),
-      ).rows,
-  );
+  const readRows = (database: { db: DatabaseSync }): AcpSessionRow[] =>
+    selectAcpSessionRowsByKeys(database.db, requestedKeys);
+  const databaseOptions = { env: params.env, path: params.databasePath };
+  const rows =
+    params.repairLegacyRows === false
+      ? withMissingAcpSessionsTableAsEmpty(
+          () => withExistingOpenClawStateDatabaseReadOnly(readRows, databaseOptions) ?? [],
+        )
+      : readRows(openOpenClawStateDatabase(databaseOptions));
   const rowsByKey = new Map(rows.map((row) => [row.session_key, row]));
   const legacyRowsToRekey: Array<{ row: AcpSessionRow; sessionKey: string }> = [];
   for (const [sessionKey, entries] of entriesByKey) {
@@ -246,16 +243,20 @@ export function readAcpSessionMetaBatch(params: {
       const row = [sessionKey, ...item.legacyKeys]
         .map((key) => rowsByKey.get(key))
         .map((candidateRow) =>
-          resolveReadableAcpSessionRow({
-            row: candidateRow,
-            entry: item.entry,
-            env: params.env,
-            databasePath: params.databasePath,
-          }),
+          params.repairLegacyRows === false
+            ? candidateRow && acpSessionRowMatchesEntry(candidateRow, item.entry)
+              ? candidateRow
+              : undefined
+            : resolveReadableAcpSessionRow({
+                row: candidateRow,
+                entry: item.entry,
+                env: params.env,
+                databasePath: params.databasePath,
+              }),
         )
         .find((candidateRow) => candidateRow !== undefined);
       result.set(item.entry, row ? rowToAcpSessionMeta(row) : undefined);
-      if (row && row.session_key !== sessionKey) {
+      if (params.repairLegacyRows !== false && row && row.session_key !== sessionKey) {
         legacyRowsToRekey.push({ row, sessionKey });
       }
     }

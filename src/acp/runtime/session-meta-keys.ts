@@ -19,6 +19,21 @@ export type AcpSessionRow = Selectable<AcpSessionsTable>;
 export type AcpSessionEntryBinding = Pick<SessionEntry, "lifecycleRevision"> &
   Partial<Pick<SessionEntry, "sessionId" | "sessionStartedAt">>;
 
+function isMissingAcpSessionsTableError(error: unknown): boolean {
+  return error instanceof Error && /\bno such table:\s*acp_sessions\b/iu.test(error.message);
+}
+
+export function withMissingAcpSessionsTableAsEmpty<T>(operation: () => T[]): T[] {
+  try {
+    return operation();
+  } catch (error) {
+    if (isMissingAcpSessionsTableError(error)) {
+      return [];
+    }
+    throw error;
+  }
+}
+
 export function getAcpSessionKysely(db: DatabaseSync) {
   return getNodeSqliteKysely<AcpSessionMetaDatabase>(db);
 }
@@ -34,6 +49,26 @@ export function selectAcpSessionRow(
       .selectAll()
       .where("session_key", "=", sessionKey),
   );
+}
+
+export function selectAcpSessionRowsByKeys(
+  db: DatabaseSync,
+  sessionKeys: readonly string[],
+): AcpSessionRow[] {
+  const kysely = getAcpSessionKysely(db);
+  const rows: AcpSessionRow[] = [];
+  for (let index = 0; index < sessionKeys.length; index += 500) {
+    rows.push(
+      ...executeSqliteQuerySync(
+        db,
+        kysely
+          .selectFrom("acp_sessions")
+          .selectAll()
+          .where("session_key", "in", sessionKeys.slice(index, index + 500)),
+      ).rows,
+    );
+  }
+  return rows;
 }
 
 const ACP_DATABASE_KEY_PREFIX = "@acp:v1:";

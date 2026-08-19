@@ -125,6 +125,29 @@ describe("command-path-policy", () => {
     }
   });
 
+  it("keeps session subcommands off writable config observation", () => {
+    for (const subcommand of [
+      "list",
+      "cleanup",
+      "tail",
+      "export-trajectory",
+      "archive",
+      "delete",
+      "compact",
+    ]) {
+      expectResolvedPolicy(["sessions", subcommand], {
+        configGuard: "validate",
+        networkProxy: "bypass",
+      });
+    }
+    expectResolvedPolicy(["sessions"], {
+      configGuard: "validate",
+      ensureCliPath: false,
+      ownsProtocolStdout: true,
+      networkProxy: "bypass",
+    });
+  });
+
   it("keeps gateway control RPCs on core-only config validation", () => {
     for (const subcommand of ["call", "restart", "suspend", "resume"]) {
       expectResolvedPolicy(["gateway", subcommand], {

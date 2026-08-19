@@ -10,7 +10,7 @@ import {
  */
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString as toOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { readAcpSessionMeta } from "../acp/runtime/session-meta.js";
+import { readAcpSessionMetaBatch } from "../acp/runtime/session-meta.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { listSessionEntriesReadOnly } from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -347,18 +347,6 @@ function renderEvents(events: TrajectoryEvent[], runtime: RuntimeEnv): void {
   }
 }
 
-function isRunningSession(selection: TailSelection): boolean {
-  const cfg = getRuntimeConfig();
-  const acpMeta = readAcpSessionMeta({
-    sessionKey: resolveStoredSessionKeyForAgentStore({
-      cfg,
-      agentId: selection.agentId,
-      sessionKey: selection.key,
-    }),
-  });
-  return selection.entry.status === "running" || acpMeta?.state === "running";
-}
-
 function compareSelectionsByUpdatedAt(a: TailSelection, b: TailSelection): number {
   return (b.entry.updatedAt ?? 0) - (a.entry.updatedAt ?? 0);
 }
@@ -392,7 +380,25 @@ function selectSessionsToTail(selections: TailSelection[], sessionKey?: string):
     return selections.filter((selection) => selection.key === requested);
   }
 
-  const running = selections.filter((selection) => isRunningSession(selection));
+  const cfg = getRuntimeConfig();
+  const acpMetaByEntry = readAcpSessionMetaBatch({
+    cfg,
+    entries: selections.map((selection) => ({
+      sessionKey: resolveStoredSessionKeyForAgentStore({
+        cfg,
+        agentId: selection.agentId,
+        sessionKey: selection.key,
+      }),
+      agentId: selection.agentId,
+      entry: selection.entry,
+    })),
+    repairLegacyRows: false,
+  });
+  const running = selections.filter(
+    (selection) =>
+      selection.entry.status === "running" ||
+      acpMetaByEntry.get(selection.entry)?.state === "running",
+  );
   if (running.length > 0) {
     // Without an explicit key, prefer all running sessions so follow mode shows
     // concurrent active work instead of only the newest store entry.
