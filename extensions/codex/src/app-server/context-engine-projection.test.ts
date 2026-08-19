@@ -216,6 +216,70 @@ describe("projectContextEngineAssemblyForCodex", () => {
     expect(result.promptText.length).toBeLessThan(25_000);
   });
 
+  it("keeps exact tail accounting while streaming an oversized conversation", () => {
+    const result = projectContextEngineAssemblyForCodex({
+      assembledMessages: [
+        textMessage("assistant", `OLD:${"x".repeat(140)}`),
+        textMessage("user", "recent $tail"),
+      ],
+      originalHistoryMessages: [],
+      prompt: "next",
+      maxRenderedContextChars: 80,
+    });
+    const context = result.promptContextRange
+      ? result.promptText.slice(result.promptContextRange.start, result.promptContextRange.end)
+      : undefined;
+
+    expect(context).toBe(
+      "[truncated 137 chars from older context]\nxxxxxxxxxxxxxxxxxx\n\n[user]\nrecent ＄tail",
+    );
+  });
+
+  it("preserves UTF-16 and mention safety across streamed tail boundaries", () => {
+    let retainedEmoji = false;
+    let omittedEmoji = false;
+    let retainedNeutralizedPluginMention = false;
+    for (let suffixLength = 0; suffixLength < 64; suffixLength += 1) {
+      const result = projectContextEngineAssemblyForCodex({
+        assembledMessages: [
+          textMessage(
+            "assistant",
+            `${"x".repeat(180)}😀[@pkg](plugin://pkg@mp)${"z".repeat(suffixLength)}`,
+          ),
+        ],
+        originalHistoryMessages: [],
+        prompt: "next",
+        maxRenderedContextChars: 80,
+      });
+      const context = result.promptContextRange
+        ? result.promptText.slice(result.promptContextRange.start, result.promptContextRange.end)
+        : "";
+      const codeUnits = Array.from({ length: context.length }, (_, index) =>
+        context.charCodeAt(index),
+      );
+      const hasLoneSurrogate = codeUnits.some((unit, index) => {
+        if (unit >= 0xd800 && unit <= 0xdbff) {
+          const next = codeUnits[index + 1];
+          return next === undefined || next < 0xdc00 || next > 0xdfff;
+        }
+        if (unit >= 0xdc00 && unit <= 0xdfff) {
+          const previous = codeUnits[index - 1];
+          return previous === undefined || previous < 0xd800 || previous > 0xdbff;
+        }
+        return false;
+      });
+
+      retainedEmoji ||= context.includes("😀");
+      omittedEmoji ||= !context.includes("😀");
+      retainedNeutralizedPluginMention ||= context.includes("[＠pkg](plugin://pkg@mp)");
+      expect(context).not.toContain("[@pkg](plugin://pkg@mp)");
+      expect(hasLoneSurrogate).toBe(false);
+    }
+    expect(retainedEmoji).toBe(true);
+    expect(omittedEmoji).toBe(true);
+    expect(retainedNeutralizedPluginMention).toBe(true);
+  });
+
   it("can scale the rendered context cap for larger Codex context windows", () => {
     const result = projectContextEngineAssemblyForCodex({
       assembledMessages: Array.from({ length: 12 }, (_, index) =>
