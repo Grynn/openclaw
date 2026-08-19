@@ -98,7 +98,12 @@ export function createAuditEventWriter(
   } = {},
 ): AuditEventWriter {
   const database = {
-    env: { OPENCLAW_STATE_DIR: options.stateDir ?? resolveStateDir(process.env) },
+    // Preserve Gateway supervision markers when overriding only the state
+    // directory; otherwise an externally-owned Gateway rejects its own writer.
+    env: {
+      ...process.env,
+      OPENCLAW_STATE_DIR: options.stateDir ?? resolveStateDir(process.env),
+    },
   };
   const maxPending = Math.max(1, Math.floor(options.maxPending ?? MAX_PENDING_AUDIT_EVENTS));
   const queue: AuditWriterRequest[] = [];
