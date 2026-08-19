@@ -495,6 +495,26 @@ function controlUiPrecompressedAssetsPlugin(buildOutDir: string): Plugin {
   };
 }
 
+// Cloudflare Rocket Loader defers and rewrites every script it is not told to skip, which strands
+// the Control UI on its mount fallback with no error. `vite:build-html` drops the authored
+// `data-cfasync` opt-out because it synthesizes the module entry tag from a fixed attribute set, so
+// the attribute is reapplied after that plugin runs; without this the opt-out works only in dev.
+export function controlUiCloudflareScriptBypassPlugin(): Plugin {
+  return {
+    name: "control-ui-cloudflare-script-bypass",
+    apply: "build",
+    transformIndexHtml: {
+      order: "post",
+      handler(html) {
+        return html.replace(
+          /<script\b(?![^>]*\bdata-cfasync\s*=)/giu,
+          '<script data-cfasync="false"',
+        );
+      },
+    },
+  };
+}
+
 function collectControlUiAssetManifestEntries(
   buildOutDir: string,
   assetsRoot = path.join(buildOutDir, "assets"),
@@ -607,6 +627,7 @@ export default function controlUiViteConfig(options: { outDir?: string } = {}): 
     plugins: [
       controlUiLocaleModulesPlugin(),
       controlUiBrowserOnlySharedModuleAliases(),
+      controlUiCloudflareScriptBypassPlugin(),
       controlUiPrecompressedAssetsPlugin(buildOutDir),
       controlUiPublicAssetBuildIdPlugin(buildInfo.buildId, buildOutDir),
       controlUiAssetManifestPlugin(buildOutDir),

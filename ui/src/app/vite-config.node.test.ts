@@ -14,6 +14,7 @@ import { flattenTranslations } from "../../../scripts/lib/control-ui-i18n-sync-p
 import { controlUiLocaleModulesPlugin } from "../../config/control-ui-locales.ts";
 import {
   controlUiBrowserOnlySharedModuleAliases,
+  controlUiCloudflareScriptBypassPlugin,
   createControlUiPrecompressedAssetVariants,
   resolveControlUiBuildInfo,
   resolveExternalPackageAliasesForVite,
@@ -51,6 +52,16 @@ function findStringAlias(key: string) {
 }
 
 describe("Control UI Vite config", () => {
+  it("registers the Cloudflare async bypass as a post-order build-only HTML transform", () => {
+    const plugin = controlUiCloudflareScriptBypassPlugin();
+    const transformHook = plugin.transformIndexHtml;
+    if (typeof transformHook !== "object" || !transformHook) {
+      throw new Error("Expected Cloudflare bypass plugin to expose an ordered HTML transform");
+    }
+    expect(plugin.apply).toBe("build");
+    expect(transformHook.order).toBe("post");
+  });
+
   it("emits Brotli and gzip variants only for bundled compressible assets", () => {
     const source = Array.from(
       { length: 200 },

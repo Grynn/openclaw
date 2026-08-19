@@ -235,6 +235,17 @@ describe("Control UI Vite build", () => {
     expect(cacheIds[0]).not.toBe(cacheIds[1]);
   });
 
+  it("carries the Cloudflare Rocket Loader bypass on every emitted script tag", async () => {
+    await build(config);
+
+    const html = await fs.readFile(path.join(outDir, "index.html"), "utf8");
+    const scriptTags = html.match(/<script\b[^>]*>/gu) ?? [];
+    expect(scriptTags.length).toBeGreaterThan(0);
+    for (const tag of scriptTags) {
+      expect(tag).toContain('data-cfasync="false"');
+    }
+  });
+
   it("fails when a completed build emits outside the required assets directory", async () => {
     config.build = { ...config.build, assetsDir: "bundles" };
 
