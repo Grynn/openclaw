@@ -222,8 +222,9 @@ export async function startCodexAttemptTurn(
         formatError: formatErrorMessage,
       });
       codexModelCallDiagnostics.emitError(message, failureKind ? { failureKind } : {});
+      const historyMessages = await historyState.ensureLoaded();
       const messagesSnapshot = [
-        ...historyState.messages,
+        ...historyMessages,
         buildCodexUserPromptMessage({ ...runtimeParams, prompt: turnState.codexTurnPromptText }),
       ];
       await runCodexAgentEndHook(params, {

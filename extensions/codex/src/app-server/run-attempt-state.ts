@@ -3,6 +3,8 @@ import {
   formatErrorMessage,
   type EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { refreshCodexSessionTranscriptAdmission } from "openclaw/plugin-sdk/codex-session-transcript-runtime";
+import type { TranscriptTurnAdmission } from "openclaw/plugin-sdk/session-transcript-runtime";
 import {
   asBoolean,
   asFiniteNumber,
@@ -53,13 +55,39 @@ export async function markCodexAppServerBindingCoveredThroughTurn(params: {
   bindingStore: CodexAppServerBindingStore;
   identity: CodexAppServerBindingIdentity;
   threadId: string;
+  runId: string;
+  turnStartAdmission?: TranscriptTurnAdmission;
   continuityCalibration?: { promptChars: number; inputTokens: number };
 }): Promise<void> {
+  const refreshedAdmission = params.turnStartAdmission
+    ? refreshCodexSessionTranscriptAdmission(params.turnStartAdmission)
+    : undefined;
+  if (params.turnStartAdmission && !refreshedAdmission) {
+    throw new Error(
+      `Codex turn-start transcript admission is no longer active: ${params.turnStartAdmission.entryId}`,
+    );
+  }
   await params.bindingStore.mutate(params.identity, {
     kind: "patch",
     threadId: params.threadId,
     patch: {
-      historyCoveredThrough: new Date().toISOString(),
+      ...(refreshedAdmission
+        ? {
+            transcriptCoverage: {
+              schemaVersion: 1,
+              turnStartAdmission: refreshedAdmission,
+              steerTargetRunId: params.runId,
+            },
+            // Exact admission coverage supersedes the unsafe completion-time cutoff.
+            historyCoveredThrough: undefined,
+          }
+        : {
+            transcriptCoverage: undefined,
+            // Completion time is not an admission boundary. A user row can be
+            // persisted while the native turn is active but before finalization;
+            // advancing a timestamp here would hide it on the next resume.
+            historyCoveredThrough: undefined,
+          }),
       ...(params.continuityCalibration
         ? { continuityCalibration: params.continuityCalibration }
         : {}),

@@ -202,6 +202,7 @@ export async function forkCodexUpstreamSession(
                 cwd: forkedThread.cwd ?? "",
                 model: response.model,
                 modelProvider: response.modelProvider ?? undefined,
+                transcriptCoverage: undefined,
                 historyCoveredThrough: new Date().toISOString(),
               },
             });

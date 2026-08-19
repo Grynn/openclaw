@@ -7,6 +7,7 @@ import {
   isHostScopedAgentToolActive,
   resolveContextEngineOwnerPluginId,
   runHarnessContextEngineMaintenance,
+  type AgentMessage,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
   buildCodexOpenClawPromptContext,
@@ -79,20 +80,58 @@ export async function prepareCodexAttemptContext(
     sessionKey: contextSessionKey,
     sessionTarget: params.sessionTarget,
   };
+  // This exact admitted row fences every history read used to build turn/start.
+  // Keep it immutable for the attempt even if later steering rewrites the transcript.
+  const transcriptReadFence = params.userTurnTranscriptRecorder?.getAdmissionReceipt();
   const readFencedHistory = async () => {
-    const transcriptReadFence = params.userTurnTranscriptRecorder?.getAdmissionReceipt();
     return await readMirroredSessionHistoryMessages({
       ...activeTranscriptTarget,
       ...(transcriptReadFence ? { admission: transcriptReadFence } : {}),
     });
   };
-  const historyState = {
-    messages:
-      !activeContextEngine && initialStartupBindingHadInactiveThreadBootstrap
-        ? []
-        : ((await readFencedHistory()) ?? []),
+  // Exact resumes normally need only the indexed admission delta. Keep the
+  // transcript-start scan cached and lazy for the conservative paths that do.
+  let historyReadPromise: Promise<AgentMessage[]> | undefined;
+  const historyState: {
+    messages: AgentMessage[];
+    loaded: boolean;
+    ensureLoaded: () => Promise<AgentMessage[]>;
+    reload: () => Promise<AgentMessage[]>;
+  } = {
+    messages: [],
+    loaded: false,
+    ensureLoaded: async () => historyState.messages,
+    reload: async () => historyState.messages,
   };
-  const hadSessionTranscriptState = historyState.messages.length > 0;
+  const loadFencedHistory = async (force: boolean): Promise<AgentMessage[]> => {
+    if (!activeContextEngine && initialStartupBindingHadInactiveThreadBootstrap) {
+      historyState.loaded = true;
+      return historyState.messages;
+    }
+    if (!force && historyState.loaded) {
+      return historyState.messages;
+    }
+    if (!force && historyReadPromise) {
+      return await historyReadPromise;
+    }
+    const readPromise = readFencedHistory()
+      .then((messages) => {
+        if (messages) {
+          historyState.messages = messages;
+        }
+        historyState.loaded = true;
+        return historyState.messages;
+      })
+      .finally(() => {
+        if (historyReadPromise === readPromise) {
+          historyReadPromise = undefined;
+        }
+      });
+    historyReadPromise = readPromise;
+    return await readPromise;
+  };
+  historyState.ensureLoaded = async () => await loadFencedHistory(false);
+  historyState.reload = async () => await loadFencedHistory(true);
   const hookContextWindowFields = {
     ...(effectiveContextWindowInfo?.tokens
       ? { contextTokenBudget: effectiveContextWindowInfo.tokens }
@@ -129,15 +168,16 @@ export async function prepareCodexAttemptContext(
       tokenBudget: effectiveContextTokenBudget,
     });
   if (activeContextEngine) {
+    await historyState.ensureLoaded();
     await bootstrapHarnessContextEngine({
-      hadSessionFile: hadSessionTranscriptState,
+      hadSessionFile: historyState.messages.length > 0,
       contextEngine: activeContextEngine,
       sessionId: activeSessionId,
       sessionKey: contextSessionKey,
       sessionFile: activeSessionFile,
       sessionTarget: params.sessionTarget,
       runtimeContext: buildActiveContextEngineRuntimeContext(),
-      transcriptReadFence: params.userTurnTranscriptRecorder?.getAdmissionReceipt(),
+      transcriptReadFence,
       contextEngineHostSupport: CODEX_APP_SERVER_CONTEXT_ENGINE_HOST,
       providerId: effectiveRuntimeProviderId,
       requestedModelId: usesSupervisionConnection ? undefined : params.requestedModelId,
@@ -148,7 +188,7 @@ export async function prepareCodexAttemptContext(
       config: params.config,
       warn: (message) => embeddedAgentLog.warn(message),
     });
-    historyState.messages = (await readFencedHistory()) ?? historyState.messages;
+    await historyState.reload();
   }
   const memoryToolNames = getCodexWorkspaceMemoryToolNames(toolBridge.availableSpecs);
   const hasBootstrapFileAccess =
@@ -201,9 +241,11 @@ export async function prepareCodexAttemptContext(
     promptText: params.prompt,
     promptContextRange: undefined as CodexProjectedContextRange | undefined,
     developerInstructions: baseDeveloperInstructions,
-    prePromptMessageCount: historyState.messages.length,
+    prePromptMessageCount: 0,
     contextEngineProjection: undefined as CodexContextEngineThreadBootstrapProjection | undefined,
+    precomputedStaleBindingContinuityProjectionResolved: false,
     precomputedStaleBindingContinuityProjectionApplied: false,
+    precomputedStaleBindingContinuityProjectionThreadId: undefined as string | undefined,
     staleBindingContinuityForcedFreshStart: false,
     // Set by the no-engine continuity appliers; gates calibration recording so a
     // dense direct or active-engine prompt can never persist a density sample
@@ -227,6 +269,7 @@ export async function prepareCodexAttemptContext(
     runtime,
     attemptTools,
     activeTranscriptTarget,
+    transcriptReadFence,
     historyState,
     hookContext,
     hookContextWindowFields,

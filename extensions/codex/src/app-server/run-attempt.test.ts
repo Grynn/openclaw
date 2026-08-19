@@ -3807,7 +3807,7 @@ describe("runCodexAppServerAttempt", () => {
     expect(inputText).toContain("continue from the real user message");
   });
 
-  it("does not replay messages persisted during an active native Codex turn", async () => {
+  it("conservatively replays an unanchored arrival persisted during an active native turn", async () => {
     const { sessionFile, workspaceDir } = createRunPaths();
     await writeExistingBinding(sessionFile, workspaceDir, { dynamicToolsFingerprint: "[]" });
     const originalBindingUpdatedAt = Date.now() - 60_000;
@@ -3823,13 +3823,12 @@ describe("runCodexAppServerAttempt", () => {
     const firstHarness = createResumeHarness();
     const firstRun = runCodexAppServerAttempt(createParams(sessionFile, workspaceDir));
     await firstHarness.waitForMethod("turn/start");
-    sessionManager.appendMessage(userMessage("steered into active native turn", Date.now()));
+    sessionManager.appendMessage(userMessage("unanchored arrival during native turn", Date.now()));
     await firstHarness.completeTurn({ threadId: "thread-existing", turnId: "turn-1" });
     await firstRun;
     const completedBinding = await readCodexAppServerBinding(sessionFile);
-    expect(Date.parse(completedBinding?.historyCoveredThrough ?? "")).toBeGreaterThan(
-      originalBindingUpdatedAt,
-    );
+    expect(completedBinding?.transcriptCoverage).toBeUndefined();
+    expect(completedBinding?.historyCoveredThrough).toBeUndefined();
     const secondHarness = createResumeHarness();
     const secondParams = createParams(sessionFile, workspaceDir);
     secondParams.prompt = "continue after steering";
@@ -3841,11 +3840,11 @@ describe("runCodexAppServerAttempt", () => {
     const inputText =
       (turnStart?.params as { input?: Array<{ text?: string }> } | undefined)?.input?.[0]?.text ??
       "";
-    expect(inputText).not.toContain("OpenClaw assembled context for this turn:");
-    expect(inputText).not.toContain("steered into active native turn");
+    expect(inputText).toContain("OpenClaw assembled context for this turn:");
+    expect(inputText).toContain("unanchored arrival during native turn");
     expect(inputText).toContain("continue after steering");
   });
-  it("does not project mirrored messages on consecutive resumes", async () => {
+  it("conservatively reprojects legacy history on consecutive unanchored resumes", async () => {
     const { sessionFile, workspaceDir } = createRunPaths();
     await writeExistingBinding(sessionFile, workspaceDir, { dynamicToolsFingerprint: "[]" });
     const oldBindingUpdatedAt = Date.now() - 60_000;
@@ -3894,8 +3893,8 @@ describe("runCodexAppServerAttempt", () => {
     const secondInputText =
       (secondTurnStart?.params as { input?: Array<{ text?: string }> } | undefined)?.input?.[0]
         ?.text ?? "";
-    expect(secondInputText).not.toContain("OpenClaw assembled context for this turn:");
-    expect(secondInputText).not.toContain("we were discussing the Sonnet leak screenshots");
+    expect(secondInputText).toContain("OpenClaw assembled context for this turn:");
+    expect(secondInputText).toContain("we were discussing the Sonnet leak screenshots");
     expect(secondInputText).not.toContain("is the previous message trustworthy?");
     expect(secondInputText).toContain("continue from there");
   });

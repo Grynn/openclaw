@@ -424,12 +424,14 @@ export async function finalizeCodexAttempt(
     !runAbortController.signal.aborted &&
     !finalAborted &&
     !finalPromptError;
-  if (state.shouldDelayNativeHookRelayUnregister) {
+  if (turnSucceeded) {
     try {
       await markCodexAppServerBindingCoveredThroughTurn({
         bindingStore,
         identity: bindingIdentity,
         threadId: resourceState.thread.threadId,
+        runId: params.runId,
+        ...(context.transcriptReadFence ? { turnStartAdmission: context.transcriptReadFence } : {}),
         // Only turns whose prompt WAS a no-engine continuity projection may
         // calibrate: a dense direct or active-engine prompt must never persist a
         // sample that later shrinks continuity history it did not measure.
@@ -458,7 +460,7 @@ export async function finalizeCodexAttempt(
         throw error;
       }
       embeddedAgentLog.warn(
-        "codex app-server binding coverage update failed after completed turn; cleared stale binding",
+        "codex app-server binding coverage update failed after successful turn; cleared stale binding",
         { threadId: resourceState.thread.threadId, turnId: activeTurnId, error },
       );
     }

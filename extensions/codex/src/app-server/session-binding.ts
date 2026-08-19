@@ -21,6 +21,7 @@ import { CODEX_PLUGIN_MARKETPLACE_NAME_PATTERN, normalizeCodexServiceTier } from
 import type { CodexManagedThreadStore } from "./managed-thread-store.js";
 import type { PluginAppPolicyContext } from "./plugin-thread-config.js";
 import type { CodexServiceTier } from "./protocol.js";
+import { codexTranscriptCoverageSchema } from "./transcript-coverage.js";
 
 const CODEX_APP_SERVER_NATIVE_AUTH_PROVIDER = "openai";
 const PUBLIC_OPENAI_MODEL_PROVIDER = "openai";
@@ -267,6 +268,8 @@ const threadBindingSchema = z
     environmentSelectionFingerprint: optionalStringSchema,
     conversationStartId: optionalStringSchema,
     conversationSourceTransferComplete: z.literal(true).optional().catch(undefined),
+    transcriptCoverage: codexTranscriptCoverageSchema.optional().catch(undefined),
+    // Legacy fallback for bindings written before exact transcript coverage.
     historyCoveredThrough: optionalTimestampSchema,
     // Observed density of the last completed turn on this thread: prompt chars
     // actually sent vs provider-reported input tokens. Read by the no-engine
