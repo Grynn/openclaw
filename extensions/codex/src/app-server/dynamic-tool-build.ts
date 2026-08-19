@@ -21,6 +21,7 @@ import {
 import { resolveAgentDir } from "openclaw/plugin-sdk/agent-runtime";
 import { runWithCronCreatorAuthorityCapabilityResolver } from "openclaw/plugin-sdk/codex-mcp-projection";
 import { isToolAllowed } from "openclaw/plugin-sdk/sandbox";
+import { shouldInjectCodexOpenClawPromptContext } from "./attempt-context.js";
 import {
   isCodexRemoteExecPlacementSandbox,
   readCodexPluginConfig,
@@ -285,6 +286,8 @@ export async function buildDynamicTools(input: DynamicToolBuildParams) {
     nativeProviderWebSearchSupport: input.nativeProviderWebSearchSupport,
   });
   const webFetchHostnameAllowlistRef: { value?: string[] } = {};
+  const enableSkillCatalogTool =
+    input.sandbox?.enabled !== true && shouldInjectCodexOpenClawPromptContext(params);
   const buildOpenClawCodingTools = () => {
     const toolConstructionPlan = resolveCodexNodePlacementToolConstructionPlan(
       input.sandbox,
@@ -402,6 +405,8 @@ export async function buildDynamicTools(input: DynamicToolBuildParams) {
       onToolOutcome: params.onToolOutcome,
       isTurnTainted: params.isTurnTainted,
       allocateToolOutcomeOrdinal: params.allocateToolOutcomeOrdinal,
+      ...(enableSkillCatalogTool ? { skillsSnapshot: params.skillsSnapshot } : {}),
+      enableSkillCatalogTool,
       cronCreatorToolAllowlistRef: input.cronCreatorToolAllowlistRef,
       cronCreatorToolAllowlistCaptureRef: input.cronCreatorToolAllowlistCaptureRef,
       cronCreatorAuthorityUnavailableReason: input.cronCreatorAuthorityUnavailableReason,

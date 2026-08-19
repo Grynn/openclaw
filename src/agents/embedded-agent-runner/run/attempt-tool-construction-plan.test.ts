@@ -365,21 +365,23 @@ describe("resolveEmbeddedAttemptToolConstructionPlan", () => {
         },
       },
     );
-    expectConstructionPlan(
-      resolveEmbeddedAttemptToolConstructionPlan({ toolsAllow: ["skill_workshop"] }),
-      {
-        constructTools: true,
-        includeCoreTools: true,
-        runtimeToolAllowlist: ["skill_workshop"],
-        coding: {
-          includeBaseCodingTools: false,
-          includeShellTools: false,
-          includeChannelTools: false,
-          includeOpenClawTools: true,
-          includePluginTools: false,
+    for (const toolName of ["skill_workshop", "skill_catalog"]) {
+      expectConstructionPlan(
+        resolveEmbeddedAttemptToolConstructionPlan({ toolsAllow: [toolName] }),
+        {
+          constructTools: true,
+          includeCoreTools: true,
+          runtimeToolAllowlist: [toolName],
+          coding: {
+            includeBaseCodingTools: false,
+            includeShellTools: false,
+            includeChannelTools: false,
+            includeOpenClawTools: true,
+            includePluginTools: false,
+          },
         },
-      },
-    );
+      );
+    }
     for (const toolName of ["suggest_task", "dismiss_task", "screen"]) {
       expectConstructionPlan(
         resolveEmbeddedAttemptToolConstructionPlan({ toolsAllow: [toolName] }),

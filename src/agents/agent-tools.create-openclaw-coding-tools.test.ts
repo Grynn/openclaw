@@ -24,10 +24,12 @@ import {
   resetGlobalHookRunner,
 } from "../plugins/hook-runner-global.js";
 import { createMockPluginRegistry } from "../plugins/hooks.test-fixtures.js";
+import { isPluginToolAllowed } from "../plugins/tool-grant-allowlist.js";
+import { createCanonicalFixtureSkill } from "../skills/test-support/test-helpers.js";
 import "./test-helpers/fast-bash-tools.js";
 import "./test-helpers/fast-coding-tools.js";
 import "./test-helpers/fast-openclaw-tools.js";
-import { isPluginToolAllowed } from "../plugins/tool-grant-allowlist.js";
+import { WORKSPACE_SKILLS_PROMPT_FORMAT_VERSION } from "../skills/types.js";
 import { wrapToolWithBeforeToolCallHook } from "./agent-tools.before-tool-call.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
 import { filterToolsByMessageProvider } from "./agent-tools.message-provider-policy.js";
@@ -529,6 +531,66 @@ describe("createOpenClawCodingTools", () => {
     expect(names.has("tool_search")).toBe(true);
     expect(names.has("tool_describe")).toBe(true);
     expect(names.has("tool_call")).toBe(true);
+  });
+
+  it("materializes the authorized skill catalog through normal restrictive policy", () => {
+    vi.mocked(createOpenClawTools).mockReturnValueOnce([stubTool("skill_catalog")]);
+    const skill = createCanonicalFixtureSkill({
+      name: "demo",
+      description: "Demo instructions",
+      filePath: "/skills/demo/SKILL.md",
+      baseDir: "/skills/demo",
+      source: "openclaw-workspace",
+    });
+    const tools = createOpenClawCodingTools({
+      config: { tools: { allow: ["skill_catalog"] } },
+      enableSkillCatalogTool: true,
+      skillsSnapshot: {
+        prompt: "bounded prompt",
+        promptFormatVersion: WORKSPACE_SKILLS_PROMPT_FORMAT_VERSION,
+        skills: [{ name: "demo", skillKey: "demo" }],
+        modelInvocableSkills: [{ name: "demo", skillKey: "demo" }],
+        resolvedSkills: [{ ...skill, skillKey: "demo" }],
+      },
+      toolConstructionPlan: {
+        includeBaseCodingTools: false,
+        includeShellTools: false,
+        includeChannelTools: false,
+        includeOpenClawTools: true,
+        includePluginTools: false,
+      },
+    });
+
+    expect(toolNameList(tools)).toEqual(["skill_catalog"]);
+    expect(tools[0]?.label).toBe("Skill Catalog");
+  });
+
+  it("fails closed instead of materializing a legacy skill catalog", () => {
+    const skill = createCanonicalFixtureSkill({
+      name: "demo",
+      description: "Demo instructions",
+      filePath: "/skills/demo/SKILL.md",
+      baseDir: "/skills/demo",
+      source: "openclaw-workspace",
+    });
+    const tools = createOpenClawCodingTools({
+      config: { tools: { allow: ["skill_catalog"] } },
+      enableSkillCatalogTool: true,
+      skillsSnapshot: {
+        prompt: "legacy prompt",
+        skills: [{ name: "demo", skillKey: "demo" }],
+        resolvedSkills: [skill],
+      },
+      toolConstructionPlan: {
+        includeBaseCodingTools: false,
+        includeShellTools: false,
+        includeChannelTools: false,
+        includeOpenClawTools: true,
+        includePluginTools: false,
+      },
+    });
+
+    expect(tools).toEqual([]);
   });
 
   it("lets explicit deny policies remove Tool Search controls", () => {

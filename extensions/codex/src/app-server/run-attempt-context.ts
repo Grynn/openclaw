@@ -195,6 +195,7 @@ export async function prepareCodexAttemptContext(
   const skillsCollaborationInstructions = renderCodexSkillsCollaborationInstructions({
     attempt: runtimeParams,
     skillsPrompt: params.skillsSnapshot?.prompt,
+    dynamicTools: toolBridge.availableSpecs,
   });
   const promptState = {
     promptText: params.prompt,

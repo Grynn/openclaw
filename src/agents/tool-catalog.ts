@@ -462,6 +462,14 @@ const CORE_TOOL_DEFINITIONS: CoreToolDefinition[] = [
     includeInOpenClawGroup: true,
   },
   {
+    id: "skill_catalog",
+    label: "skill_catalog",
+    description: "Search and read model-authorized skill instructions",
+    sectionId: "agents",
+    profiles: ["coding"],
+    includeInOpenClawGroup: true,
+  },
+  {
     id: "view_image",
     label: "view_image",
     description: "Image understanding",

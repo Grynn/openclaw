@@ -499,6 +499,68 @@ describe("Codex app-server attempt context", () => {
     ).toBe(undefined);
   });
 
+  it("projects skills through the final catalog tool surface with an XML fallback", () => {
+    const attempt = { config: {} } as EmbeddedRunAttemptParams;
+    const skillsPrompt = [
+      "<available_skills>",
+      "  <skill>",
+      "    <name>demo</name>",
+      "    <description>large description</description>",
+      "    <location>/skills/demo/SKILL.md</location>",
+      "  </skill>",
+      "</available_skills>",
+    ].join("\n");
+    const catalogFunction = {
+      type: "function" as const,
+      name: "skill_catalog",
+      description: "catalog",
+      inputSchema: {},
+      deferLoading: true,
+    };
+    const catalogSurfaces: CodexDynamicToolSpec[][] = [
+      [catalogFunction],
+      [
+        {
+          type: "namespace",
+          name: "openclaw",
+          description: "",
+          tools: [catalogFunction],
+        },
+      ],
+    ];
+
+    for (const dynamicTools of catalogSurfaces) {
+      const rendered = renderCodexSkillsCollaborationInstructions({
+        attempt,
+        skillsPrompt,
+        dynamicTools,
+      });
+      expect(rendered).toContain("skill_catalog");
+      expect(rendered).toContain("complete SKILL.md once");
+      expect(rendered).not.toContain("nextOffset");
+      expect(rendered).toContain("list_resources");
+      expect(rendered).toContain("never infer or request host filesystem paths");
+      expect(rendered).not.toContain("<available_skills>");
+      expect(rendered).not.toContain("large description");
+      expect(rendered).not.toContain("/skills/demo/SKILL.md");
+    }
+
+    expect(
+      renderCodexSkillsCollaborationInstructions({ attempt, skillsPrompt, dynamicTools: [] }),
+    ).toBe(`## OpenClaw Skills\n\n${skillsPrompt}`);
+    expect(
+      renderCodexSkillsCollaborationInstructions({
+        attempt: {
+          config: {},
+          bootstrapContextMode: "lightweight",
+          bootstrapContextRunKind: "cron",
+        } as EmbeddedRunAttemptParams,
+        skillsPrompt,
+        dynamicTools: catalogSurfaces[0],
+      }),
+    ).toBeUndefined();
+  });
+
   it("omits broad OpenClaw context from exact memory flush turns", () => {
     const attempt = {
       trigger: "memory",
@@ -523,6 +585,14 @@ describe("Codex app-server attempt context", () => {
       renderCodexSkillsCollaborationInstructions({
         attempt,
         skillsPrompt: "large skill catalog",
+        dynamicTools: [
+          {
+            type: "function",
+            name: "skill_catalog",
+            description: "catalog",
+            inputSchema: {},
+          },
+        ],
       }),
     ).toBeUndefined();
   });

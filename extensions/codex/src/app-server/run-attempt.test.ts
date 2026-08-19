@@ -34,6 +34,7 @@ import {
   buildCodexWorkspaceBootstrapContext,
   getCodexWorkspaceMemoryToolNames,
   prependCodexOpenClawPromptContext,
+  renderCodexSkillsCollaborationInstructions,
 } from "./attempt-context.js";
 import { readAttemptTerminal } from "./attempt-terminal.test-helper.js";
 import { withCodexStartupTimeout } from "./attempt-timeouts.js";
@@ -1754,6 +1755,112 @@ describe("runCodexAppServerAttempt", () => {
     expect(result.systemPromptReport?.skills.entries).toEqual([
       { name: "demo", blockChars: "<skill><name>demo</name></skill>".length },
     ]);
+  });
+
+  it("uses the deferred skill catalog without projecting the full XML catalog", async () => {
+    const llmInput = vi.fn();
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "llm_input", handler: llmInput }]),
+    );
+    vi.stubEnv("OPENCLAW_TRAJECTORY", "1");
+    const { sessionFile, workspaceDir } = createRunPaths();
+    const skillDir = path.join(workspaceDir, "skills", "demo");
+    const skillFile = path.join(skillDir, "SKILL.md");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(skillFile, "# Demo\n\nComplete demo instructions.\n", "utf8");
+    const harness = createStartedThreadHarness();
+    const params = createParams(sessionFile, workspaceDir);
+    setCodexTestModelSupportsTools(params, true);
+    params.runtimePlan = createCodexRuntimePlanFixture();
+    const trajectoryEvents: Array<{
+      data?: { prompt?: string; systemPrompt?: string };
+      type: string;
+    }> = [];
+    params.hostCapabilities = Object.freeze({
+      ...params.hostCapabilities,
+      trajectory: {
+        recordEvent: (type: string, data?: { prompt?: string; systemPrompt?: string }) => {
+          trajectoryEvents.push({ type, data });
+        },
+        flush: async () => undefined,
+      },
+    });
+    params.skillsSnapshot = {
+      prompt: [
+        "<available_skills>",
+        "<skill><name>demo</name><description>very large catalog entry</description>",
+        `<location>${skillFile}</location></skill>`,
+        "</available_skills>",
+      ].join(""),
+      promptFormatVersion: 4,
+      skills: [{ name: "demo", skillKey: "demo" }],
+      modelInvocableSkills: [{ name: "demo", skillKey: "demo" }],
+      resolvedSkills: [
+        {
+          name: "demo",
+          skillKey: "demo",
+          description: "very large catalog entry",
+          filePath: skillFile,
+          baseDir: skillDir,
+          promptVersion: "sha256:demo",
+          source: "openclaw-workspace",
+          sourceInfo: {
+            source: "openclaw-workspace",
+            path: skillFile,
+            baseDir: skillDir,
+            scope: "project",
+            origin: "top-level",
+          },
+          disableModelInvocation: false,
+        },
+      ],
+    };
+
+    const run = runCodexAppServerAttempt(params);
+    await harness.waitForMethod("turn/start");
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+    const result = await run;
+    const threadStart = harness.requests.find((request) => request.method === "thread/start");
+    const threadStartParams = threadStart?.params as {
+      developerInstructions?: string;
+      dynamicTools?: CodexDynamicToolSpec[];
+    };
+    const skillCatalogSpec = flattenCodexDynamicToolFunctions(threadStartParams.dynamicTools).find(
+      (tool) => tool.name === "skill_catalog",
+    );
+    expect(skillCatalogSpec).toMatchObject({ name: "skill_catalog", deferLoading: true });
+    expect(threadStartParams.developerInstructions).not.toContain("<available_skills>");
+
+    const turnStart = harness.requests.find((request) => request.method === "turn/start");
+    const turnStartParams = turnStart?.params as {
+      input?: Array<{ text?: string }>;
+      collaborationMode?: { settings?: { developer_instructions?: string | null } };
+    };
+    const collaborationInstructions =
+      turnStartParams.collaborationMode?.settings?.developer_instructions ?? "";
+    const inputText = turnStartParams.input?.[0]?.text ?? "";
+    expect(collaborationInstructions).toContain("skill_catalog");
+    expect(collaborationInstructions).not.toContain("<available_skills>");
+    expect(inputText).toBe("hello");
+    expect(inputText).not.toContain("<available_skills>");
+    const [llmInputPayload] = mockCall(llmInput, "llm_input") as [{ prompt?: string }, unknown];
+    expect(llmInputPayload.prompt).toBe(inputText);
+    const compiledContext = trajectoryEvents.find((event) => event.type === "context.compiled");
+    expect(compiledContext?.data?.systemPrompt).toContain("skill_catalog");
+    expect(compiledContext?.data?.systemPrompt).not.toContain("<available_skills>");
+    const projectedSkillsInstructions = renderCodexSkillsCollaborationInstructions({
+      attempt: params,
+      skillsPrompt: params.skillsSnapshot.prompt,
+      dynamicTools: threadStartParams.dynamicTools,
+    });
+    expect(result.systemPromptReport?.skills.promptChars).toBe(projectedSkillsInstructions?.length);
+    expect(result.systemPromptReport?.skills.entries).toEqual([]);
+    expect(
+      result.systemPromptReport?.tools.entries.find((tool) => tool.name === "skill_catalog"),
+    ).toMatchObject({ schemaChars: 0 });
   });
 
   it("emits TUI-compatible tool events for Codex dynamic tool calls", async () => {
@@ -4411,13 +4518,34 @@ describe("runCodexAppServerAttempt", () => {
     await fs.writeFile(path.join(workspaceDir, "SOUL.md"), "Soul voice goes here.");
     const harness = createStartedThreadHarness();
     const params = createParams(sessionFile, workspaceDir);
+    setCodexTestModelSupportsTools(params, true);
+    params.runtimePlan = createCodexRuntimePlanFixture();
     params.trigger = "cron";
     params.prompt = exactCommand;
     params.bootstrapContextMode = "lightweight";
     params.bootstrapContextRunKind = "cron";
     params.skillsSnapshot = {
       prompt: "<available_skills><skill><name>demo</name></skill></available_skills>",
-      skills: [],
+      promptFormatVersion: 4,
+      skills: [{ name: "demo", skillKey: "demo" }],
+      modelInvocableSkills: [{ name: "demo", skillKey: "demo" }],
+      resolvedSkills: [
+        {
+          name: "demo",
+          description: "Demo",
+          filePath: "node://test/skills/demo/SKILL.md",
+          baseDir: "node://test/skills/demo",
+          readContent: "# Demo",
+          source: "openclaw-node",
+          sourceInfo: {
+            source: "openclaw-node",
+            path: "node://test/skills/demo/SKILL.md",
+            scope: "temporary",
+            origin: "top-level",
+          },
+          disableModelInvocation: false,
+        },
+      ],
     };
     const run = runCodexAppServerAttempt(params);
     await harness.waitForMethod("turn/start");
@@ -4429,12 +4557,18 @@ describe("runCodexAppServerAttempt", () => {
     const threadStart = harness.requests.find((request) => request.method === "thread/start");
     const threadStartParams = threadStart?.params as {
       developerInstructions?: string;
+      dynamicTools?: CodexDynamicToolSpec[];
       config?: Record<string, unknown>;
     };
     expect(threadStartParams.config?.project_doc_max_bytes).toBe(0);
     expect(threadStartParams.developerInstructions).not.toContain("Soul voice goes here.");
     expect(threadStartParams.developerInstructions).not.toContain("Follow AGENTS guidance.");
     expect(threadStartParams.developerInstructions).not.toContain("<available_skills>");
+    expect(
+      flattenCodexDynamicToolFunctions(threadStartParams.dynamicTools).some(
+        (tool) => tool.name === "skill_catalog",
+      ),
+    ).toBe(false);
     const turnStart = harness.requests.find((request) => request.method === "turn/start");
     const turnStartParams = turnStart?.params as {
       input?: Array<{ text?: string }>;

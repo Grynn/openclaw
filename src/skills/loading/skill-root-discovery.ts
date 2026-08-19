@@ -13,7 +13,7 @@ const skillsLogger = createSubsystemLogger("skills");
 
 const DEFAULT_MAX_CANDIDATES_PER_ROOT = 300;
 const DEFAULT_MAX_SKILLS_LOADED_PER_SOURCE = 200;
-const DEFAULT_MAX_SKILL_FILE_BYTES = 256_000;
+export const DEFAULT_MAX_SKILL_FILE_BYTES = 256_000;
 const DEFAULT_MIN_RAW_ENTRIES_PER_DIRECTORY_SCAN = 1_000;
 const DEFAULT_MAX_RAW_ENTRIES_PER_DIRECTORY_SCAN = 10_000;
 // Match Codex's bounded recursive skills discovery without letting broad

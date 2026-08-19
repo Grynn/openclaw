@@ -41,6 +41,7 @@ import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { setPluginToolMeta } from "../plugins/tools.js";
 import { consumeRunSkillUsage } from "../skills/runtime/run-usage.js";
 import { createCanonicalFixtureSkill } from "../skills/test-support/test-helpers.js";
+import { WORKSPACE_SKILLS_PROMPT_FORMAT_VERSION } from "../skills/types.js";
 import { createChannelTestPluginBase, createTestRegistry } from "../test-utils/channel-plugins.js";
 import {
   getBeforeToolCallFailureDisposition,
@@ -1505,6 +1506,75 @@ describe("before_tool_call loop detection behavior", () => {
         },
       ]);
       expect(consumeRunSkillUsage("run-1")).toEqual([]);
+    });
+  });
+
+  it("records path-free catalog skill reads as skill usage", async () => {
+    const workspaceDir = path.join("/tmp", "openclaw-catalog-skill-usage");
+    const skillBaseDir = path.join(workspaceDir, "skills", "demo-skill");
+    const skillFilePath = path.join(skillBaseDir, "SKILL.md");
+    const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "skill" }] });
+    const tool = wrapToolWithBeforeToolCallHook(asAgentTool({ name: "skill_catalog", execute }), {
+      agentId: "main",
+      sessionKey: "session-key",
+      runId: "catalog-run",
+      workspaceDir,
+      skillsSnapshot: {
+        prompt: "",
+        promptFormatVersion: WORKSPACE_SKILLS_PROMPT_FORMAT_VERSION,
+        skills: [{ name: "demo-skill", skillKey: "demo-skill" }],
+        modelInvocableSkills: [{ name: "demo-skill", skillKey: "demo-skill" }],
+        resolvedSkills: [
+          {
+            ...createCanonicalFixtureSkill({
+              name: "demo-skill",
+              description: "Demo",
+              filePath: skillFilePath,
+              baseDir: skillBaseDir,
+              source: "workspace",
+            }),
+            skillKey: "demo-skill",
+          },
+        ],
+      },
+      loopDetection: { enabled: false },
+    });
+
+    await withSkillUsageDiagnosticEvents(async (emitted, privateData, flush) => {
+      await tool.execute(
+        "tool-call-catalog-read",
+        { action: "read", name: "demo-skill", offset: 12_000 },
+        undefined,
+        undefined,
+      );
+      await flush();
+
+      expect(emitted.map((event) => event.type)).toEqual([
+        "tool.execution.started",
+        "skill.used",
+        "tool.execution.completed",
+      ]);
+      expectEventFields(emitted[1], {
+        type: "skill.used",
+        agentId: "main",
+        runId: "catalog-run",
+        sessionKey: "session-key",
+        skillName: "demo-skill",
+        skillSource: "workspace",
+        activation: "read",
+        toolName: "skill_catalog",
+        toolCallId: "tool-call-catalog-read",
+      });
+      expect(JSON.stringify(emitted)).not.toContain(skillFilePath);
+      expect(privateData[0]?.skillUsage?.skillFile).toBe(skillFilePath);
+      expect(consumeRunSkillUsage("catalog-run")).toEqual([
+        {
+          name: "demo-skill",
+          source: "workspace",
+          activation: "read",
+          skillFile: skillFilePath,
+        },
+      ]);
     });
   });
 

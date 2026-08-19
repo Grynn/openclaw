@@ -305,6 +305,88 @@ describe("Codex app-server dynamic tool build", () => {
     expect(factory).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { label: "unrestricted", toolsAllow: undefined, expected: true },
+    { label: "wildcard", toolsAllow: ["*"], expected: true },
+    { label: "exact", toolsAllow: ["skill_catalog"], expected: true },
+    { label: "empty", toolsAllow: [], expected: false },
+    { label: "other tool", toolsAllow: ["message"], expected: false },
+  ])("forwards and authorizes the lazy skill catalog for $label policy", async (testCase) => {
+    const workspaceDir = path.join(tempDir, `skill-catalog-${testCase.label.replace(" ", "-")}`);
+    const params = createParams(path.join(tempDir, "skill-catalog-session.jsonl"), workspaceDir);
+    params.disableTools = false;
+    params.runtimePlan = createCodexRuntimePlanFixture();
+    params.toolsAllow = testCase.toolsAllow;
+    params.skillsSnapshot = {
+      prompt: "bounded",
+      promptFormatVersion: 4,
+      skills: [{ name: "demo", skillKey: "demo" }],
+      modelInvocableSkills: [{ name: "demo", skillKey: "demo" }],
+      resolvedSkills: [],
+    };
+    const factory = vi.fn(
+      (
+        _options: Parameters<
+          NonNullable<typeof dynamicToolBuildState.openClawCodingToolsFactory>
+        >[0],
+      ) => [createRuntimeDynamicTool("skill_catalog")],
+    );
+    setOpenClawCodingToolsFactoryForTests(factory);
+
+    const tools = await buildDynamicToolsForTest(params, workspaceDir);
+    const factoryOptions = factory.mock.calls[0]?.[0];
+    expect(factoryOptions).toMatchObject({
+      skillsSnapshot: params.skillsSnapshot,
+      enableSkillCatalogTool: true,
+    });
+    expect(tools.some((tool) => tool.name === "skill_catalog")).toBe(testCase.expected);
+
+    if (testCase.expected) {
+      const bridge = createCodexDynamicToolBridge({
+        tools,
+        signal: new AbortController().signal,
+        loading: "searchable",
+      });
+      expect(bridge.availableSpecs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "namespace",
+            name: "openclaw",
+            tools: expect.arrayContaining([
+              expect.objectContaining({ name: "skill_catalog", deferLoading: true }),
+            ]),
+          }),
+        ]),
+      );
+    }
+  });
+
+  it("withholds the skill catalog authority from sandboxed Codex runs", async () => {
+    const workspaceDir = path.join(tempDir, "sandboxed-skill-catalog");
+    const params = createParams(path.join(tempDir, "sandboxed-skill-catalog.jsonl"), workspaceDir);
+    params.disableTools = false;
+    params.runtimePlan = createCodexRuntimePlanFixture();
+    params.skillsSnapshot = {
+      prompt: "bounded",
+      promptFormatVersion: 4,
+      skills: [{ name: "demo", skillKey: "demo" }],
+      modelInvocableSkills: [{ name: "demo", skillKey: "demo" }],
+      resolvedSkills: [],
+    };
+    const factory = vi.fn((options) =>
+      options?.enableSkillCatalogTool ? [createRuntimeDynamicTool("skill_catalog")] : [],
+    );
+    setOpenClawCodingToolsFactoryForTests(factory);
+
+    const tools = await buildDynamicToolsForTest(params, workspaceDir, {
+      sandbox: { enabled: true, backendId: "docker" } as never,
+    });
+
+    expect(tools).toEqual([]);
+    expect(factory.mock.calls[0]?.[0]).toMatchObject({ enableSkillCatalogTool: false });
+    expect(factory.mock.calls[0]?.[0]).not.toHaveProperty("skillsSnapshot");
+  });
+
   it("uses the prepared explicit-policy fact to disable the native surface", () => {
     const params = createParams("/tmp/session.jsonl", "/tmp/workspace");
     params.disableTools = false;
@@ -1267,6 +1349,7 @@ describe("Codex app-server dynamic tool build", () => {
         createRuntimeDynamicTool("apply_patch"),
         createRuntimeDynamicTool("message"),
         createRuntimeDynamicTool("web_search"),
+        createRuntimeDynamicTool("skill_catalog"),
       ];
     });
     const sessionFile = path.join(tempDir, "session.jsonl");
@@ -1276,6 +1359,13 @@ describe("Codex app-server dynamic tool build", () => {
     params.runtimePlan = createCodexRuntimePlanFixture();
     params.trigger = "memory";
     params.memoryFlushWritePath = "memory/2026-05-22.md";
+    params.skillsSnapshot = {
+      prompt: "bounded",
+      promptFormatVersion: 4,
+      skills: [{ name: "demo", skillKey: "demo" }],
+      modelInvocableSkills: [{ name: "demo", skillKey: "demo" }],
+      resolvedSkills: [],
+    };
     const sandbox = { enabled: true, backendId: "docker" } as never;
     let persistentWebSearchAllowed = false;
     let webSearchAllowed = true;
@@ -1297,7 +1387,9 @@ describe("Codex app-server dynamic tool build", () => {
     expect(factoryOptions[0]).toMatchObject({
       trigger: "memory",
       memoryFlushWritePath: "memory/2026-05-22.md",
+      enableSkillCatalogTool: false,
     });
+    expect(factoryOptions[0]).not.toHaveProperty("skillsSnapshot");
     expect(tools.map((tool) => tool.name)).toEqual(["read", "write"]);
     expect(persistentWebSearchAllowed).toBe(true);
     expect(webSearchAllowed).toBe(false);

@@ -11,7 +11,14 @@ export type SessionSkillSnapshot = {
   prompt: string;
   /** Persisted stores may replace large duplicate prompts with a content-addressed blob ref. */
   promptRef?: SessionSkillPromptRef;
-  skills: Array<{ name: string; primaryEnv?: string; requiredEnv?: string[] }>;
+  skills: Array<{
+    name: string;
+    skillKey?: string;
+    primaryEnv?: string;
+    requiredEnv?: string[];
+  }>;
+  /** Persisted prompt-visible authority captured before prompt-size truncation. */
+  modelInvocableSkills?: Array<{ name: string; skillKey: string }>;
   /** Normalized agent-level filter used to build this snapshot; undefined means unrestricted. */
   skillFilter?: string[];
   /** Effective node-exec eligibility used to select connected node-hosted skills. */
@@ -25,4 +32,5 @@ export type SessionSkillSnapshot = {
    */
   resolvedSkills?: Skill[];
   version?: number;
+  promptFormatVersion?: number;
 };

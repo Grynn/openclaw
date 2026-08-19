@@ -448,6 +448,9 @@ describe("buildSkillSnapshot", () => {
 
     expect(snapshot.prompt).toContain("⚠️ Skills truncated");
     expect(snapshot.prompt.length).toBeLessThan(2000);
+    expect(snapshot.modelInvocableSkills?.map((skill) => skill.name)).toEqual(
+      Array.from({ length: 8 }, (_, index) => `skill-${String(index).padStart(2, "0")}`),
+    );
   });
 
   it("uses agents.list[].skills as a full replacement for inherited defaults", async () => {

@@ -83,6 +83,7 @@ describe("tool-catalog", () => {
       "progress_card",
       "ask_user",
       "skill_workshop",
+      "skill_catalog",
       "view_image",
       "image_generate",
       "music_generate",

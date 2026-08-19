@@ -693,7 +693,7 @@ export function buildCodexWatchedSessionsContext(params: {
   });
 }
 
-function shouldInjectCodexOpenClawPromptContext(params: EmbeddedRunAttemptParams): boolean {
+export function shouldInjectCodexOpenClawPromptContext(params: EmbeddedRunAttemptParams): boolean {
   // Pre-compaction memory maintenance has its own exact prompt and append-only
   // tool contract. Re-injecting persona, workspace, watched-session, and skill
   // context makes the maintenance turn almost as large as the turn it protects.
@@ -707,13 +707,36 @@ function shouldInjectCodexOpenClawPromptContext(params: EmbeddedRunAttemptParams
   );
 }
 
+export const CODEX_SKILL_CATALOG_TOOL_NAME = "skill_catalog";
+const CODEX_SKILL_CATALOG_COLLABORATION_INSTRUCTIONS = [
+  "## OpenClaw Skills",
+  "",
+  `Search the deferred \`${CODEX_SKILL_CATALOG_TOOL_NAME}\` tool when a task may match specialized instructions.`,
+  "Before using a matching skill, read its complete SKILL.md once by exact name, then follow it.",
+  "Use the catalog's list_resources and read_resource actions for referenced relative files; never infer or request host filesystem paths.",
+  "If none matches, continue without one.",
+].join("\n");
+
+/** True only when the final authorized Codex tool surface contains the catalog capability. */
+export function hasCodexSkillCatalogTool(
+  dynamicTools: readonly CodexDynamicToolSpec[] | undefined,
+): boolean {
+  return flattenCodexDynamicToolFunctions(dynamicTools).some(
+    (tool) => tool.name.trim().toLowerCase() === CODEX_SKILL_CATALOG_TOOL_NAME,
+  );
+}
+
 /** Renders loaded OpenClaw skill prompts as Codex collaboration instructions. */
 export function renderCodexSkillsCollaborationInstructions(params: {
   attempt: EmbeddedRunAttemptParams;
   skillsPrompt?: string;
+  dynamicTools?: readonly CodexDynamicToolSpec[];
 }): string | undefined {
   if (!shouldInjectCodexOpenClawPromptContext(params.attempt)) {
     return undefined;
+  }
+  if (hasCodexSkillCatalogTool(params.dynamicTools)) {
+    return CODEX_SKILL_CATALOG_COLLABORATION_INSTRUCTIONS;
   }
   return params.skillsPrompt?.trim()
     ? ["## OpenClaw Skills", "", params.skillsPrompt.trim()].join("\n")

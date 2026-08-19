@@ -4,20 +4,25 @@
  * Provides lightweight tool records and shared mocks for media/web/plugin tool imports.
  */
 import { vi } from "vitest";
+import type { AgentToolResult } from "../runtime/index.js";
 
 type StubTool = {
+  label: string;
   name: string;
   description: string;
   parameters: { type: "object"; properties: Record<string, unknown> };
   // Keep the exported type portable: don't leak Vitest's mock types into .d.ts.
-  execute: (...args: unknown[]) => unknown;
+  execute: (...args: unknown[]) => Promise<AgentToolResult<unknown>>;
 };
 
 export const stubTool = (name: string): StubTool => ({
+  label: `${name} stub`,
   name,
   description: `${name} stub`,
   parameters: { type: "object", properties: {} },
-  execute: vi.fn() as unknown as (...args: unknown[]) => unknown,
+  execute: vi.fn(async () => ({ content: [], details: undefined })) as unknown as (
+    ...args: unknown[]
+  ) => Promise<AgentToolResult<unknown>>,
 });
 
 vi.mock("../tools/image-tool.js", () => ({
