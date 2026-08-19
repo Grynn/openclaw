@@ -773,6 +773,19 @@ describe("hasCompletedBootstrapTurn", () => {
     expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(true);
   });
 
+  it("keeps a completion marker beyond 500 later active events", async () => {
+    sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, { timestamp: 1 });
+    for (let index = 0; index < 550; index += 1) {
+      sessionManager.appendMessage({
+        role: "user",
+        content: `message ${index}`,
+        timestamp: index + 2,
+      });
+    }
+
+    expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(true);
+  });
+
   it("persists a completion marker through the storage-neutral transcript target", async () => {
     sessionManager.appendMessage({ role: "user", content: "hello", timestamp: 1 });
 

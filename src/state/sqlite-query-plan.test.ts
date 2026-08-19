@@ -342,6 +342,55 @@ describe("sqlite hot query plans", () => {
     expect(visibleDeltaPlan).toContain("sqlite_autoindex_transcript_events_1");
     expect(visibleDeltaPlan).not.toContain("USE TEMP B-TREE FOR ORDER BY");
 
+    const latestBoundaryControlPlan = explainQueryPlan(
+      database.db,
+      `
+        SELECT identity.seq
+          FROM transcript_event_identities AS identity
+          JOIN session_transcript_active_events AS active
+            ON active.session_id = identity.session_id AND active.event_seq = identity.seq
+          JOIN transcript_events AS event
+            ON event.session_id = identity.session_id AND event.seq = identity.seq
+         WHERE identity.session_id = ?
+           AND identity.event_type = ?
+         ORDER BY identity.seq DESC
+         LIMIT 1
+      `,
+      ["session-1", "compaction"],
+    );
+    expect(latestBoundaryControlPlan).toContain("idx_agent_transcript_event_sequence");
+    expect(latestBoundaryControlPlan).toContain("idx_agent_transcript_active_event_seq");
+    expect(latestBoundaryControlPlan).toContain("sqlite_autoindex_transcript_events_1");
+    expect(latestBoundaryControlPlan).not.toContain("SCAN transcript_event_identities");
+    expect(latestBoundaryControlPlan).not.toContain("SCAN session_transcript_active_events");
+    expect(latestBoundaryControlPlan).not.toContain("SCAN transcript_events");
+    expect(latestBoundaryControlPlan).not.toContain("USE TEMP B-TREE FOR ORDER BY");
+
+    const latestCustomControlPlan = explainQueryPlan(
+      database.db,
+      `
+        SELECT identity.seq
+          FROM transcript_event_identities AS identity
+          JOIN session_transcript_active_events AS active
+            ON active.session_id = identity.session_id AND active.event_seq = identity.seq
+          JOIN transcript_events AS event
+            ON event.session_id = identity.session_id AND event.seq = identity.seq
+         WHERE identity.session_id = ?
+           AND identity.event_type = 'custom'
+           AND json_extract(event.event_json, '$.customType') = ?
+         ORDER BY identity.seq DESC
+         LIMIT 1
+      `,
+      ["session-1", "openclaw:bootstrap-context:full"],
+    );
+    expect(latestCustomControlPlan).toContain("idx_agent_transcript_event_sequence");
+    expect(latestCustomControlPlan).toContain("idx_agent_transcript_active_event_seq");
+    expect(latestCustomControlPlan).toContain("sqlite_autoindex_transcript_events_1");
+    expect(latestCustomControlPlan).not.toContain("SCAN transcript_event_identities");
+    expect(latestCustomControlPlan).not.toContain("SCAN session_transcript_active_events");
+    expect(latestCustomControlPlan).not.toContain("SCAN transcript_events");
+    expect(latestCustomControlPlan).not.toContain("USE TEMP B-TREE FOR ORDER BY");
+
     const visibleDeltaPayloadPlan = explainQueryPlan(
       database.db,
       `

@@ -77,6 +77,11 @@ export type SessionTranscriptBoundedActiveContext = {
   truncated: boolean;
 };
 
+export type SessionTranscriptControlEvent = {
+  type: "compaction" | "custom" | "reset";
+  customType?: string;
+};
+
 function parseMessageEventRow(row: {
   event_json: string;
   message_position: number | null;
@@ -315,6 +320,59 @@ export function readSessionTranscriptBoundedActiveContextCore(
       totalEvents: projection.state.activeEventCount,
       truncated: boundaryOmitted || metadata.length > selectedSequences.length,
     };
+  });
+}
+
+/** Reads the newest matching control event through indexed type probes on the active branch. */
+export function readLatestSessionTranscriptControlEvent(
+  scope: SessionTranscriptReadScope,
+  customType: string,
+): SessionTranscriptControlEvent | undefined {
+  return withCurrentProjectionSnapshot(scope, (projection) => {
+    const db = getActiveTranscriptKysely(projection.database);
+    const eventCustomType =
+      /* kysely-allow-raw: custom control identity lives inside canonical transcript JSON. */
+      sql<string | null>`json_extract(event.event_json, '$.customType')`;
+    const readLatestActiveSequence = (
+      eventType: SessionTranscriptControlEvent["type"],
+      expectedCustomType?: string,
+    ) => {
+      const query = db
+        .selectFrom("transcript_event_identities as identity")
+        .innerJoin("session_transcript_active_events as active", (join) =>
+          join
+            .onRef("active.session_id", "=", "identity.session_id")
+            .onRef("active.event_seq", "=", "identity.seq"),
+        )
+        .innerJoin("transcript_events as event", (join) =>
+          join
+            .onRef("event.session_id", "=", "identity.session_id")
+            .onRef("event.seq", "=", "identity.seq"),
+        )
+        .select("identity.seq")
+        .where("identity.session_id", "=", projection.resolved.sessionId)
+        .where("identity.event_type", "=", eventType)
+        .orderBy("identity.seq", "desc")
+        .limit(1);
+      return executeSqliteQueryTakeFirstSync(
+        projection.database.db,
+        expectedCustomType === undefined
+          ? query
+          : query.where(eventCustomType, "=", expectedCustomType),
+      )?.seq;
+    };
+    const latestCustomSequence = readLatestActiveSequence("custom", customType);
+    const latestCompactionSequence = readLatestActiveSequence("compaction");
+    const latestResetSequence = readLatestActiveSequence("reset");
+    const isNewerThan = (candidate: number | undefined, ...others: Array<number | undefined>) =>
+      candidate !== undefined && others.every((other) => other === undefined || candidate > other);
+    if (isNewerThan(latestCustomSequence, latestCompactionSequence, latestResetSequence)) {
+      return { type: "custom", customType };
+    }
+    if (isNewerThan(latestResetSequence, latestCompactionSequence)) {
+      return { type: "reset" };
+    }
+    return latestCompactionSequence === undefined ? undefined : { type: "compaction" };
   });
 }
 
