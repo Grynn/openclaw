@@ -5936,19 +5936,22 @@ public struct SessionsSearchHit: Codable, Sendable {
 public struct SessionsSearchParams: Codable, Sendable {
     public let agentid: String?
     public let sessionkeys: [String]?
-    public let query: String
+    public let query: String?
     public let limit: Int?
+    public let queries: [String]?
 
     public init(
         agentid: String? = nil,
         sessionkeys: [String]? = nil,
-        query: String,
-        limit: Int? = nil)
+        query: String? = nil,
+        limit: Int? = nil,
+        queries: [String]? = nil)
     {
         self.agentid = agentid
         self.sessionkeys = sessionkeys
         self.query = query
         self.limit = limit
+        self.queries = queries
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -5956,6 +5959,7 @@ public struct SessionsSearchParams: Codable, Sendable {
         case sessionkeys = "sessionKeys"
         case query
         case limit
+        case queries
     }
 }
 
@@ -5972,6 +5976,42 @@ public struct SessionsSearchResult: Codable, Sendable {
         self.results = results
         self.indexing = indexing
         self.truncated = truncated
+    }
+}
+
+public struct SessionsSearchQueryState: Codable, Sendable {
+    public let results: [SessionsSearchHit]
+    public let indexing: Bool?
+    public let truncated: Bool?
+
+    public init(
+        results: [SessionsSearchHit],
+        indexing: Bool? = nil,
+        truncated: Bool? = nil)
+    {
+        self.results = results
+        self.indexing = indexing
+        self.truncated = truncated
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case results
+        case indexing
+        case truncated
+    }
+}
+
+public struct SessionsSearchBatchResult: Codable, Sendable {
+    public let states: [SessionsSearchQueryState]
+
+    public init(
+        states: [SessionsSearchQueryState])
+    {
+        self.states = states
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case states
     }
 }
 

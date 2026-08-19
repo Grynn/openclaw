@@ -211,6 +211,7 @@ export const validateSessionsCatalogStartTerminalParams = compile(
   S.SessionsCatalogStartTerminalParamsSchema,
 );
 export const validateSessionsSearchParams = compile(S.SessionsSearchParamsSchema);
+export const validateSessionsSearchBatchResult = compile(S.SessionsSearchBatchResultSchema);
 export const validateSessionsCleanupParams = compile(S.SessionsCleanupParamsSchema);
 export const validateSessionsPreviewParams = compile(S.SessionsPreviewParamsSchema);
 export const validateSessionsDescribeParams = compile(S.SessionsDescribeParamsSchema);

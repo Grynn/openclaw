@@ -5,11 +5,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GatewayRequestContext, RespondFn } from "./types.js";
 
 const searchSessionTranscriptsMock = vi.fn();
+const searchSessionTranscriptsBatchMock = vi.fn();
 const listSessionEntriesMock = vi.fn();
 const resolveExistingAgentSessionStoreTargetsSyncMock = vi.fn();
 
 vi.mock("../../config/sessions/session-transcript-search.js", () => ({
   searchSessionTranscripts: (...args: unknown[]) => searchSessionTranscriptsMock(...args),
+  searchSessionTranscriptsBatch: (...args: unknown[]) => searchSessionTranscriptsBatchMock(...args),
 }));
 vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../config/sessions/session-accessor.js")>()),
@@ -66,7 +68,11 @@ describe("sessions.search gateway method", () => {
   beforeEach(() => {
     cfg = { agents: { list: [{ id: "main", default: true }, { id: "work" }] } };
     searchSessionTranscriptsMock.mockReset();
-    searchSessionTranscriptsMock.mockReturnValue({ hits: [], indexing: false });
+    searchSessionTranscriptsMock.mockReturnValue({ hits: [], indexing: false, truncated: false });
+    searchSessionTranscriptsBatchMock.mockReset();
+    searchSessionTranscriptsBatchMock.mockImplementation(({ queries }: { queries: string[] }) =>
+      queries.map(() => ({ hits: [], indexing: false, truncated: false })),
+    );
     listSessionEntriesMock.mockReset();
     listSessionEntriesMock.mockReturnValue([]);
     resolveExistingAgentSessionStoreTargetsSyncMock.mockReset();
@@ -87,7 +93,63 @@ describe("sessions.search gateway method", () => {
       undefined,
       expect.objectContaining({ message: "query must not be empty" }),
     );
+    const emptyBatchQuery = await callSearch({ queries: ["valid", "   "] });
+    expect(emptyBatchQuery).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ message: "queries[1] must not be empty" }),
+    );
+    const mixedModes = await callSearch({ query: "needle", queries: ["other"] });
+    expect(mixedModes).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "INVALID_REQUEST" }),
+    );
     expect(searchSessionTranscriptsMock).not.toHaveBeenCalled();
+    expect(searchSessionTranscriptsBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("searches an ordered native batch with one transcript setup per store", async () => {
+    const firstHit = {
+      sessionKey: "agent:work:main",
+      sessionId: "session-work",
+      messageId: "message-first",
+      role: "assistant",
+      timestamp: 123,
+      snippet: "deployment failure",
+      score: 2,
+    };
+    const secondHit = { ...firstHit, messageId: "message-second", snippet: "rollback plan" };
+    searchSessionTranscriptsBatchMock.mockReturnValueOnce([
+      { hits: [firstHit], indexing: true, truncated: false },
+      { hits: [secondHit], indexing: false, truncated: true },
+    ]);
+
+    const respond = await callSearch({
+      agentId: "work",
+      queries: [" deployment failure ", "rollback plan"],
+      sessionKeys: ["agent:work:main"],
+      limit: 5,
+    });
+
+    expect(searchSessionTranscriptsBatchMock).toHaveBeenCalledOnce();
+    expect(searchSessionTranscriptsBatchMock).toHaveBeenCalledWith({
+      agentId: "work",
+      queries: ["deployment failure", "rollback plan"],
+      limit: 5,
+      sessionKeys: ["agent:work:main"],
+    });
+    expect(searchSessionTranscriptsMock).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      {
+        states: [
+          { results: [firstHit], indexing: true },
+          { results: [secondHit], truncated: true },
+        ],
+      },
+      undefined,
+    );
   });
 
   it("derives one agent and canonical filters from sessionKeys", async () => {

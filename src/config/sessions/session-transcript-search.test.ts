@@ -26,7 +26,10 @@ import {
   isSessionTranscriptIndexReconcileRunning,
   waitForSessionTranscriptIndexReconcile,
 } from "./session-transcript-reconcile.js";
-import { searchSessionTranscripts } from "./session-transcript-search.js";
+import {
+  searchSessionTranscripts,
+  searchSessionTranscriptsBatch,
+} from "./session-transcript-search.js";
 
 vi.mock("../config.js", async () => ({
   ...(await vi.importActual<typeof import("../config.js")>("../config.js")),
@@ -178,9 +181,41 @@ describe("searchSessionTranscripts", () => {
     expect(result.truncated).toBe(true);
   });
 
+  it("returns ordered per-query states from one bounded batch", async () => {
+    await appendUserMessage("session-1", "agent:main:main", "alpha shared topic");
+    await appendAssistantMessage("session-1", "agent:main:main", "alpha follow-up");
+    await appendUserMessage("session-2", "agent:main:other", "beta shared topic");
+
+    const states = searchSessionTranscriptsBatch({
+      agentId: "main",
+      env: env(),
+      queries: [" alpha ", "beta"],
+      limit: 1,
+      sessionKeys: ["agent:main:main", "agent:main:other"],
+    });
+
+    expect(states).toHaveLength(2);
+    expect(states[0]).toMatchObject({
+      hits: [expect.objectContaining({ sessionKey: "agent:main:main" })],
+      indexing: false,
+      truncated: true,
+    });
+    expect(states[1]).toMatchObject({
+      hits: [expect.objectContaining({ sessionKey: "agent:main:other" })],
+      indexing: false,
+      truncated: false,
+    });
+  });
+
   it("rejects empty and oversized queries", () => {
     expect(() => search("   ")).toThrow(/query must not be empty/);
     expect(() => search("x".repeat(4097))).toThrow(/must not exceed/);
+    expect(() =>
+      searchSessionTranscriptsBatch({ agentId: "main", env: env(), queries: [] }),
+    ).toThrow(/must contain 1-8 items/);
+    expect(() =>
+      searchSessionTranscriptsBatch({ agentId: "main", env: env(), queries: ["valid", " "] }),
+    ).toThrow(/queries\[1\] must not be empty/);
   });
 
   it("preserves stale FTS rows until a replaced transcript is reconciled after commit", async () => {

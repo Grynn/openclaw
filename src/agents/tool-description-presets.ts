@@ -86,6 +86,8 @@ export function describeSessionsHistoryTool(options?: SessionLinkDescriptionOpti
 export function describeSessionsSearchTool(options?: SessionLinkDescriptionOptions): string {
   return [
     "Search your own past sessions for matching user and assistant text.",
+    "Use queries for up to eight distinct related recall angles in one bounded batch; each result has the matching input queryIndex and shares one session scope.",
+    "For batches, limit applies per query; the complete batch output is capped at 32 KiB.",
     ...(options?.sessionLinkBase ? [describeSessionLinkRule(options.sessionLinkBase)] : []),
   ].join(" ");
 }

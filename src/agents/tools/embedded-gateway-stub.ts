@@ -23,6 +23,13 @@ import { readNonNegativeIntegerParam, readPositiveIntegerParam } from "./common.
 type EmbeddedCallGateway = <T = Record<string, unknown>>(opts: CallGatewayOptions) => Promise<T>;
 
 const SESSIONS_SEARCH_MAX_QUERY_CHARS = 4096;
+const SESSIONS_SEARCH_MAX_BATCH_QUERIES = 8;
+
+type EmbeddedTranscriptSearchResult = {
+  hits: unknown[];
+  indexing: boolean;
+  truncated: boolean;
+};
 
 interface EmbeddedGatewayRuntime {
   resolveSessionAgentId: (opts: {
@@ -43,11 +50,18 @@ interface EmbeddedGatewayRuntime {
     limit?: number;
     query: string;
     sessionKeys?: string[];
-  }) => {
-    hits: unknown[];
-    indexing: boolean;
-    truncated: boolean;
-  };
+  }) => EmbeddedTranscriptSearchResult;
+  searchSessionTranscriptsBatch: (params: {
+    agentId: string;
+    limit?: number;
+    queries: string[];
+    sessionKeys?: string[];
+  }) => EmbeddedTranscriptSearchResult[];
+  augmentChatHistoryWithCliSessionImports: (opts: {
+    entry: unknown;
+    provider: string | undefined;
+    localMessages: unknown[];
+  }) => unknown[];
   getMaxChatHistoryMessagesBytes: () => number;
   CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES: number;
   replaceOversizedChatHistoryMessages: (opts: {
@@ -147,9 +161,35 @@ async function handleSessionsResolve(params: Record<string, unknown>) {
   return { ok: true, key: resolved.key, agentId: resolved.agentId };
 }
 
-async function handleSessionsSearch(params: Record<string, unknown>) {
-  const rt = await getRuntime();
-  const cfg = rt.getRuntimeConfig();
+function readEmbeddedSearchQueries(params: Record<string, unknown>): {
+  isBatch: boolean;
+  queries: string[];
+} {
+  if (params.query !== undefined && params.queries !== undefined) {
+    throw new Error("use query or queries, not both");
+  }
+  if (params.queries !== undefined) {
+    if (
+      !Array.isArray(params.queries) ||
+      params.queries.length === 0 ||
+      params.queries.length > SESSIONS_SEARCH_MAX_BATCH_QUERIES
+    ) {
+      throw new Error(`queries must contain 1-${SESSIONS_SEARCH_MAX_BATCH_QUERIES} items`);
+    }
+    const queries = params.queries.map((query, index) => {
+      const normalized = typeof query === "string" ? query.trim() : "";
+      if (!normalized) {
+        throw new Error(`queries[${index}] must not be empty`);
+      }
+      if (normalized.length > SESSIONS_SEARCH_MAX_QUERY_CHARS) {
+        throw new Error(
+          `queries[${index}] must not exceed ${SESSIONS_SEARCH_MAX_QUERY_CHARS} characters`,
+        );
+      }
+      return normalized;
+    });
+    return { isBatch: true, queries };
+  }
   const query = typeof params.query === "string" ? params.query.trim() : "";
   if (!query) {
     throw new Error("query must not be empty");
@@ -157,6 +197,21 @@ async function handleSessionsSearch(params: Record<string, unknown>) {
   if (query.length > SESSIONS_SEARCH_MAX_QUERY_CHARS) {
     throw new Error(`query must not exceed ${SESSIONS_SEARCH_MAX_QUERY_CHARS} characters`);
   }
+  return { isBatch: false, queries: [query] };
+}
+
+function serializeEmbeddedSearchResult(result: EmbeddedTranscriptSearchResult) {
+  return {
+    results: result.hits,
+    ...(result.indexing ? { indexing: true } : {}),
+    ...(result.truncated ? { truncated: true } : {}),
+  };
+}
+
+async function handleSessionsSearch(params: Record<string, unknown>) {
+  const rt = await getRuntime();
+  const cfg = rt.getRuntimeConfig();
+  const { isBatch, queries } = readEmbeddedSearchQueries(params);
   if (params.agentId !== undefined && params.sessionKeys === undefined) {
     throw new Error("agentId requires sessionKeys");
   }
@@ -194,17 +249,23 @@ async function handleSessionsSearch(params: Record<string, unknown>) {
   }
   const agentId =
     requestedAgentId ?? agentIds.values().next().value ?? rt.resolveDefaultAgentId(cfg);
-  const result = rt.searchSessionTranscripts({
+  const searchScope = {
     agentId,
-    query,
     limit: readPositiveIntegerParam(params, "limit"),
     ...(sessionKeys ? { sessionKeys } : {}),
-  });
-  return {
-    results: result.hits,
-    ...(result.indexing ? { indexing: true } : {}),
-    ...(result.truncated ? { truncated: true } : {}),
   };
+  if (isBatch) {
+    const states = rt
+      .searchSessionTranscriptsBatch({ ...searchScope, queries })
+      .map(serializeEmbeddedSearchResult);
+    return { states };
+  }
+  const query = queries[0];
+  if (!query) {
+    throw new Error("query must not be empty");
+  }
+  const result = rt.searchSessionTranscripts({ ...searchScope, query });
+  return serializeEmbeddedSearchResult(result);
 }
 
 async function handleChatHistory(params: Record<string, unknown>): Promise<{

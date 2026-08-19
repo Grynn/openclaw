@@ -35,6 +35,8 @@ export const SessionCoreProtocolSchemas = {
   SessionsSearchHit: sessions.SessionsSearchHitSchema,
   SessionsSearchParams: sessions.SessionsSearchParamsSchema,
   SessionsSearchResult: sessions.SessionsSearchResultSchema,
+  SessionsSearchQueryState: sessions.SessionsSearchQueryStateSchema,
+  SessionsSearchBatchResult: sessions.SessionsSearchBatchResultSchema,
   SessionCompactionCheckpoint: sessions.SessionCompactionCheckpointSchema,
   SessionOperationEvent: sessions.SessionOperationEventSchema,
   SessionCreatedActor: sessions.SessionCreatedActorSchema,

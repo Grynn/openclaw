@@ -14,6 +14,7 @@ import {
 const SEARCH_SNIPPET_MAX_CHARS = 500;
 const SEARCH_LIMIT_MAX = 25;
 const SEARCH_QUERY_MAX_CHARS = 4096;
+const SEARCH_QUERY_BATCH_MAX = 8;
 
 type SessionTranscriptSearchHit = {
   sessionKey: string;
@@ -31,6 +32,14 @@ type SessionTranscriptSearchResult = {
   truncated: boolean;
 };
 
+type SessionTranscriptSearchScope = {
+  agentId: string;
+  env?: NodeJS.ProcessEnv;
+  limit?: number;
+  sessionKeys?: string[];
+  storePath?: string;
+};
+
 function toFtsQuery(query: string): string {
   return query
     .trim()
@@ -39,22 +48,21 @@ function toFtsQuery(query: string): string {
     .join(" AND ");
 }
 
-/** Search the per-agent FTS index; kicks off one background reconcile when the index lags. */
-export function searchSessionTranscripts(params: {
-  agentId: string;
-  env?: NodeJS.ProcessEnv;
-  limit?: number;
-  query: string;
-  sessionKeys?: string[];
-  storePath?: string;
-}): SessionTranscriptSearchResult {
-  const query = params.query.trim();
-  if (!query) {
-    throw new Error("query must not be empty");
+function normalizeSearchQuery(query: string, label: string): string {
+  const normalized = query.trim();
+  if (!normalized) {
+    throw new Error(`${label} must not be empty`);
   }
-  if (query.length > SEARCH_QUERY_MAX_CHARS) {
-    throw new Error(`query must not exceed ${SEARCH_QUERY_MAX_CHARS} characters`);
+  if (normalized.length > SEARCH_QUERY_MAX_CHARS) {
+    throw new Error(`${label} must not exceed ${SEARCH_QUERY_MAX_CHARS} characters`);
   }
+  return normalized;
+}
+
+function searchSessionTranscriptBatchCore(
+  params: SessionTranscriptSearchScope & { queries: string[] },
+): SessionTranscriptSearchResult[] {
+  const { queries } = params;
   const databasePath = params.storePath
     ? resolveSqliteTargetFromSessionStorePath(params.storePath, {
         agentId: params.agentId,
@@ -99,47 +107,79 @@ export function searchSessionTranscripts(params: {
     ORDER BY rank ASC, timestamp DESC, message_id ASC
     LIMIT ?
     `);
-      const values = [toFtsQuery(query), ...sessionKeys, limit + 1];
-      const rows = statement.all(...values) as Array<{
-        message_id: unknown;
-        rank: unknown;
-        role: unknown;
-        session_id: unknown;
-        session_key: unknown;
-        snippet: unknown;
-        timestamp: unknown;
-      }>;
-      const hits = rows.flatMap((row): SessionTranscriptSearchHit[] => {
-        if (
-          typeof row.session_key !== "string" ||
-          typeof row.session_id !== "string" ||
-          typeof row.message_id !== "string" ||
-          (row.role !== "user" && row.role !== "assistant") ||
-          typeof row.snippet !== "string"
-        ) {
-          return [];
-        }
-        const timestamp = typeof row.timestamp === "number" ? row.timestamp : Number(row.timestamp);
-        const rank = typeof row.rank === "number" ? row.rank : Number(row.rank);
-        return [
-          {
-            sessionKey: row.session_key,
-            sessionId: row.session_id,
-            messageId: row.message_id,
-            role: row.role,
-            timestamp: Number.isFinite(timestamp) ? timestamp : 0,
-            snippet:
-              row.snippet.length > SEARCH_SNIPPET_MAX_CHARS
-                ? `${truncateUtf16Safe(row.snippet, SEARCH_SNIPPET_MAX_CHARS)}…`
-                : row.snippet,
-            score: Number.isFinite(rank) ? -rank : 0,
-          },
-        ];
+      return queries.map((query) => {
+        const values = [toFtsQuery(query), ...sessionKeys, limit + 1];
+        const rows = statement.all(...values) as Array<{
+          message_id: unknown;
+          rank: unknown;
+          role: unknown;
+          session_id: unknown;
+          session_key: unknown;
+          snippet: unknown;
+          timestamp: unknown;
+        }>;
+        const hits = rows.flatMap((row): SessionTranscriptSearchHit[] => {
+          if (
+            typeof row.session_key !== "string" ||
+            typeof row.session_id !== "string" ||
+            typeof row.message_id !== "string" ||
+            (row.role !== "user" && row.role !== "assistant") ||
+            typeof row.snippet !== "string"
+          ) {
+            return [];
+          }
+          const timestamp =
+            typeof row.timestamp === "number" ? row.timestamp : Number(row.timestamp);
+          const rank = typeof row.rank === "number" ? row.rank : Number(row.rank);
+          return [
+            {
+              sessionKey: row.session_key,
+              sessionId: row.session_id,
+              messageId: row.message_id,
+              role: row.role,
+              timestamp: Number.isFinite(timestamp) ? timestamp : 0,
+              snippet:
+                row.snippet.length > SEARCH_SNIPPET_MAX_CHARS
+                  ? `${truncateUtf16Safe(row.snippet, SEARCH_SNIPPET_MAX_CHARS)}…`
+                  : row.snippet,
+              score: Number.isFinite(rank) ? -rank : 0,
+            },
+          ];
+        });
+        return { hits: hits.slice(0, limit), indexing, truncated: hits.length > limit };
       });
-      return { hits: hits.slice(0, limit), indexing, truncated: hits.length > limit };
     },
     databaseOptions,
     { throwOnMissingTable: true },
   );
-  return result.found ? result.value : { hits: [], indexing: false, truncated: false };
+  return result.found
+    ? result.value
+    : queries.map(() => ({ hits: [], indexing: false, truncated: false }));
+}
+
+/** Search the per-agent FTS index; kicks off one background reconcile when the index lags. */
+export function searchSessionTranscripts(
+  params: SessionTranscriptSearchScope & { query: string },
+): SessionTranscriptSearchResult {
+  const { query: rawQuery, ...scope } = params;
+  const query = normalizeSearchQuery(rawQuery, "query");
+  const result = searchSessionTranscriptBatchCore({ ...scope, queries: [query] })[0];
+  if (!result) {
+    throw new Error("query must not be empty");
+  }
+  return result;
+}
+
+/** Search up to eight queries while sharing one database/index setup and prepared statement. */
+export function searchSessionTranscriptsBatch(
+  params: SessionTranscriptSearchScope & { queries: string[] },
+): SessionTranscriptSearchResult[] {
+  if (params.queries.length === 0 || params.queries.length > SEARCH_QUERY_BATCH_MAX) {
+    throw new Error(`queries must contain 1-${SEARCH_QUERY_BATCH_MAX} items`);
+  }
+  const { queries: rawQueries, ...scope } = params;
+  const queries = rawQueries.map((query, index) =>
+    normalizeSearchQuery(query, `queries[${index}]`),
+  );
+  return searchSessionTranscriptBatchCore({ ...scope, queries });
 }

@@ -6,7 +6,10 @@
  */
 export { resolveDefaultAgentId, resolveSessionAgentId } from "../../agents/agent-scope.js";
 export { getRuntimeConfig } from "../../config/config.js";
-export { searchSessionTranscripts } from "../../config/sessions/session-transcript-search.js";
+export {
+  searchSessionTranscripts,
+  searchSessionTranscriptsBatch,
+} from "../../config/sessions/session-transcript-search.js";
 export {
   resolveSessionStoreKey,
   resolveStoredSessionKeyForAgentStore,

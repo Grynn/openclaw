@@ -12,6 +12,7 @@ import type { callGateway as gatewayCall } from "../../gateway/call.js";
 import { createSessionVisibilityChecker } from "../../plugin-sdk/session-visibility.js";
 import { describeSessionLinkRule } from "../tool-description-presets.js";
 import { compactToolOutputHint } from "../tool-schema-hints.js";
+import { readSearchQueries } from "./sessions-search-batch.js";
 import { createSessionsSearchTool } from "./sessions-search-tool.js";
 
 type CallGatewayRequest = Parameters<typeof gatewayCall>[0];
@@ -88,14 +89,22 @@ function createTool(params: {
           hasMore: false,
         } as T;
       }
-      const sessionKeys = (request.params as { sessionKeys?: unknown } | undefined)?.sessionKeys;
-      return {
+      const searchParams = request.params as
+        | { queries?: unknown; sessionKeys?: unknown }
+        | undefined;
+      const sessionKeys = searchParams?.sessionKeys;
+      const state = {
         results: results.filter(
           (row) => Array.isArray(sessionKeys) && sessionKeys.includes(row.sessionKey),
         ),
         ...(params.indexing ? { indexing: true } : {}),
         ...(params.truncated ? { truncated: true } : {}),
-      } as T;
+      };
+      return (
+        Array.isArray(searchParams?.queries)
+          ? { states: searchParams.queries.map(() => state) }
+          : state
+      ) as T;
     },
   });
 }
@@ -143,13 +152,26 @@ describe("sessions_search tool", () => {
     });
 
     expect(tool.outputSchema).toBeDefined();
+    expect(tool.parameters).toMatchObject({
+      properties: {
+        limit: {
+          description: "Maximum results per query; complete batch output is capped at 32 KiB.",
+        },
+      },
+    });
+    expect(tool.description).toContain(
+      "limit applies per query; the complete batch output is capped at 32 KiB",
+    );
     expect(Value.Check(tool.outputSchema!, success.details)).toBe(true);
+    expect(success.details).not.toHaveProperty("batch");
+    expect(success.details).not.toHaveProperty("queryCount");
+    expect(success.details).not.toHaveProperty("results.0.queryIndex");
     expect(success.details).not.toHaveProperty("sessionLinkRule");
     expect(linkedSuccess.details).toHaveProperty("sessionLinkRule", SESSION_LINK_RULE);
     expect(error.details).toMatchObject({ status: "error", error: expect.any(String) });
     expect(Value.Check(tool.outputSchema!, error.details)).toBe(true);
     expect(compactToolOutputHint(tool.outputSchema)).toBe(
-      '{ results: Array<{ role: "assistant" | "user"; score: number; sessionKey: string; snippet: string; timestamp: number; messageId?: string; sessionId?: string }>; indexing?: true; sessionLinkRule?: string; truncated?: true; warning?: string } | { error: string; status: "error" | "forbidden" }',
+      '{ results: Array<{ role: "assistant" | "user"; score: number; sessionKey: string; snippet: string; timestamp: number; messageId?: string; queryIndex?: number; sessionId?: string }>; batch?: true; indexing?: true; indexingQueries?: Array<number>; queryCount?: number; sessionLinkRule?: string; truncated?: true; truncatedQueries?: Array<number>; warning?: string } | { error: string; status: "error" | "forbidden" }',
     );
   });
 
@@ -166,8 +188,9 @@ describe("sessions_search tool", () => {
     });
   });
 
-  it("rejects empty queries and invalid limits", async () => {
-    const tool = createTool({});
+  it("rejects empty, duplicate, and otherwise invalid queries before gateway work", async () => {
+    const requests: CallGatewayRequest[] = [];
+    const tool = createTool({ requests });
     await expect(tool.execute("call-1", { query: "   " })).rejects.toThrow(
       "query must not be empty",
     );
@@ -177,6 +200,50 @@ describe("sessions_search tool", () => {
     await expect(tool.execute("call-3", { query: "x".repeat(4097) })).rejects.toThrow(
       "query must not exceed 4096 characters",
     );
+    await expect(tool.execute("call-4", { query: "one", queries: ["two"] })).rejects.toThrow(
+      "use query or queries, not both",
+    );
+    await expect(tool.execute("call-5", { queries: [] })).rejects.toThrow(
+      "queries must contain 1-8 items",
+    );
+    await expect(
+      tool.execute("call-6", { queries: Array.from({ length: 9 }, () => "angle") }),
+    ).rejects.toThrow("queries must contain 1-8 items");
+    await expect(tool.execute("call-7", { queries: ["valid", "   "] })).rejects.toThrow(
+      "queries[1] must not be empty",
+    );
+    await expect(
+      tool.execute("call-8", { queries: ["same normalized query", " same normalized query "] }),
+    ).rejects.toThrow("queries[1] duplicates queries[0]");
+    await expect(
+      tool.execute("call-9", { queries: ["same spaced query", "same   spaced\nquery"] }),
+    ).rejects.toThrow("queries[1] duplicates queries[0]");
+    await expect(
+      tool.execute("call-10", { queries: ["Deployment plan", "deployment plan"] }),
+    ).rejects.toThrow("queries[1] duplicates queries[0]");
+    await expect(
+      tool.execute("call-11", { queries: ["café launch", "cafe launch"] }),
+    ).rejects.toThrow("queries[1] duplicates queries[0]");
+    await expect(
+      tool.execute("call-12", { queries: ["release-plan", "release.plan"] }),
+    ).rejects.toThrow("queries[1] duplicates queries[0]");
+    await expect(tool.execute("call-13", { queries: ["ΟΣ", "οσ"] })).rejects.toThrow(
+      "queries[1] duplicates queries[0]",
+    );
+    await expect(tool.execute("call-14", { queries: ["ος", "οσ"] })).rejects.toThrow(
+      "queries[1] duplicates queries[0]",
+    );
+    await expect(tool.execute("call-15", { queries: ["résumé", "résumé"] })).rejects.toThrow(
+      "queries[1] duplicates queries[0]",
+    );
+    expect(requests).toEqual([]);
+  });
+
+  it("keeps unicode61-distinct dotless-i queries", () => {
+    expect(readSearchQueries({ queries: ["ı", "i"] })).toEqual({
+      queries: ["ı", "i"],
+      batch: true,
+    });
   });
 
   it("filters invisible hits before applying the limit", async () => {
@@ -218,6 +285,80 @@ describe("sessions_search tool", () => {
       agentId: "main",
       sessionKeys: ["agent:main:other", "main"],
     });
+  });
+
+  it("reuses one visibility scan for a batch of recall queries", async () => {
+    const requests: CallGatewayRequest[] = [];
+    const tool = createTool({
+      requests,
+      config: { tools: { sessions: { visibility: "all" } } },
+      results: [hit(), hit({ sessionKey: "agent:main:other", messageId: "other" })],
+    });
+
+    const result = await tool.execute("batch-recall", {
+      queries: [" first angle ", "second angle", " third angle "],
+      limit: 2,
+    });
+
+    expect(result.details).toMatchObject({
+      batch: true,
+      queryCount: 3,
+      results: [
+        expect.objectContaining({ queryIndex: 0 }),
+        expect.objectContaining({ queryIndex: 1 }),
+        expect.objectContaining({ queryIndex: 2 }),
+        expect.objectContaining({ queryIndex: 0 }),
+        expect.objectContaining({ queryIndex: 1 }),
+        expect.objectContaining({ queryIndex: 2 }),
+      ],
+    });
+    expect(JSON.stringify(result.details)).not.toContain("first angle");
+    expect(JSON.stringify(result.details)).not.toContain("second angle");
+    expect(JSON.stringify(result.details)).not.toContain("third angle");
+    expect(Value.Check(tool.outputSchema!, result.details)).toBe(true);
+    const listRequests = requests.filter((request) => request.method === "sessions.list");
+    const searchRequests = requests.filter((request) => request.method === "sessions.search");
+    expect(listRequests).toHaveLength(4);
+    expect(searchRequests).toHaveLength(1);
+    const searchRequest = searchRequests[0];
+    if (!searchRequest) {
+      throw new Error("expected one sessions.search request");
+    }
+    expect((searchRequest.params as { queries?: unknown }).queries).toEqual([
+      "first angle",
+      "second angle",
+      "third angle",
+    ]);
+    expect((searchRequest.params as { sessionKeys?: unknown }).sessionKeys).toEqual([
+      "main",
+      "agent:main:other",
+    ]);
+  });
+
+  it("fairly caps a batch by its aggregate pretty-printed result bytes", async () => {
+    const results = Array.from({ length: 25 }, (_, index) =>
+      hit({
+        messageId: `${index}-${"x".repeat(1200)}`,
+        score: 25 - index,
+      }),
+    );
+    const tool = createTool({ results });
+
+    const result = await tool.execute("batch-cap", {
+      queries: ["first angle", "second angle"],
+      limit: 25,
+    });
+    const details = result.details as {
+      results: Array<{ queryIndex?: number }>;
+      truncatedQueries?: number[];
+    };
+
+    expect(Buffer.byteLength(JSON.stringify(details, null, 2), "utf8")).toBeLessThanOrEqual(
+      32 * 1024,
+    );
+    expect(details.truncatedQueries).toEqual([0, 1]);
+    expect([...new Set(details.results.map((item) => item.queryIndex))]).toEqual([0, 1]);
+    expect(Value.Check(tool.outputSchema!, details)).toBe(true);
   });
 
   it("never searches or returns incognito sessions", async () => {
@@ -454,6 +595,82 @@ describe("sessions_search tool", () => {
       method: "sessions.search",
       params: { agentId: "main", query: "text", sessionKeys: ["main"], limit: 25 },
     });
+  });
+
+  it("resolves scoped access once and revalidates before and after a native batch", async () => {
+    const requesterSessionKey = "agent:main:clickclack:discussion-batch";
+    const targetSessionKey = "agent:main:main";
+    const expectedSessionId = "scoped-batch-incarnation";
+    const storePath = path.join(
+      tempDirs.make("openclaw-sessions-search-batch-"),
+      "sessions.sqlite",
+    );
+    await applySessionStoreProjection({
+      storePath,
+      skipMaintenance: true,
+      update: (store) => {
+        store[targetSessionKey] = { sessionId: expectedSessionId, updatedAt: 1 };
+        return { persist: true, result: undefined };
+      },
+    });
+    let accessChecks = 0;
+    const unregister = createSessionVisibilityChecker.registerScopedAccessProvider((request) => {
+      if (
+        request.requesterSessionKey !== requesterSessionKey ||
+        request.targetSessionKey !== targetSessionKey
+      ) {
+        return undefined;
+      }
+      accessChecks += 1;
+      return { expectedSessionId };
+    });
+    const requests: CallGatewayRequest[] = [];
+    try {
+      const tool = createSessionsSearchTool({
+        agentSessionKey: requesterSessionKey,
+        sandboxed: true,
+        config: {
+          session: { store: storePath },
+          tools: { sessions: { visibility: "self" } },
+          agents: { defaults: { sandbox: { sessionToolsVisibility: "spawned" } } },
+        } as OpenClawConfig,
+        callGateway: async <T = Record<string, unknown>>(
+          request: CallGatewayRequest,
+        ): Promise<T> => {
+          requests.push(request);
+          if (request.method === "sessions.search") {
+            return {
+              states: [
+                { results: [hit({ sessionKey: targetSessionKey })] },
+                { results: [hit({ sessionKey: targetSessionKey })] },
+                { results: [hit({ sessionKey: targetSessionKey })] },
+              ],
+            } as T;
+          }
+          return { results: [hit({ sessionKey: targetSessionKey })] } as T;
+        },
+      });
+
+      const result = await tool.execute("scoped-batch", {
+        queries: ["first scoped angle", "second scoped angle", "third scoped angle"],
+        sessionKey: targetSessionKey,
+      });
+
+      expect(accessChecks).toBe(3);
+      expect(requests.filter((request) => request.method === "sessions.list")).toHaveLength(0);
+      expect(requests.filter((request) => request.method === "sessions.search")).toHaveLength(1);
+      expect(result.details).toMatchObject({
+        batch: true,
+        queryCount: 3,
+        results: [
+          expect.objectContaining({ queryIndex: 0 }),
+          expect.objectContaining({ queryIndex: 1 }),
+          expect.objectContaining({ queryIndex: 2 }),
+        ],
+      });
+    } finally {
+      unregister();
+    }
   });
 
   it("rejects a scoped grant when the target incarnation changes before search", async () => {
