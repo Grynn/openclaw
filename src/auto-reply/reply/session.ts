@@ -41,6 +41,7 @@ import {
   type SessionCreatedActor,
 } from "../../config/sessions/session-entry-provenance.js";
 import { resolveSessionKey } from "../../config/sessions/session-key.js";
+import type { SessionResetBoundaryRequest } from "../../config/sessions/session-reset-boundary-event.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import { resolveMaintenanceConfigFromInput } from "../../config/sessions/store-maintenance.js";
 import { runExclusiveSessionStoreWrite } from "../../config/sessions/store-writer.js";
@@ -140,7 +141,9 @@ type ReplySessionEndReason = Extract<
   "new" | "reset" | "idle" | "daily" | "unknown"
 >;
 
-function resolveExplicitSessionEndReason(matchedResetTriggerLower?: string): ReplySessionEndReason {
+function resolveExplicitSessionEndReason(
+  matchedResetTriggerLower?: string,
+): Extract<ReplySessionEndReason, "new" | "reset"> {
   return matchedResetTriggerLower === "/reset" ? "reset" : "new";
 }
 
@@ -973,13 +976,18 @@ async function initSessionStateAttemptLocked(
     // snapshot through /new; the next turn must rebuild the visible skill list.
     sessionEntry.skillsSnapshot = undefined;
   }
-  const resetReason =
-    previousSessionEndReason === "new" ||
-    previousSessionEndReason === "reset" ||
-    previousSessionEndReason === "idle" ||
-    previousSessionEndReason === "daily"
+  const continuityReason =
+    previousSessionEndReason === "idle" || previousSessionEndReason === "daily"
       ? previousSessionEndReason
       : "reset";
+  const resetBoundary: SessionResetBoundaryRequest | undefined = previousSessionEntry
+    ? resetTriggered
+      ? {
+          context: "clear" as const,
+          reason: resolveExplicitSessionEndReason(matchedResetTriggerLower),
+        }
+      : { context: "preserve-tail" as const, reason: continuityReason }
+    : undefined;
   const resetBoundaryAppended = previousSessionEntry !== undefined;
   const committed = await commitReplySessionInitialization({
     activeSessionKey: sessionKey,
@@ -1015,7 +1023,7 @@ async function initSessionStateAttemptLocked(
         warn: (message) => log.warn(message),
       });
     },
-    ...(previousSessionEntry ? { resetBoundaryReason: resetReason } : {}),
+    ...(resetBoundary ? { resetBoundary } : {}),
     beforeEntryMutation: ({ currentEntry, sessionEntry: entryToCommit }) => {
       if (!previousSessionEntry || !currentEntry) {
         return;
