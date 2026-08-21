@@ -42,6 +42,18 @@ type ModelProvidersCatalogResult = {
   providerOutcomes?: ModelCatalogProviderOutcome[];
 };
 
+type RouteLoadEntry = {
+  promise: Promise<ModelProvidersData>;
+  settledAt: number | null;
+};
+
+// Selecting the default agent invalidates the active route immediately after
+// its loader resolves. Reuse that just-completed read instead of launching the
+// same six gateway requests again. Keeping this beside the lazy loader avoids
+// charging the route-specific cache to the startup bundle.
+const ROUTE_LOAD_REUSE_MS = 1_000;
+const routeLoads = new WeakMap<GatewayBrowserClient, Map<string, RouteLoadEntry>>();
+
 export const EMPTY_MODEL_PROVIDERS_DATA: ModelProvidersData = {
   authStatus: null,
   models: null,
@@ -113,6 +125,8 @@ export async function loadModelProvidersData(
         endDate: localDate(0),
         scope: "family",
         timeZone: "local",
+        limit: 1,
+        includeContextWeight: false,
       })
         .then((result) => result?.aggregates?.byProvider ?? null)
         .catch(() => null),
@@ -135,4 +149,37 @@ export async function loadModelProvidersData(
     // worth surfacing as a page-level error.
     error: authStatus.ok ? null : errorMessage(authStatus.error),
   };
+}
+
+export function loadRouteData(
+  client: GatewayBrowserClient,
+  agentId: string,
+  now: () => number = Date.now,
+  load: () => Promise<ModelProvidersData> = () => loadModelProvidersData(client, { agentId }),
+): Promise<ModelProvidersData> {
+  const loadsByAgent = routeLoads.get(client) ?? new Map<string, RouteLoadEntry>();
+  routeLoads.set(client, loadsByAgent);
+  const existing = loadsByAgent.get(agentId);
+  if (
+    existing &&
+    (existing.settledAt === null || now() - existing.settledAt <= ROUTE_LOAD_REUSE_MS)
+  ) {
+    return existing.promise;
+  }
+
+  const entry: RouteLoadEntry = { promise: load(), settledAt: null };
+  entry.promise = entry.promise.then(
+    (data) => {
+      entry.settledAt = now();
+      return data;
+    },
+    (error: unknown) => {
+      if (loadsByAgent.get(agentId) === entry) {
+        loadsByAgent.delete(agentId);
+      }
+      throw error;
+    },
+  );
+  loadsByAgent.set(agentId, entry);
+  return entry.promise;
 }

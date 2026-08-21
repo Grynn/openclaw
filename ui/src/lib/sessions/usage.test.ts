@@ -68,4 +68,19 @@ describe("requestSessionUsage", () => {
     ).rejects.toBe(error);
     expect(request).toHaveBeenCalledOnce();
   });
+
+  it("lets aggregate-only callers reduce returned session detail", async () => {
+    const request = vi.fn().mockResolvedValue({ sessions: [] });
+
+    await requestSessionUsage({ request } as never, {
+      ...query,
+      limit: 1,
+      includeContextWeight: false,
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      "sessions.usage",
+      expect.objectContaining({ limit: 1, includeContextWeight: false }),
+    );
+  });
 });

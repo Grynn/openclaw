@@ -22,7 +22,7 @@ async function loadModelProvidersRouteData(
 ): Promise<ModelProvidersRouteData> {
   const gateway = context.gateway;
   const gatewaySnapshot = gateway.snapshot;
-  const { EMPTY_MODEL_PROVIDERS_DATA, loadModelProvidersData } = await import("./load.ts");
+  const { EMPTY_MODEL_PROVIDERS_DATA, loadRouteData } = await import("./load.ts");
   const client = gatewaySnapshot.phase === "connected" ? gatewaySnapshot.client : null;
   if (!context.agentSelection.state.selectedId && client) {
     await context.agents.ensureList();
@@ -35,7 +35,7 @@ async function loadModelProvidersRouteData(
   return {
     gateway,
     gatewaySnapshot,
-    data: await loadModelProvidersData(client, { agentId }),
+    data: await loadRouteData(client, agentId),
     client,
     agentId,
   };

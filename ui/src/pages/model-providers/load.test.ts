@@ -1,6 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
-import { loadModelProvidersData } from "./load.ts";
+import type { ModelProvidersData } from "./load.ts";
+import { loadModelProvidersData, loadRouteData } from "./load.ts";
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
 
 describe("loadModelProvidersData", () => {
   it("keeps full catalog discovery out of the initial page load", async () => {
@@ -35,6 +46,12 @@ describe("loadModelProvidersData", () => {
           method === "models.list" && (params as { view?: string } | undefined)?.view === "all",
       ),
     ).toHaveLength(0);
+    const sessionUsageCalls = request.mock.calls.filter(([method]) => method === "sessions.usage");
+    expect(sessionUsageCalls).toHaveLength(1);
+    expect(sessionUsageCalls[0]?.[1]).toMatchObject({
+      limit: 1,
+      includeContextWeight: false,
+    });
   });
 
   it("scopes only credential status to the selected agent", async () => {
@@ -260,5 +277,47 @@ describe("loadModelProvidersData", () => {
           (params as { view?: string } | undefined)?.view === "configured",
       ),
     ).toHaveLength(0);
+  });
+});
+
+describe("loadRouteData", () => {
+  const data = { updatedAt: 1 } as ModelProvidersData;
+
+  it("shares an in-flight load and its immediate default-agent revalidation", async () => {
+    const client = {} as GatewayBrowserClient;
+    const pending = deferred<ModelProvidersData>();
+    const load = vi.fn(() => pending.promise);
+    let now = 1_000;
+
+    const first = loadRouteData(client, "main", () => now, load);
+    const joined = loadRouteData(client, "main", () => now, load);
+    expect(joined).toBe(first);
+    expect(load).toHaveBeenCalledOnce();
+
+    pending.resolve(data);
+    await first;
+    now += 999;
+    await expect(loadRouteData(client, "main", () => now, load)).resolves.toBe(data);
+    expect(load).toHaveBeenCalledOnce();
+
+    now += 2;
+    await loadRouteData(client, "main", () => now, load);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not share across clients or agents and retries a rejected load", async () => {
+    const firstClient = {} as GatewayBrowserClient;
+    const secondClient = {} as GatewayBrowserClient;
+    const failure = deferred<ModelProvidersData>();
+    const failingLoad = vi.fn(() => failure.promise);
+    const failed = loadRouteData(firstClient, "main", Date.now, failingLoad);
+    failure.reject(new Error("failed"));
+    await expect(failed).rejects.toThrow("failed");
+
+    const retry = vi.fn(async () => data);
+    await loadRouteData(firstClient, "main", Date.now, retry);
+    await loadRouteData(firstClient, "writer", Date.now, retry);
+    await loadRouteData(secondClient, "main", Date.now, retry);
+    expect(retry).toHaveBeenCalledTimes(3);
   });
 });
