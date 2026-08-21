@@ -375,7 +375,7 @@ export async function projectSessionEntryLifecycleMutation(
       continue;
     }
     const expectedEntry = store[sessionKey] ? cloneSessionEntry(store[sessionKey]) : undefined;
-    if (upsert.resetBoundaryReason && !expectedEntry) {
+    if (upsert.resetBoundary && !expectedEntry) {
       throw new Error(
         `Cannot append reset boundary without an existing session row: ${sessionKey}`,
       );
@@ -395,10 +395,10 @@ export async function projectSessionEntryLifecycleMutation(
     store[sessionKey] = cloned;
     changedSessionKeys.add(sessionKey);
     const resetBoundaryPlan =
-      upsert.resetBoundaryReason && expectedEntry?.sessionId
+      upsert.resetBoundary && expectedEntry?.sessionId
         ? await buildSessionResetBoundaryPlan({
             events: loadTranscriptEventsFromDatabase(database, expectedEntry.sessionId),
-            reason: upsert.resetBoundaryReason,
+            ...upsert.resetBoundary,
           })
         : undefined;
     upsertedEntries.push({

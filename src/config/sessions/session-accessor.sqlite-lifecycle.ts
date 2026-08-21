@@ -190,12 +190,12 @@ export async function resetSessionEntryLifecycle(
         primaryKey: params.target.canonicalKey,
       });
       const resetBoundaryPlan =
-        params.resetBoundaryReason &&
+        params.resetBoundary &&
         current?.entry.sessionId &&
         !sqliteSessionEntriesEqual(current.entry, nextEntry)
           ? await buildSessionResetBoundaryPlan({
               events: loadTranscriptEventsFromDatabase(database, current.entry.sessionId),
-              reason: params.resetBoundaryReason,
+              ...params.resetBoundary,
             })
           : undefined;
       const mutation: ResetSessionEntryLifecycleMutation = {

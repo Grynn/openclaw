@@ -8,7 +8,14 @@ import {
 import { streamSessionTranscriptLinesReverse } from "./transcript-stream.js";
 import { selectSessionTranscriptLeafControlledPath } from "./transcript-tree.js";
 
-export type SessionResetBoundaryReason = "new" | "reset" | "idle" | "daily" | "cron-stale";
+type SessionResetBoundaryReason = "new" | "reset" | "idle" | "daily" | "cron-stale";
+
+export type SessionResetBoundaryRequest =
+  | { context: "clear"; reason: Extract<SessionResetBoundaryReason, "new" | "reset"> }
+  | {
+      context: "preserve-tail";
+      reason: Extract<SessionResetBoundaryReason, "reset" | "idle" | "daily" | "cron-stale">;
+    };
 
 type SessionResetBoundaryEvent = {
   type: "reset";
@@ -73,10 +80,11 @@ function projectLatestBoundaryWindow(entries: readonly unknown[]): unknown[] {
   return [...kept, ...entries.slice(boundaryIndex + 1)];
 }
 
-function buildSessionResetBoundaryEvent(params: {
-  events: readonly unknown[];
-  reason: SessionResetBoundaryReason;
-}): SessionResetBoundaryEvent {
+function buildSessionResetBoundaryEvent(
+  params: {
+    events: readonly unknown[];
+  } & SessionResetBoundaryRequest,
+): SessionResetBoundaryEvent {
   const entries = params.events.filter(
     (event) =>
       event !== null &&
@@ -85,9 +93,10 @@ function buildSessionResetBoundaryEvent(params: {
       (event as { type?: unknown }).type !== "session",
   );
   const activeEntries = selectSessionTranscriptLeafControlledPath(entries) ?? entries;
-  const keptEntries = selectRecentUserAssistantReplayRecords(
-    projectLatestBoundaryWindow(activeEntries),
-  );
+  const keptEntries =
+    params.context === "preserve-tail"
+      ? selectRecentUserAssistantReplayRecords(projectLatestBoundaryWindow(activeEntries))
+      : [];
   const firstKeptEntryId = recordId(keptEntries[0]);
   return {
     type: "reset",
@@ -153,11 +162,12 @@ async function readLegacyTranscriptEvents(sessionFile: string | undefined): Prom
   }
 }
 
-export async function buildSessionResetBoundaryPlan(params: {
-  events: readonly unknown[];
-  legacySessionFile?: string;
-  reason: SessionResetBoundaryReason;
-}): Promise<SessionResetBoundaryPlan> {
+export async function buildSessionResetBoundaryPlan(
+  params: {
+    events: readonly unknown[];
+    legacySessionFile?: string;
+  } & SessionResetBoundaryRequest,
+): Promise<SessionResetBoundaryPlan> {
   const hasConversationEvents = params.events.some((event) => {
     const type =
       event !== null && typeof event === "object" && !Array.isArray(event)
@@ -165,9 +175,10 @@ export async function buildSessionResetBoundaryPlan(params: {
         : undefined;
     return type === "message" || type === "compaction" || type === "reset";
   });
-  const legacyEvents = hasConversationEvents
-    ? []
-    : await readLegacyTranscriptEvents(params.legacySessionFile);
+  const legacyEvents =
+    hasConversationEvents || params.context === "clear"
+      ? []
+      : await readLegacyTranscriptEvents(params.legacySessionFile);
   const seedEvents = legacyEvents.filter(
     (event) =>
       event !== null &&
@@ -177,7 +188,11 @@ export async function buildSessionResetBoundaryPlan(params: {
   );
   const events = seedEvents.length > 0 ? [...params.events, ...seedEvents] : params.events;
   return {
-    event: buildSessionResetBoundaryEvent({ events, reason: params.reason }),
+    event: buildSessionResetBoundaryEvent(
+      params.context === "clear"
+        ? { context: "clear", events, reason: params.reason }
+        : { context: "preserve-tail", events, reason: params.reason },
+    ),
     seedEvents,
   };
 }

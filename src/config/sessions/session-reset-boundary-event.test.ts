@@ -21,7 +21,36 @@ function message(params: {
 }
 
 describe("reset boundary planning", () => {
-  it("selects repeated reset tails from the current logical window", async () => {
+  it.each(["new", "reset"] as const)(
+    "cuts prior conversation context for explicit %s boundaries",
+    async (reason) => {
+      const user = message({
+        id: "prior-user",
+        parentId: null,
+        role: "user",
+        content: "discarded",
+        second: 1,
+      });
+      const assistant = message({
+        id: "prior-assistant",
+        parentId: user.id,
+        role: "assistant",
+        content: "discarded answer",
+        second: 2,
+      });
+
+      const plan = await buildSessionResetBoundaryPlan({
+        context: "clear",
+        events: [user, assistant],
+        reason,
+      });
+
+      expect(plan.event).toMatchObject({ parentId: assistant.id, reason });
+      expect(plan.event).not.toHaveProperty("firstKeptEntryId");
+    },
+  );
+
+  it("retains repeated reset tails for automatic recovery", async () => {
     const oldUser = message({
       id: "old-user",
       parentId: null,
@@ -62,6 +91,7 @@ describe("reset boundary planning", () => {
     expect(
       (
         await buildSessionResetBoundaryPlan({
+          context: "preserve-tail",
           events: [oldUser, oldAssistant, keptUser, keptAssistant, firstReset],
           reason: "reset",
         })
@@ -69,6 +99,7 @@ describe("reset boundary planning", () => {
     ).toMatchObject({
       parentId: firstReset.id,
       firstKeptEntryId: keptUser.id,
+      reason: "reset",
     });
   });
 
@@ -107,13 +138,15 @@ describe("reset boundary planning", () => {
     expect(
       (
         await buildSessionResetBoundaryPlan({
+          context: "preserve-tail",
           events: [discarded, keptUser, keptAssistant, compaction],
-          reason: "new",
+          reason: "daily",
         })
       ).event,
     ).toMatchObject({
       parentId: compaction.id,
       firstKeptEntryId: keptUser.id,
+      reason: "daily",
     });
   });
 
@@ -135,9 +168,10 @@ describe("reset boundary planning", () => {
       );
 
       const plan = await buildSessionResetBoundaryPlan({
+        context: "preserve-tail",
         events: [],
         legacySessionFile: sessionFile,
-        reason: "new",
+        reason: "daily",
       });
 
       expect(plan.seedEvents).toHaveLength(6);
@@ -147,12 +181,22 @@ describe("reset boundary planning", () => {
       expect(plan.event.firstKeptEntryId).toBe("message-14");
 
       const metadataOnlyPlan = await buildSessionResetBoundaryPlan({
+        context: "preserve-tail",
         events: [{ type: "model_change", id: "metadata-only", parentId: null }],
         legacySessionFile: sessionFile,
-        reason: "new",
+        reason: "daily",
       });
       expect(metadataOnlyPlan.seedEvents).toHaveLength(6);
       expect(metadataOnlyPlan.event.firstKeptEntryId).toBe("message-14");
+
+      const explicitPlan = await buildSessionResetBoundaryPlan({
+        context: "clear",
+        events: [],
+        legacySessionFile: sessionFile,
+        reason: "new",
+      });
+      expect(explicitPlan.seedEvents).toEqual([]);
+      expect(explicitPlan.event).not.toHaveProperty("firstKeptEntryId");
     });
   });
 
@@ -210,9 +254,10 @@ describe("reset boundary planning", () => {
       );
 
       const plan = await buildSessionResetBoundaryPlan({
+        context: "preserve-tail",
         events: [],
         legacySessionFile: sessionFile,
-        reason: "reset",
+        reason: "cron-stale",
       });
 
       expect(plan.seedEvents).toEqual([
