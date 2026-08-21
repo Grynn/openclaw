@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { sha256Hex } from "../../infra/crypto-digest.js";
 import {
@@ -69,7 +70,7 @@ function parseReviewState(value: string | null | undefined): Record<string, unkn
     return {};
   }
   try {
-    return { ...asNullableRecord(JSON.parse(value)) };
+    return asNullableRecord(JSON.parse(value)) ?? {};
   } catch {
     return {};
   }
@@ -88,6 +89,53 @@ function parseReviewTimes(
         ),
       )
     : {};
+}
+
+function recordCollectionReviewState(
+  db: DatabaseSync,
+  workspaceDir: string,
+  nowMs: number,
+  lastError: string | null,
+) {
+  const kysely = getNodeSqliteKysely<CollectionReviewDatabase>(db);
+  const current = executeSqliteQueryTakeFirstSync(
+    db,
+    kysely
+      .selectFrom("skill_curator_state")
+      .select("last_result_json")
+      .where("id", "=", CURATOR_STATE_ID),
+  );
+  const reviewState = parseReviewState(current?.last_result_json);
+  const key = workspaceKey(workspaceDir);
+  const lastResultJson = JSON.stringify({
+    ...reviewState,
+    collectionReviewAttempts: {
+      ...parseReviewTimes(reviewState, "collectionReviewAttempts"),
+      [key]: nowMs,
+    },
+    ...(lastError === null
+      ? {
+          collectionReviewSuccess: {
+            ...parseReviewTimes(reviewState, "collectionReviewSuccess"),
+            [key]: nowMs,
+          },
+        }
+      : {}),
+  });
+  const updatedState = {
+    last_attempt_at_ms: nowMs,
+    last_error: lastError,
+    last_result_json: lastResultJson,
+    ...(lastError === null ? { last_success_at_ms: nowMs } : {}),
+  };
+  executeSqliteQuerySync(
+    db,
+    kysely
+      .insertInto("skill_curator_state")
+      .values({ id: CURATOR_STATE_ID, last_success_at_ms: null, ...updatedState })
+      .onConflict((conflict) => conflict.column("id").doUpdateSet(updatedState)),
+  );
+  return kysely;
 }
 
 export function isSkillCollectionReviewDue(
@@ -172,45 +220,7 @@ export function recordSkillCollectionReviewSuccess(
 ): void {
   ensureSkillWorkshopSchema(options);
   runOpenClawStateWriteTransaction(({ db }) => {
-    const kysely = getNodeSqliteKysely<CollectionReviewDatabase>(db);
-    const current = executeSqliteQueryTakeFirstSync(
-      db,
-      kysely
-        .selectFrom("skill_curator_state")
-        .select("last_result_json")
-        .where("id", "=", CURATOR_STATE_ID),
-    );
-    const reviewState = parseReviewState(current?.last_result_json);
-    const key = workspaceKey(workspaceDir);
-    const successes = parseReviewTimes(reviewState, "collectionReviewSuccess");
-    const attempts = parseReviewTimes(reviewState, "collectionReviewAttempts");
-    successes[key] = nowMs;
-    attempts[key] = nowMs;
-    const lastResultJson = JSON.stringify({
-      ...reviewState,
-      collectionReviewAttempts: attempts,
-      collectionReviewSuccess: successes,
-    });
-    executeSqliteQuerySync(
-      db,
-      kysely
-        .insertInto("skill_curator_state")
-        .values({
-          id: CURATOR_STATE_ID,
-          last_attempt_at_ms: nowMs,
-          last_success_at_ms: nowMs,
-          last_error: null,
-          last_result_json: lastResultJson,
-        })
-        .onConflict((conflict) =>
-          conflict.column("id").doUpdateSet({
-            last_attempt_at_ms: nowMs,
-            last_success_at_ms: nowMs,
-            last_error: null,
-            last_result_json: lastResultJson,
-          }),
-        ),
-    );
+    const kysely = recordCollectionReviewState(db, workspaceDir, nowMs, null);
     const resolvedWorkspaceDir = path.resolve(workspaceDir);
     executeSqliteQuerySync(
       db,
@@ -248,40 +258,6 @@ export function recordSkillCollectionReviewFailure(
   options: OpenClawStateDatabaseOptions = {},
 ): void {
   runOpenClawStateWriteTransaction(({ db }) => {
-    const kysely = getNodeSqliteKysely<CollectionReviewDatabase>(db);
-    const current = executeSqliteQueryTakeFirstSync(
-      db,
-      kysely
-        .selectFrom("skill_curator_state")
-        .select("last_result_json")
-        .where("id", "=", CURATOR_STATE_ID),
-    );
-    const reviewState = parseReviewState(current?.last_result_json);
-    const attempts = parseReviewTimes(reviewState, "collectionReviewAttempts");
-    attempts[workspaceKey(workspaceDir)] = nowMs;
-    const lastResultJson = JSON.stringify({
-      ...reviewState,
-      collectionReviewAttempts: attempts,
-    });
-    const lastError = String(error).slice(0, 2_000);
-    executeSqliteQuerySync(
-      db,
-      kysely
-        .insertInto("skill_curator_state")
-        .values({
-          id: CURATOR_STATE_ID,
-          last_attempt_at_ms: nowMs,
-          last_success_at_ms: null,
-          last_error: lastError,
-          last_result_json: lastResultJson,
-        })
-        .onConflict((conflict) =>
-          conflict.column("id").doUpdateSet({
-            last_attempt_at_ms: nowMs,
-            last_error: lastError,
-            last_result_json: lastResultJson,
-          }),
-        ),
-    );
+    recordCollectionReviewState(db, workspaceDir, nowMs, String(error).slice(0, 2_000));
   }, options);
 }
