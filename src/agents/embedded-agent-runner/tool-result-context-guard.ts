@@ -513,6 +513,7 @@ export function installToolResultContextGuard(params: {
           systemPrompt: params.midTurnPrecheck.getSystemPrompt?.(),
           // During a tool loop, the active user prompt is already part of messages.
           prompt: "",
+          providerBoundaryIncludesSystemPromptFromIndex: prePromptMessageCount,
           contextTokenBudget: params.midTurnPrecheck.contextTokenBudget,
           reserveTokens: params.midTurnPrecheck.reserveTokens(),
           toolResultMaxChars: params.midTurnPrecheck.toolResultMaxChars,

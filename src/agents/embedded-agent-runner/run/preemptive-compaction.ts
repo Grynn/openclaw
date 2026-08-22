@@ -303,16 +303,26 @@ function estimateTranscriptBoundaryTokenPressure(params: {
   messages: AgentMessage[];
   systemPrompt?: string;
   prompt: string;
+  /** A provider boundary at or after this fence already includes the current system prompt. */
+  providerBoundaryIncludesSystemPromptFromIndex?: number;
 }): TranscriptBoundaryTokenPressure {
   const boundary = resolveProviderContextBoundary(params.messages);
-  // The provider total owns transcript items through its assistant record. It has
-  // no system-prompt provenance, so the current rendered prompt stays local too.
+  const boundaryIncludesSystemPrompt =
+    boundary !== undefined &&
+    params.providerBoundaryIncludesSystemPromptFromIndex !== undefined &&
+    boundary.index >= params.providerBoundaryIncludesSystemPromptFromIndex;
+  // The provider total owns transcript items through its assistant record. A
+  // same-turn boundary also owns the unchanged rendered system prompt; older
+  // boundaries have no such provenance, so retain the conservative local count.
   const messagesForPressure = boundary
     ? params.messages.slice(boundary.index + 1)
     : params.messages;
   const locallyEstimatedTokens = messagesForPressure.reduce(
     (sum, message) => sum + estimateMessageTokenPressure(message),
-    estimateRenderedPromptTokens(params),
+    estimateRenderedPromptTokens({
+      systemPrompt: boundaryIncludesSystemPrompt ? undefined : params.systemPrompt,
+      prompt: params.prompt,
+    }),
   );
   return {
     estimatedPromptTokens:
@@ -363,6 +373,8 @@ export function shouldPreemptivelyCompactBeforePrompt(params: {
   unwindowedMessages?: AgentMessage[];
   systemPrompt?: string;
   prompt: string;
+  /** A provider boundary at or after this fence already includes the current system prompt. */
+  providerBoundaryIncludesSystemPromptFromIndex?: number;
   contextTokenBudget: number;
   reserveTokens: number;
   toolResultMaxChars?: number;
@@ -378,6 +390,8 @@ export function shouldPreemptivelyCompactBeforePrompt(params: {
         messages: params.messages,
         systemPrompt: params.systemPrompt,
         prompt: params.prompt,
+        providerBoundaryIncludesSystemPromptFromIndex:
+          params.providerBoundaryIncludesSystemPromptFromIndex,
       });
   let estimatedPromptTokens =
     llmBoundaryTokenPressure?.estimatedPromptTokens ??

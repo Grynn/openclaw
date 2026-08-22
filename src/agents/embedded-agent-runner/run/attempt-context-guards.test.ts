@@ -45,6 +45,8 @@ function createInput(overrides: Record<string, unknown> = {}) {
         agents: { defaults: { compaction: { midTurnPrecheck: { enabled: true } } } },
       },
       contextTokenBudget: 1_024,
+      agentHarnessId: "openclaw",
+      genericCompactionRecoveryAllowed: true,
       model: { api: "anthropic-messages", contextWindow: 2_048 },
       modelId: "model-1",
       provider: "provider-1",
@@ -120,6 +122,22 @@ describe("installEmbeddedAttemptContextGuards", () => {
     expect(input.activeSession.agent.transformContext).toBe(originalTransform);
     expect(removeHistoryGuard).toHaveBeenCalledOnce();
     expect(removeToolResultGuard).toHaveBeenCalledOnce();
+  });
+
+  it("does not arm mid-turn compaction for a Codex transport without recovery", () => {
+    const input = createInput();
+    input.attempt = {
+      ...input.attempt,
+      agentHarnessId: "codex",
+      genericCompactionRecoveryAllowed: false,
+    };
+
+    const guards = installEmbeddedAttemptContextGuards(input as never);
+    const guardOptions = hoisted.installToolResultContextGuard.mock.calls[0]?.[0];
+
+    expect(guardOptions).toMatchObject({ contextWindowTokens: 1_024 });
+    expect(guardOptions.midTurnPrecheck).toBeUndefined();
+    guards.remove();
   });
 
   it("composes context-engine and tool-result cleanup while exposing checkpoints", () => {

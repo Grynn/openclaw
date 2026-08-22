@@ -247,6 +247,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
       fallbackActive: modelId !== requestedModelId || Boolean(fallbackReason),
       fallbackReason,
       agentHarnessId: runtime.agentHarness.id,
+      genericCompactionRecoveryAllowed: preparedRuntime.genericCompactionRecoveryAllowed,
       expectedRuntimeArtifact: expectedHarnessArtifact?.artifact,
       runtimePlan,
       model: effectiveModel,

@@ -130,6 +130,7 @@ type EmbeddedRunAttemptParamsBase = Omit<
   | "admittedRunContext"
   | "authoredContextTokenCap"
   | "contextEngineLogicalTurnLease"
+  | "genericCompactionRecoveryAllowed"
   | "onContextEngineTurnCandidate"
   | "pluginHarnessToolPolicySafeDeniedTools"
   | "trajectoryRecorder"

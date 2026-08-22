@@ -472,6 +472,39 @@ describe("installToolResultContextGuard", () => {
     expect(transformed).toBe(contextForNextCall);
   });
 
+  it("does not re-add the system prompt after a same-turn exact provider boundary", async () => {
+    const agent = makeGuardableAgent();
+    const contextForNextCall = [
+      makeUser("current turn"),
+      makeAssistant("provider answer", {
+        usage: {
+          input: 192_948,
+          output: 571,
+          cacheRead: 37_376,
+          cacheWrite: 0,
+          contextUsage: {
+            state: "available",
+            promptTokens: 230_324,
+            totalTokens: 230_895,
+          },
+          totalTokens: 230_895,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "toolUse",
+      }),
+      makeToolResult("call_exec", "r".repeat(21_600), "exec"),
+    ];
+
+    const transformed = await applyMidTurnPrecheckGuardToContext(agent, contextForNextCall, {
+      contextTokenBudget: 272_000,
+      reserveTokens: 20_000,
+      prePromptMessageCount: 1,
+      systemPrompt: "s".repeat(37_495),
+    });
+
+    expect(transformed).toBe(contextForNextCall);
+  });
+
   it("does not run mid-turn precheck when no new tool result was appended", async () => {
     const agent = makeGuardableAgent();
     const contextForNextCall = [makeUser("u".repeat(80_000))];

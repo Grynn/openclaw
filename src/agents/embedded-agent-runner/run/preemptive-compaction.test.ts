@@ -297,6 +297,35 @@ describe("preemptive-compaction", () => {
     expect(result.route).toBe("compact_only");
   });
 
+  it("counts the system prompt only when the provider boundary predates the prompt fence", () => {
+    const messages = [
+      { role: "user", content: "current turn", timestamp: timestamp++ } as AgentMessage,
+      makeProviderAssistant({ promptTokens: 230_324, totalTokens: 230_895 }),
+      makeToolResultMessage("r".repeat(21_600)),
+    ];
+    const common = {
+      messages,
+      systemPrompt: "s".repeat(37_495),
+      prompt: "",
+      contextTokenBudget: 272_000,
+      reserveTokens: 20_000,
+    };
+
+    const sameTurn = shouldPreemptivelyCompactBeforePrompt({
+      ...common,
+      providerBoundaryIncludesSystemPromptFromIndex: 1,
+    });
+    const olderTurn = shouldPreemptivelyCompactBeforePrompt({
+      ...common,
+      providerBoundaryIncludesSystemPromptFromIndex: 2,
+    });
+
+    expect(sameTurn.estimatedPromptTokens).toBe(243_894);
+    expect(sameTurn.route).toBe("fits");
+    expect(olderTurn.estimatedPromptTokens).toBe(255_157);
+    expect(olderTurn.route).toBe("compact_only");
+  });
+
   it("uses the later assistant boundary when distinct responses have equal totals", () => {
     const result = shouldPreemptivelyCompactBeforePrompt({
       messages: [

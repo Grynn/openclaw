@@ -300,7 +300,8 @@ export function installEmbeddedAttemptContextGuards(input: {
   let pendingMidTurnPrecheckRequest: MidTurnPrecheckRequest | null = null;
   let afterTurnCheckpoint: number | null = null;
   const midTurnPrecheckOptions =
-    attempt.config?.agents?.defaults?.compaction?.midTurnPrecheck?.enabled === true
+    attempt.config?.agents?.defaults?.compaction?.midTurnPrecheck?.enabled === true &&
+    attempt.genericCompactionRecoveryAllowed !== false
       ? {
           midTurnPrecheck: {
             enabled: true,
