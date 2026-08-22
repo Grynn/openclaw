@@ -84,6 +84,31 @@ function makeUnavailableAssistant(params: {
   } as AgentMessage;
 }
 
+function makeLegacyProviderAssistant(params: {
+  input: number;
+  output: number;
+  cacheRead?: number;
+}): AgentMessage {
+  const cacheRead = params.cacheRead ?? 0;
+  return {
+    role: "assistant",
+    api: "openai-chatgpt-responses",
+    provider: "openai",
+    model: "gpt-5.6-sol",
+    content: [{ type: "text", text: "provider answer" }],
+    usage: {
+      input: params.input,
+      output: params.output,
+      cacheRead,
+      cacheWrite: 0,
+      totalTokens: params.input + params.output + cacheRead,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: timestamp++,
+  } as AgentMessage;
+}
+
 function makeToolResultMessage(...texts: string[]): AgentMessage {
   return {
     role: "toolResult",
@@ -196,6 +221,62 @@ describe("preemptive-compaction", () => {
     expect(result.estimatedPromptTokens).toBeGreaterThan(240_304);
     expect(result.estimatedPromptTokens).toBeLessThan(252_000);
     expect(result.route).toBe("fits");
+  });
+
+  it("uses legacy embedded provider usage when contextUsage is absent", () => {
+    const result = shouldPreemptivelyCompactBeforePrompt({
+      messages: [
+        { role: "user", content: "x".repeat(1_000_000), timestamp: timestamp++ } as AgentMessage,
+        makeLegacyProviderAssistant({ input: 143_687, output: 372, cacheRead: 37_376 }),
+        makeToolResultMessage("small post-call result"),
+      ],
+      systemPrompt: "current rendered system and tool schema ".repeat(4_000),
+      prompt: "continue",
+      contextTokenBudget: 272_000,
+      reserveTokens: 20_000,
+    });
+
+    expect(result.pressureSource).toBe("provider_usage");
+    expect(result.estimatedPromptTokens).toBeGreaterThan(181_435);
+    expect(result.estimatedPromptTokens).toBeLessThan(252_000);
+    expect(result.route).toBe("fits");
+  });
+
+  it("prefers newer legacy provider usage over an older contextUsage boundary", () => {
+    const result = shouldPreemptivelyCompactBeforePrompt({
+      messages: [
+        makeProviderAssistant({ promptTokens: 240_000, totalTokens: 240_304 }),
+        makeLegacyProviderAssistant({ input: 143_687, output: 372, cacheRead: 37_376 }),
+        makeToolResultMessage("small post-call result"),
+      ],
+      prompt: "continue",
+      contextTokenBudget: 210_000,
+      reserveTokens: 20_000,
+    });
+
+    expect(result.pressureSource).toBe("provider_usage");
+    expect(result.estimatedPromptTokens).toBeGreaterThan(181_435);
+    expect(result.estimatedPromptTokens).toBeLessThan(190_000);
+    expect(result.route).toBe("fits");
+  });
+
+  it("does not promote errored legacy provider usage into a context boundary", () => {
+    const failed = makeLegacyProviderAssistant({ input: 10, output: 1 });
+    if (failed.role === "assistant") {
+      failed.stopReason = "error";
+    }
+    const result = shouldPreemptivelyCompactBeforePrompt({
+      messages: [
+        { role: "user", content: "x".repeat(1_000_000), timestamp: timestamp++ } as AgentMessage,
+        failed,
+      ],
+      prompt: "continue",
+      contextTokenBudget: 210_000,
+      reserveTokens: 20_000,
+    });
+
+    expect(result.pressureSource).toBe("transcript_estimate");
+    expect(result.route).toBe("compact_only");
   });
 
   it("counts the current system prompt after a provider usage boundary", () => {

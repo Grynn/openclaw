@@ -33,11 +33,14 @@ function readCount(value: number | null | undefined): number {
  * billable input bucket. `total_tokens` comes from the payload, but never below the sum of the
  * split buckets: proxies routinely omit it (reporting 0 would understate the turn), and a payload
  * whose `cached_tokens` exceeds `input_tokens` clamps the input bucket, leaving the reported total
- * short of what the buckets actually price.
+ * short of what the buckets actually price. Responses terminal usage describes one concrete model
+ * call, so the same buckets also provide an exact context snapshot for prompt-pressure decisions.
  */
 export function mapResponsesTerminalUsage(
   usage: ResponsesTerminalUsagePayload | undefined | null,
-): Pick<Usage, "input" | "output" | "cacheRead" | "cacheWrite" | "totalTokens"> | undefined {
+):
+  | Pick<Usage, "input" | "output" | "cacheRead" | "cacheWrite" | "contextUsage" | "totalTokens">
+  | undefined {
   if (!usage) {
     return undefined;
   }
@@ -47,7 +50,18 @@ export function mapResponsesTerminalUsage(
   const output = readCount(usage.output_tokens);
   const bucketTotal = input + output + cacheRead + cacheWrite;
   const totalTokens = Math.max(bucketTotal, readCount(usage.total_tokens));
-  return { input, output, cacheRead, cacheWrite, totalTokens };
+  return {
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    contextUsage: {
+      state: "available",
+      promptTokens: input + cacheRead + cacheWrite,
+      totalTokens,
+    },
+    totalTokens,
+  };
 }
 
 /** Reasoning tokens are reported by the agent path only; the package path does not track them. */

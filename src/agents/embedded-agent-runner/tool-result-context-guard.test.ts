@@ -440,6 +440,38 @@ describe("installToolResultContextGuard", () => {
     }
   });
 
+  it("trusts legacy embedded provider usage before checking a new tool result", async () => {
+    const agent = makeGuardableAgent();
+    const providerUsage = {
+      input: 175_747,
+      output: 104,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 175_851,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+    const contextForNextCall = [
+      makeUser("x".repeat(1_000_000)),
+      makeAssistant("provider answer", {
+        api: "openai-chatgpt-responses",
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        usage: providerUsage,
+        stopReason: "toolUse",
+      }),
+      makeToolResult("call_small", "r".repeat(11_997)),
+    ];
+
+    const transformed = await applyMidTurnPrecheckGuardToContext(agent, contextForNextCall, {
+      contextTokenBudget: 272_000,
+      reserveTokens: 20_000,
+      prePromptMessageCount: 2,
+      systemPrompt: "s".repeat(37_495),
+    });
+
+    expect(transformed).toBe(contextForNextCall);
+  });
+
   it("does not run mid-turn precheck when no new tool result was appended", async () => {
     const agent = makeGuardableAgent();
     const contextForNextCall = [makeUser("u".repeat(80_000))];

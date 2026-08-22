@@ -233,7 +233,16 @@ function estimateRenderedPromptTokens(params: { systemPrompt?: string; prompt: s
 
 type TranscriptBoundaryTokenPressure = {
   estimatedPromptTokens: number;
-  source: "provider_context_usage" | "transcript_estimate";
+  source: "provider_context_usage" | "provider_usage" | "transcript_estimate";
+};
+
+type ProviderContextBoundary = {
+  index: number;
+  source: Extract<
+    TranscriptBoundaryTokenPressure["source"],
+    "provider_context_usage" | "provider_usage"
+  >;
+  totalTokens: number;
 };
 
 function isProviderContextUsageBarrier(message: AgentMessage): boolean {
@@ -251,7 +260,7 @@ function isProviderContextUsageBarrier(message: AgentMessage): boolean {
 
 function resolveProviderContextBoundary(
   messages: AgentMessage[],
-): { index: number; totalTokens: number } | undefined {
+): ProviderContextBoundary | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message && isProviderContextUsageBarrier(message)) {
@@ -263,7 +272,28 @@ function resolveProviderContextBoundary(
       Number.isFinite(contextUsage.totalTokens) &&
       contextUsage.totalTokens > 0
     ) {
-      return { index, totalTokens: Math.ceil(contextUsage.totalTokens) };
+      return {
+        index,
+        source: "provider_context_usage",
+        totalTokens: Math.ceil(contextUsage.totalTokens),
+      };
+    }
+    // Embedded provider assistant usage is a per-call context measurement even
+    // when older transports do not project the newer contextUsage envelope.
+    // CLI usage can be cumulative billing data, so its missing envelope remains
+    // a hard barrier above. An explicit unavailable marker likewise wins over
+    // these legacy fields and must not be promoted into context provenance.
+    if (
+      message?.role === "assistant" &&
+      message.usage &&
+      message.usage.contextUsage === undefined &&
+      message.stopReason !== "aborted" &&
+      message.stopReason !== "error"
+    ) {
+      const totalTokens = calculateContextTokens(message.usage);
+      if (Number.isFinite(totalTokens) && totalTokens > 0) {
+        return { index, source: "provider_usage", totalTokens: Math.ceil(totalTokens) };
+      }
     }
   }
   return undefined;
@@ -287,7 +317,7 @@ function estimateTranscriptBoundaryTokenPressure(params: {
   return {
     estimatedPromptTokens:
       (boundary?.totalTokens ?? 0) + Math.ceil(locallyEstimatedTokens * SAFETY_MARGIN),
-    source: boundary ? "provider_context_usage" : "transcript_estimate",
+    source: boundary?.source ?? "transcript_estimate",
   };
 }
 
