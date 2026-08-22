@@ -2,11 +2,14 @@
 import fs from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import * as nodeSqlite from "../infra/node-sqlite.js";
+import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
+  isOpenClawStateDatabaseOpen,
 } from "../state/openclaw-state-db.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import {
   readBestEffortConfig,
@@ -20,14 +23,18 @@ import { withTempHome, writeOpenClawConfig } from "./test-helpers.js";
 type ConfigHealthDatabase = Pick<OpenClawStateKyselyDatabase, "config_health_entries">;
 
 function readConfigHealthRow(env: NodeJS.ProcessEnv, configPath: string) {
-  const { db } = openOpenClawStateDatabase({ env });
-  const healthDb = getNodeSqliteKysely<ConfigHealthDatabase>(db);
-  return executeSqliteQueryTakeFirstSync(
-    db,
-    healthDb
-      .selectFrom("config_health_entries")
-      .select(["config_path", "last_known_good_json"])
-      .where("config_path", "=", configPath),
+  return withExistingOpenClawStateDatabaseReadOnly(
+    ({ db }) => {
+      const healthDb = getNodeSqliteKysely<ConfigHealthDatabase>(db);
+      return executeSqliteQueryTakeFirstSync(
+        db,
+        healthDb
+          .selectFrom("config_health_entries")
+          .select(["config_path", "last_known_good_json"])
+          .where("config_path", "=", configPath),
+      );
+    },
+    { env },
   );
 }
 
@@ -47,14 +54,60 @@ describe("readBestEffortConfig", () => {
 
       const healthPath = `${home}/.openclaw/logs/config-health.json`;
       await expect(fs.stat(healthPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(isOpenClawStateDatabaseOpen()).toBe(false);
 
       await readConfigFileSnapshot();
 
       await expect(fs.stat(healthPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(isOpenClawStateDatabaseOpen()).toBe(true);
       expect(readConfigHealthRow({ ...process.env, HOME: home }, configPath)).toMatchObject({
         config_path: configPath,
         last_known_good_json: expect.any(String),
       });
+    });
+  });
+
+  it("keeps unchanged observations off the writable shared-state lifecycle", async () => {
+    await withTempHome(async (home) => {
+      await writeOpenClawConfig(home, { gateway: { mode: "local" } });
+      await readConfigFileSnapshot();
+      closeOpenClawStateDatabaseForTest();
+      expect(isOpenClawStateDatabaseOpen()).toBe(false);
+
+      const databasePath = resolveOpenClawStateSqlitePath(process.env);
+      const openSpy = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase");
+      try {
+        await readConfigFileSnapshot();
+
+        const stateOpens = openSpy.mock.calls.filter(([location]) => location === databasePath);
+        expect(stateOpens.length).toBeGreaterThan(0);
+        expect(stateOpens.every(([, options]) => options?.readOnly === true)).toBe(true);
+        expect(isOpenClawStateDatabaseOpen()).toBe(false);
+      } finally {
+        openSpy.mockRestore();
+      }
+    });
+  });
+
+  it("persists a changed fingerprint through the writable shared-state lifecycle", async () => {
+    await withTempHome(async (home) => {
+      const configPath = await writeOpenClawConfig(home, { gateway: { mode: "local" } });
+      await readConfigFileSnapshot();
+      const initialFingerprint = readConfigHealthRow(process.env, configPath)?.last_known_good_json;
+      expect(initialFingerprint).toEqual(expect.any(String));
+      closeOpenClawStateDatabaseForTest();
+
+      await writeOpenClawConfig(home, {
+        gateway: { mode: "local" },
+        update: { channel: "beta" },
+      });
+      const changedSnapshot = await readConfigFileSnapshot();
+
+      expect(isOpenClawStateDatabaseOpen()).toBe(true);
+      const changedFingerprint = readConfigHealthRow(process.env, configPath)?.last_known_good_json;
+      expect(changedFingerprint).toEqual(expect.any(String));
+      expect(changedFingerprint).not.toBe(initialFingerprint);
+      expect(JSON.parse(changedFingerprint ?? "{}")).toMatchObject({ hash: changedSnapshot.hash });
     });
   });
 
