@@ -765,13 +765,26 @@ describe("sessions_spawn tool", () => {
     expect(hoisted.spawnSubagentDirectMock).not.toHaveBeenCalled();
   });
 
-  it.each(["Projects", ""])("rejects category %j without visible mode", async (category) => {
+  it("rejects a non-empty category without visible mode", async () => {
     const tool = createSessionsSpawnTool({ agentSessionKey: "agent:main:main" });
 
-    await expect(tool.execute("hidden-category", { task: "inspect", category })).rejects.toThrow(
-      "Parameters require visible=true: category",
-    );
+    await expect(
+      tool.execute("hidden-category", { task: "inspect", category: "Projects" }),
+    ).rejects.toThrow("Parameters require visible=true: category");
     expect(hoisted.spawnSubagentDirectMock).not.toHaveBeenCalled();
+  });
+
+  it("treats an empty category placeholder as omitted for a hidden spawn", async () => {
+    const tool = createSessionsSpawnTool({ agentSessionKey: "agent:main:main" });
+
+    const result = await tool.execute("hidden-empty-category", {
+      task: "inspect",
+      category: "",
+      visible: false,
+    });
+
+    expect(result.details).toMatchObject({ status: "accepted" });
+    expect(hoisted.spawnSubagentDirectMock).toHaveBeenCalledOnce();
   });
 
   it("applies a per-run timeout to visible dashboard sessions", async () => {

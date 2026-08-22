@@ -114,9 +114,10 @@ export async function maybeSpawnVisibleSession(params: {
   const worktreeBaseRef = readToolStringParam(params.raw, "worktreeBaseRef");
   const categoryProvided = Object.hasOwn(params.raw, "category");
   const requestedCategory = readToolStringParam(params.raw, "category", { allowEmpty: true });
+  const category = normalizeOptionalString(requestedCategory);
   if (params.raw.visible !== true) {
     const visibleOnlyParams = [
-      ["category", categoryProvided ? requestedCategory : undefined],
+      ["category", categoryProvided ? category : undefined],
       ["worktree", worktree],
       ["worktreeName", worktreeName],
       ["worktreeBaseRef", worktreeBaseRef],
@@ -208,7 +209,6 @@ export async function maybeSpawnVisibleSession(params: {
     sessionKey: requesterKey,
     agentId: params.options?.requesterAgentIdOverride,
   });
-  const category = normalizeOptionalString(requestedCategory);
   const requireAgentId =
     resolveAgentConfig(cfg, requesterAgentId)?.subagents?.requireAgentId ??
     cfg.agents?.defaults?.subagents?.requireAgentId ??

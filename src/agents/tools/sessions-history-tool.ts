@@ -383,9 +383,12 @@ export function createSessionsHistoryTool(opts?: {
         required: true,
       });
       const limit = readPositiveIntegerParam(params, "limit");
-      const offset = readOffsetParam(params);
+      const requestedOffset = readOffsetParam(params);
       const messageId = readToolStringParam(params, "messageId");
       const sessionId = readToolStringParam(params, "sessionId");
+      // Strict tool-schema callers can materialize an omitted optional integer as zero.
+      // Anchored recall owns pagination, so a zero placeholder carries no competing intent.
+      const offset = messageId && requestedOffset === 0 ? undefined : requestedOffset;
       if (offset !== undefined && messageId) {
         throw new ToolInputError("offset and messageId cannot be used together");
       }

@@ -19,11 +19,9 @@ import type { SessionsListResult } from "../../gateway/session-utils.types.js";
 import type { SessionsResolveResult } from "../../gateway/sessions-resolve.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { readNonNegativeIntegerParam, readPositiveIntegerParam } from "./common.js";
+import { readSearchQueries } from "./sessions-search-batch.js";
 
 type EmbeddedCallGateway = <T = Record<string, unknown>>(opts: CallGatewayOptions) => Promise<T>;
-
-const SESSIONS_SEARCH_MAX_QUERY_CHARS = 4096;
-const SESSIONS_SEARCH_MAX_BATCH_QUERIES = 8;
 
 type EmbeddedTranscriptSearchResult = {
   hits: unknown[];
@@ -165,39 +163,8 @@ function readEmbeddedSearchQueries(params: Record<string, unknown>): {
   isBatch: boolean;
   queries: string[];
 } {
-  if (params.query !== undefined && params.queries !== undefined) {
-    throw new Error("use query or queries, not both");
-  }
-  if (params.queries !== undefined) {
-    if (
-      !Array.isArray(params.queries) ||
-      params.queries.length === 0 ||
-      params.queries.length > SESSIONS_SEARCH_MAX_BATCH_QUERIES
-    ) {
-      throw new Error(`queries must contain 1-${SESSIONS_SEARCH_MAX_BATCH_QUERIES} items`);
-    }
-    const queries = params.queries.map((query, index) => {
-      const normalized = typeof query === "string" ? query.trim() : "";
-      if (!normalized) {
-        throw new Error(`queries[${index}] must not be empty`);
-      }
-      if (normalized.length > SESSIONS_SEARCH_MAX_QUERY_CHARS) {
-        throw new Error(
-          `queries[${index}] must not exceed ${SESSIONS_SEARCH_MAX_QUERY_CHARS} characters`,
-        );
-      }
-      return normalized;
-    });
-    return { isBatch: true, queries };
-  }
-  const query = typeof params.query === "string" ? params.query.trim() : "";
-  if (!query) {
-    throw new Error("query must not be empty");
-  }
-  if (query.length > SESSIONS_SEARCH_MAX_QUERY_CHARS) {
-    throw new Error(`query must not exceed ${SESSIONS_SEARCH_MAX_QUERY_CHARS} characters`);
-  }
-  return { isBatch: false, queries: [query] };
+  const { batch, queries } = readSearchQueries(params);
+  return { isBatch: batch, queries };
 }
 
 function serializeEmbeddedSearchResult(result: EmbeddedTranscriptSearchResult) {

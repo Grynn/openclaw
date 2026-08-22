@@ -246,6 +246,18 @@ describe("sessions_search tool", () => {
     });
   });
 
+  it("accepts a redundant single query already present in the batch", () => {
+    expect(
+      readSearchQueries({
+        query: " First angle ",
+        queries: ["first angle", "second angle"],
+      }),
+    ).toEqual({
+      queries: ["first angle", "second angle"],
+      batch: true,
+    });
+  });
+
   it("filters invisible hits before applying the limit", async () => {
     const requests: CallGatewayRequest[] = [];
     const tool = createTool({

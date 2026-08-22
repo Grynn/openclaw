@@ -195,6 +195,7 @@ describe("embedded gateway stub", () => {
       method: "sessions.search",
       params: {
         agentId: "main",
+        query: "first angle",
         queries: [" first angle ", "second angle"],
         sessionKeys: ["main", "agent:main:other"],
         limit: 3,

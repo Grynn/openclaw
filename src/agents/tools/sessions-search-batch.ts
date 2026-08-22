@@ -88,9 +88,6 @@ export function readSearchQueries(params: Record<string, unknown>): {
 } {
   const query = readToolStringParam(params, "query");
   const rawQueries = params.queries;
-  if (query !== undefined && rawQueries !== undefined) {
-    throw new ToolInputError("use query or queries, not both");
-  }
   if (rawQueries !== undefined) {
     if (!Array.isArray(rawQueries)) {
       throw new ToolInputError("queries must be an array");
@@ -117,6 +114,14 @@ export function readSearchQueries(params: Record<string, unknown>): {
       firstIndexByQuery.set(duplicateKey, index);
       return normalized;
     });
+    if (
+      query !== undefined &&
+      !queries.some(
+        (candidate) => normalizeSearchQueryKey(candidate) === normalizeSearchQueryKey(query),
+      )
+    ) {
+      throw new ToolInputError("use query or queries, not both");
+    }
     return { queries, batch: true };
   }
   if (!query) {
