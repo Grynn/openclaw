@@ -2,7 +2,11 @@ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/st
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 // Control UI view renders agents panels tools skills screen content.
 import { html, nothing } from "lit";
-import { normalizeToolPolicyName } from "../../../../src/agents/tool-policy-shared.js";
+import {
+  expandToolGroups,
+  normalizeToolPolicyName,
+  resolveToolProfilePolicy,
+} from "../../../../src/agents/tool-policy-shared.js";
 import type {
   SkillStatusEntry,
   SkillStatusReport,
@@ -20,12 +24,9 @@ import { t } from "../../i18n/index.ts";
 import {
   type AgentToolEntry,
   type AgentToolSection,
-  isAllowedByPolicy,
-  matchesList,
   resolveAgentConfig,
   resolveAgentSkillsFilter,
   resolveToolProfileOptions,
-  resolveToolProfile,
   resolveToolSections,
 } from "../../lib/agents/display.ts";
 import { formatUiExternalText } from "../../lib/format-error.ts";
@@ -38,6 +39,96 @@ import {
 } from "../../lib/skills-shared.ts";
 import type { GitHubIdentityController } from "./github-identity-controller.ts";
 import { renderGitHubIdentity } from "./github-identity-view.ts";
+
+type ToolPolicy = {
+  allow?: string[];
+  deny?: string[];
+};
+
+type CompiledPattern =
+  | { kind: "all" }
+  | { kind: "exact"; value: string }
+  | { kind: "regex"; value: RegExp };
+
+function compilePattern(pattern: string): CompiledPattern {
+  const normalized = normalizeToolPolicyName(pattern);
+  if (!normalized) {
+    return { kind: "exact", value: "" };
+  }
+  if (normalized === "*") {
+    return { kind: "all" };
+  }
+  if (!normalized.includes("*")) {
+    return { kind: "exact", value: normalized };
+  }
+  const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return { kind: "regex", value: new RegExp(`^${escaped.replaceAll("\\*", ".*")}$`) };
+}
+
+function compilePatterns(patterns?: string[]): CompiledPattern[] {
+  if (!Array.isArray(patterns)) {
+    return [];
+  }
+  return expandToolGroups(patterns)
+    .map(compilePattern)
+    .filter((pattern) => pattern.kind !== "exact" || pattern.value.length > 0);
+}
+
+function matchesAny(name: string, patterns: CompiledPattern[]) {
+  for (const pattern of patterns) {
+    if (pattern.kind === "all") {
+      return true;
+    }
+    if (pattern.kind === "exact" && name === pattern.value) {
+      return true;
+    }
+    if (pattern.kind === "regex" && pattern.value.test(name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isAllowedByPolicy(name: string, policy?: ToolPolicy) {
+  if (!policy) {
+    return true;
+  }
+  const normalized = normalizeToolPolicyName(name);
+  const deny = compilePatterns(policy.deny);
+  if (matchesAny(normalized, deny)) {
+    return false;
+  }
+  const allow = compilePatterns(policy.allow);
+  if (allow.length === 0) {
+    return true;
+  }
+  if (matchesAny(normalized, allow)) {
+    return true;
+  }
+  if (normalized === "apply_patch" && matchesAny("exec", allow)) {
+    return true;
+  }
+  return false;
+}
+
+function matchesList(name: string, list?: string[]) {
+  if (!Array.isArray(list) || list.length === 0) {
+    return false;
+  }
+  const normalized = normalizeToolPolicyName(name);
+  const patterns = compilePatterns(list);
+  if (matchesAny(normalized, patterns)) {
+    return true;
+  }
+  if (normalized === "apply_patch" && matchesAny("exec", patterns)) {
+    return true;
+  }
+  return false;
+}
+
+function resolveToolProfile(profile: string) {
+  return resolveToolProfilePolicy(profile) ?? undefined;
+}
 
 function renderToolMetaBadges(labels: string[]) {
   if (labels.length === 0) {
