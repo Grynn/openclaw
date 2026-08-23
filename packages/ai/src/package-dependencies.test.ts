@@ -4,6 +4,7 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const PACKAGE_ROOT = path.resolve(import.meta.dirname, "..");
+const REPOSITORY_ROOT = path.resolve(PACKAGE_ROOT, "../..");
 
 async function listProductionSources(directory: string): Promise<string[]> {
   const entries = await fs.readdir(directory, { withFileTypes: true });
@@ -59,4 +60,21 @@ describe("@openclaw/ai source dependency contract", () => {
       expect(manifest.devDependencies?.[packageName]).toBe("workspace:*");
     },
   );
+
+  it("declares the conditional proxy loader as a direct runtime dependency", async () => {
+    const manifest = JSON.parse(
+      await fs.readFile(path.join(PACKAGE_ROOT, "package.json"), "utf8"),
+    ) as { dependencies?: Record<string, string> };
+    const repositoryManifest = JSON.parse(
+      await fs.readFile(path.join(REPOSITORY_ROOT, "package.json"), "utf8"),
+    ) as { dependencies?: Record<string, string> };
+    const providerSource = await fs.readFile(
+      path.join(PACKAGE_ROOT, "src", "providers", "openai-chatgpt-responses.ts"),
+      "utf8",
+    );
+
+    expect(providerSource).toContain('dynamicImport("proxy-from-env")');
+    expect(manifest.dependencies?.["proxy-from-env"]).toBe("2.1.0");
+    expect(repositoryManifest.dependencies?.["proxy-from-env"]).toBe("2.1.0");
+  });
 });

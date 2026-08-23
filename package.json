@@ -2078,6 +2078,7 @@
     "partial-json": "0.1.7",
     "playwright-core": "1.62.1",
     "pretty-ms": "9.3.0",
+    "proxy-from-env": "2.1.0",
     "qrcode": "1.5.4",
     "quickjs-wasi": "3.4.0",
     "rastermill": "0.3.2",
