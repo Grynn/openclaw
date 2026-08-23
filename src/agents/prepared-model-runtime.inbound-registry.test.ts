@@ -20,6 +20,14 @@ import { getPreparedPluginRuntimeLoadContext } from "./prepared-model-runtime.pl
 
 const mocks = getPreparedModelRuntimeMocks();
 
+async function expectPromisePending(promise: Promise<unknown>): Promise<void> {
+  const observed = promise.then(
+    () => "resolved",
+    () => "rejected",
+  );
+  await expect(Promise.race([observed, Promise.resolve("pending")])).resolves.toBe("pending");
+}
+
 describe("prepared reply dispatch runtime", () => {
   beforeEach(() => {
     resetPreparedModelRuntimeHarness();
@@ -240,43 +248,146 @@ describe("prepared reply dispatch runtime", () => {
     expect(configuredSelectedBefore).not.toBe(configuredRuntimeBefore?.inboundPluginRegistry);
   });
 
-  it("removes only the affected configured projection during an auth refresh", async () => {
+  it("waits only the affected configured projection during an auth refresh", async () => {
     mocks.configuredAgentIds = ["default", "worker"];
     const config = { agents: { defaults: { model: "openai/gpt-5.5" } } };
     await refreshPreparedModelRuntimeSnapshots(config, {
       gatewayLifecycle: true,
-      catalogMode: "static",
     });
     const defaultRuntime = await loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" });
     const workerRuntime = await loadPublishedGatewayReplyDispatchRuntime({ agentId: "worker" });
-    const published = createDeferred();
-    const unregister = registerPreparedModelRuntimePublicationListener((event) => {
-      if (event.phase === "published") {
-        published.resolve();
-      }
-    });
+    const authRefresh = createDeferred<{ agentDir: string; wrote: false }>();
+    mocks.ensureOpenClawModelsJson.mockImplementationOnce(async () => await authRefresh.promise);
 
     mocks.mutationListener?.({
       agentDir: "/tmp/configured-worker",
       affectsInheritedStores: false,
     });
+    await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(3));
 
     const defaultRead = loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" });
     const workerRead = loadPublishedGatewayReplyDispatchRuntime({ agentId: "worker" });
     await expect(defaultRead).resolves.toBe(defaultRuntime);
-    await expect(workerRead).rejects.toThrow(
-      "prepared reply dispatch runtime owner was not published for worker",
-    );
+    await expectPromisePending(workerRead);
 
-    await published.promise;
-    unregister();
+    authRefresh.resolve({ agentDir: "/tmp/configured-worker", wrote: false });
 
-    const refreshedWorker = await loadPublishedGatewayReplyDispatchRuntime({ agentId: "worker" });
+    const refreshedWorker = await workerRead;
     expect(refreshedWorker).toMatchObject({
       agentId: "worker",
       agentDir: "/tmp/configured-worker",
       workspaceDir: "/tmp/workspace-worker",
     });
     expect(refreshedWorker).not.toBe(workerRuntime);
+  });
+
+  it("keeps run admission pending while auth publication replaces its owner", async () => {
+    mocks.configuredAgentIds = ["default"];
+    const config = {};
+    const input = {
+      agentId: "default",
+      agentDir: "/tmp/unused-agent",
+      config,
+      workspaceDir: "/tmp/unused-workspace",
+    };
+    await refreshPreparedModelRuntimeSnapshots(config, { gatewayLifecycle: true });
+    const first = getPreparedModelRuntimeSnapshot(input);
+    const authRefresh = createDeferred<{ agentDir: string; wrote: false }>();
+    mocks.ensureOpenClawModelsJson.mockImplementationOnce(async () => await authRefresh.promise);
+
+    mocks.mutationListener?.({ agentDir: input.agentDir, affectsInheritedStores: false });
+    await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2));
+    const admission = acquireAgentRunPreparedModelRuntime(input);
+    await expectPromisePending(admission);
+
+    authRefresh.resolve({ agentDir: input.agentDir, wrote: false });
+    const lease = await admission;
+    expect(lease.snapshot).not.toBe(first);
+    expect(lease.snapshot).toMatchObject({ agentId: "default", agentDir: input.agentDir });
+    lease.release();
+  });
+
+  it("keeps sibling dispatch reads gated through a newer auth publication", async () => {
+    mocks.configuredAgentIds = ["default", "worker"];
+    const config = {};
+    await refreshPreparedModelRuntimeSnapshots(config, { gatewayLifecycle: true });
+    const defaultRuntime = await loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" });
+    const firstAuthRefresh = createDeferred<{ agentDir: string; wrote: false }>();
+    mocks.ensureOpenClawModelsJson.mockImplementationOnce(
+      async () => await firstAuthRefresh.promise,
+    );
+
+    mocks.mutationListener?.({ affectsInheritedStores: true });
+    await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(4));
+    mocks.mutationListener?.({
+      agentDir: "/tmp/configured-worker",
+      affectsInheritedStores: false,
+    });
+    const defaultRead = loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" });
+    await expectPromisePending(defaultRead);
+
+    firstAuthRefresh.resolve({ agentDir: "/tmp/unused-agent", wrote: false });
+    await expect(defaultRead).resolves.not.toBe(defaultRuntime);
+    expect(mocks.warn).not.toHaveBeenCalled();
+  });
+
+  it("keeps an affected dispatch projection hidden after auth publication fails", async () => {
+    mocks.configuredAgentIds = ["default", "worker"];
+    const config = {};
+    await refreshPreparedModelRuntimeSnapshots(config, { gatewayLifecycle: true });
+    const defaultRuntime = await loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" });
+    const workerRuntime = await loadPublishedGatewayReplyDispatchRuntime({ agentId: "worker" });
+    const authRefresh = createDeferred<{ agentDir: string; wrote: false }>();
+    const refreshError = new Error("worker auth publication failed");
+    mocks.ensureOpenClawModelsJson.mockImplementationOnce(async () => await authRefresh.promise);
+
+    mocks.mutationListener?.({
+      agentDir: "/tmp/configured-worker",
+      affectsInheritedStores: false,
+    });
+    await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(3));
+    const affectedRead = loadPublishedGatewayReplyDispatchRuntime({ agentId: "worker" });
+    await expectPromisePending(affectedRead);
+
+    authRefresh.reject(refreshError);
+    await expect(affectedRead).rejects.toBe(refreshError);
+    await vi.waitFor(() => expect(mocks.warn).toHaveBeenCalledOnce());
+    await expect(loadPublishedGatewayReplyDispatchRuntime({ agentId: "worker" })).rejects.toThrow(
+      "prepared reply dispatch runtime owner was not published for worker",
+    );
+    await expect(loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" })).resolves.toBe(
+      defaultRuntime,
+    );
+    expect(workerRuntime).toBeDefined();
+  });
+
+  it("never admits the old configured snapshot after auth publication fails", async () => {
+    mocks.configuredAgentIds = ["default"];
+    const config = {};
+    const input = {
+      agentId: "default",
+      agentDir: "/tmp/unused-agent",
+      config,
+      workspaceDir: "/tmp/unused-workspace",
+    };
+    await refreshPreparedModelRuntimeSnapshots(config, { gatewayLifecycle: true });
+    const first = getPreparedModelRuntimeSnapshot(input);
+    const authRefresh = createDeferred<{ agentDir: string; wrote: false }>();
+    const refreshError = new Error("default auth publication failed");
+    mocks.ensureOpenClawModelsJson.mockImplementationOnce(async () => await authRefresh.promise);
+
+    mocks.mutationListener?.({ agentDir: input.agentDir, affectsInheritedStores: false });
+    await vi.waitFor(() => expect(mocks.ensureOpenClawModelsJson).toHaveBeenCalledTimes(2));
+    const admission = acquireAgentRunPreparedModelRuntime(input);
+    await expectPromisePending(admission);
+
+    authRefresh.reject(refreshError);
+    await expect(admission).rejects.toBe(refreshError);
+    await vi.waitFor(() => expect(mocks.warn).toHaveBeenCalledOnce());
+    await expect(acquireAgentRunPreparedModelRuntime(input)).rejects.toThrow(
+      "prepared model runtime owner was not committed",
+    );
+    expect(getPreparedModelRuntimeSnapshot(input)).toBeUndefined();
+    expect(first).toBeDefined();
   });
 });

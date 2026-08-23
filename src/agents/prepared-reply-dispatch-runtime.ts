@@ -75,6 +75,7 @@ function removeReplyDispatchRuntimeProjections(
 
 type PreparedReplyDispatchPublicationHost = Readonly<{
   isGatewayLifecycleActive: () => boolean;
+  getConfiguredOwner: (agentId: string) => PreparedModelRuntimeOwner | undefined;
   getPendingReplacement: () => Promise<void> | undefined;
 }>;
 
@@ -120,13 +121,32 @@ export class PreparedReplyDispatchPublicationOwner {
         await replacement;
         continue;
       }
+      const owner = this.host.getConfiguredOwner(agentId);
+      const pendingAuthPublication = owner?.pendingAuthPublication;
+      if (pendingAuthPublication) {
+        await pendingAuthPublication;
+        continue;
+      }
       const matches = this.#publication.runtimes.filter((runtime) => runtime.agentId === agentId);
       if (matches.length !== 1) {
         throw new PreparedModelRuntimeOwnerNotPublishedError(
           `prepared reply dispatch runtime owner was not published for ${agentId}`,
         );
       }
-      return matches[0];
+      const runtime = matches[0]!;
+      if (
+        !owner?.snapshot ||
+        owner.needsRefresh ||
+        owner.pending ||
+        owner.pendingAuthPublication ||
+        owner.pluginGeneration !== runtime.pluginGeneration ||
+        owner.snapshot.modelCatalog !== runtime.modelCatalog
+      ) {
+        throw new PreparedModelRuntimeOwnerNotPublishedError(
+          `prepared reply dispatch runtime owner was not published for ${agentId}`,
+        );
+      }
+      return runtime;
     }
   };
 }

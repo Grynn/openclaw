@@ -155,6 +155,8 @@ export type PreparedModelRuntimeOwner = {
   pluginGeneration?: PreparedModelRuntimePluginGeneration;
   /** Explicit generation admitted for the current publication, when known. */
   pendingPluginGeneration?: PreparedModelRuntimePluginGeneration;
+  /** Auth invalidation gate spanning snapshot rebuild through dispatch projection commit. */
+  pendingAuthPublication?: Promise<void>;
   pending?: Promise<PreparedModelRuntimeSnapshot>;
   buildCompletion?: Promise<void>;
   leaseCount?: number;

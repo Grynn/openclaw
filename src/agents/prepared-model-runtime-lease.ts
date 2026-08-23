@@ -81,6 +81,18 @@ export async function acquirePreparedModelRuntimeLeaseFromOwners(
       }
       continue;
     }
+    if (provenance === "run" && context.getGatewayLifecycleActive() && !options.pluginGeneration) {
+      const pendingAuthPublication = resolveConfiguredOwner(
+        context.owners,
+        input,
+      )?.pendingAuthPublication;
+      if (pendingAuthPublication) {
+        // Auth invalidation is synchronous, but its replacement build starts on the publication
+        // tail. Admission waits for that whole owner transaction instead of failing in either gap.
+        await pendingAuthPublication;
+        continue;
+      }
+    }
     if (provenance === "run" && context.getGatewayLifecycleActive() && options.pluginGeneration) {
       const configuredOwner = resolveConfiguredOwner(context.owners, input);
       if (configuredOwner?.pending) {
