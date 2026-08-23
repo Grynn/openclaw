@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -89,6 +89,31 @@ describe("resolveCurrentOpenClawCliInvocation", () => {
       command: "/usr/bin/node",
       args: ["--enable-source-maps", distEntry, ...commandArgs],
       cwd: repoRoot,
+    });
+  });
+
+  it("pins a symlinked package entry to its immutable dist target", async () => {
+    await withTempDir("openclaw-cli-invocation-symlink-", async (root) => {
+      const packageRoot = path.join(root, "releases", "immutable");
+      const currentRoot = path.join(root, "current");
+      const distEntry = path.join(packageRoot, "dist", "index.js");
+      await mkdir(path.dirname(distEntry), { recursive: true });
+      await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ name: "openclaw" }));
+      await writeFile(distEntry, "export {};\n");
+      await symlink(packageRoot, currentRoot, "dir");
+
+      expect(
+        resolveCurrentOpenClawCliInvocation(commandArgs, {
+          argv1: path.join(currentRoot, "dist", "index.js"),
+          cwd: root,
+          execArgv: ["--enable-source-maps"],
+          execPath: "/usr/bin/node",
+        }),
+      ).toEqual({
+        command: "/usr/bin/node",
+        args: ["--enable-source-maps", distEntry, ...commandArgs],
+        cwd: packageRoot,
+      });
     });
   });
 

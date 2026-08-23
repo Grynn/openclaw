@@ -88,7 +88,14 @@ export function resolveCurrentOpenClawCliInvocation(
 ): OpenClawCliInvocation {
   const execPath = options.execPath ?? process.execPath;
   const execArgv = filterOpenClawChildExecArgv(options.execArgv ?? process.execArgv);
-  const entry = (options.argv1 ?? process.argv[1])?.trim();
+  let entry = (options.argv1 ?? process.argv[1])?.trim();
+  if (entry) {
+    try {
+      entry = fs.realpathSync(entry);
+    } catch {
+      // Missing test and foreign entries retain the existing fallback resolution.
+    }
+  }
   const cwd = options.cwd ?? tryProcessCwd();
   const entryPackageRoot = entry ? resolveOpenClawPackageRootSync({ argv1: entry }) : null;
   const packageRoot =
