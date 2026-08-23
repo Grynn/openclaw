@@ -321,6 +321,58 @@ describe("openclaw launcher", () => {
     expect(result.stderr).toContain("--profile requires a value");
   });
 
+  it("uses the mjs warning filter when a stale js module lacks the contract", async () => {
+    const fixtureRoot = await makeLauncherFixture(fixtureRoots);
+    await fs.writeFile(
+      path.join(fixtureRoot, "dist", "warning-filter.js"),
+      "export const stale = true;\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(fixtureRoot, "dist", "warning-filter.mjs"),
+      'export function installProcessWarningFilter() { process.stdout.write("mjs-filter\\n"); }\n',
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(fixtureRoot, "dist", "entry.js"),
+      'process.stdout.write("entry-loaded\\n");\n',
+      "utf8",
+    );
+
+    const result = spawnSync(process.execPath, [path.join(fixtureRoot, "openclaw.mjs")], {
+      cwd: fixtureRoot,
+      env: launcherEnv(),
+      encoding: "utf8",
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("mjs-filter\nentry-loaded\n");
+  });
+
+  it("uses mjs root help when a stale js module lacks the contract", async () => {
+    const fixtureRoot = await makeLauncherFixture(fixtureRoots);
+    await fs.mkdir(path.join(fixtureRoot, "dist", "cli", "program"), { recursive: true });
+    await fs.writeFile(
+      path.join(fixtureRoot, "dist", "cli", "program", "root-help.js"),
+      "export const stale = true;\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(fixtureRoot, "dist", "cli", "program", "root-help.mjs"),
+      'export function outputRootHelp() { process.stdout.write("mjs-root-help\\n"); }\n',
+      "utf8",
+    );
+
+    const result = spawnSync(process.execPath, [path.join(fixtureRoot, "openclaw.mjs"), "--help"], {
+      cwd: fixtureRoot,
+      env: launcherEnv(),
+      encoding: "utf8",
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("mjs-root-help\n");
+  });
+
   it.runIf(process.env.OPENCLAW_TEST_BUN_LAUNCHER === "1" && hasBunRuntime())(
     "gates the real Bun runtime on node:sqlite availability",
     async () => {

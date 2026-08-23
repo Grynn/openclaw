@@ -23,6 +23,8 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PACKAGE_ROOT = join(scriptDir, "..");
 const DISABLE_POSTINSTALL_ENV = "OPENCLAW_DISABLE_BUNDLED_PLUGIN_POSTINSTALL";
 const DIST_INVENTORY_PATH = "dist/postinstall-inventory.json";
+const PLUGIN_REGISTRY_MIGRATION_DIST_PATH =
+  "dist/commands/doctor/shared/plugin-registry-migration.js";
 // One budget covers all three prune walks (legacy-deps prepass, file listing,
 // empty-dir sweep). npm upgrades transiently hold old+new content-hashed dist
 // files, so a real upgrade scan totals ~24k entries today (2026.6.x); keep ~4x
@@ -563,8 +565,13 @@ async function importInstalledDistModule(params, distPath) {
   if (!pathExists(modulePath)) {
     return null;
   }
-  const importModule = params.importModule ?? ((specifier) => import(specifier));
-  return await importModule(resolveDistModuleUrl(packageRoot, distPath));
+  if (params.importModule) {
+    return await params.importModule(resolveDistModuleUrl(packageRoot, distPath));
+  }
+  if (packageRoot !== DEFAULT_PACKAGE_ROOT || distPath !== PLUGIN_REGISTRY_MIGRATION_DIST_PATH) {
+    throw new Error(`unsupported installed dist import without an explicit importer: ${distPath}`);
+  }
+  return await import("../dist/commands/doctor/shared/plugin-registry-migration.js");
 }
 
 export async function runPluginRegistryPostinstallMigration(params = {}) {
@@ -582,7 +589,7 @@ export async function runPluginRegistryPostinstallMigration(params = {}) {
   try {
     const migrationModule = await importInstalledDistModule(
       { ...params, existsSync: pathExists },
-      "dist/commands/doctor/shared/plugin-registry-migration.js",
+      PLUGIN_REGISTRY_MIGRATION_DIST_PATH,
     );
     if (!migrationModule) {
       return { status: "skipped", reason: "missing-dist-entry" };

@@ -1,9 +1,6 @@
 // Provider auth runtime helpers implement OAuth loopback, token exchange, and auth persistence.
 import crypto from "node:crypto";
-import fs from "node:fs";
 import { createServer } from "node:http";
-import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { ensureAuthProfileStore } from "../agents/auth-profiles/store.js";
 import { resolveApiKeyForProviderCore as resolveModelApiKeyForProvider } from "../agents/model-auth.js";
@@ -268,27 +265,9 @@ type ResolveApiKeyForProvider =
 type GetRuntimeAuthForModel =
   typeof import("../plugins/runtime/runtime-model-auth.runtime.js").getRuntimeAuthForModelCore;
 type RuntimeModelAuthModule = typeof import("../plugins/runtime/runtime-model-auth.runtime.js");
-const RUNTIME_MODEL_AUTH_CANDIDATES = [
-  "./runtime-model-auth.runtime",
-  "../plugins/runtime/runtime-model-auth.runtime",
-] as const;
-const RUNTIME_MODEL_AUTH_EXTENSIONS = [".js", ".ts", ".mjs", ".mts", ".cjs", ".cts"] as const;
-
-function resolveRuntimeModelAuthModuleHref(): string {
-  const baseDir = path.dirname(fileURLToPath(import.meta.url));
-  for (const relativeBase of RUNTIME_MODEL_AUTH_CANDIDATES) {
-    for (const ext of RUNTIME_MODEL_AUTH_EXTENSIONS) {
-      const candidate = path.resolve(baseDir, `${relativeBase}${ext}`);
-      if (fs.existsSync(candidate)) {
-        return pathToFileURL(candidate).href;
-      }
-    }
-  }
-  throw new Error(`Unable to resolve runtime model auth module from ${import.meta.url}`);
-}
 
 async function loadRuntimeModelAuthModule(): Promise<RuntimeModelAuthModule> {
-  return (await import(resolveRuntimeModelAuthModuleHref())) as RuntimeModelAuthModule;
+  return await import("../plugins/runtime/runtime-model-auth.runtime.js");
 }
 
 /**
