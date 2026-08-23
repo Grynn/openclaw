@@ -173,6 +173,7 @@ describe("tsdown config", () => {
       "agents/auth-profiles.runtime",
       "agents/model-catalog.runtime",
       "agents/models-config.runtime",
+      "provider-model-normalization-provider.runtime",
       "cli/gateway-lifecycle.runtime",
       "agents/compaction-planning.worker",
       "agents/model-provider-auth.worker",
@@ -193,6 +194,8 @@ describe("tsdown config", () => {
       "plugins/hook-runner-global",
       "plugins/provider-discovery.runtime",
       "plugins/provider-runtime.runtime",
+      "current-plugin-metadata-snapshot",
+      "plugin-metadata-snapshot",
       "plugins/runtime/index",
       "plugins/synthetic-auth.runtime",
       "web-fetch/runtime",
@@ -228,6 +231,18 @@ describe("tsdown config", () => {
     expect(entrySources(distGraph)["cli/gateway-lifecycle.runtime"]).toBe(
       "src/cli/gateway-cli/lifecycle.runtime.ts",
     );
+  });
+
+  it("keeps cold provider and plugin metadata readers behind stable dist entries", () => {
+    const sources = entrySources(requireUnifiedDistGraph());
+
+    expect(sources["provider-model-normalization-provider.runtime"]).toBe(
+      "src/agents/provider-model-normalization-provider.runtime.ts",
+    );
+    expect(sources["current-plugin-metadata-snapshot"]).toBe(
+      "src/plugins/current-plugin-metadata-snapshot.ts",
+    );
+    expect(sources["plugin-metadata-snapshot"]).toBe("src/plugins/plugin-metadata-snapshot.ts");
   });
 
   it("keeps reply dispatcher lazy runtime behind one root stable dist entry", () => {
@@ -372,6 +387,34 @@ describe("tsdown config", () => {
     expect(externalize("sharp", undefined, false)).toBe(true);
   });
 
+  it("externalizes fs-safe from normal builds while keeping the worker deploy bundled", () => {
+    const unifiedGraph = requireUnifiedDistGraph();
+    const neverBundle = unifiedGraph.deps?.neverBundle;
+    const alwaysBundle = unifiedGraph.deps?.alwaysBundle;
+    const external = unifiedGraph.inputOptions?.({})?.external;
+    const workerGraph = asConfigArray(tsdownConfig).find(
+      (config) => entrySources(config)["worker/worker"] === "src/worker/worker-deploy-entry.ts",
+    );
+    const workerAlwaysBundle = workerGraph?.deps?.alwaysBundle;
+
+    if (
+      typeof neverBundle !== "function" ||
+      typeof alwaysBundle !== "function" ||
+      typeof external !== "function" ||
+      typeof workerAlwaysBundle !== "function"
+    ) {
+      throw new Error("expected fs-safe dependency predicates");
+    }
+
+    expect(neverBundle("@openclaw/fs-safe")).toBe(true);
+    expect(neverBundle("@openclaw/fs-safe/path")).toBe(true);
+    expect(alwaysBundle("@openclaw/fs-safe")).toBe(false);
+    expect(alwaysBundle("@openclaw/fs-safe/path")).toBe(false);
+    expect(external("@openclaw/fs-safe/config", undefined, false)).toBe(true);
+    expect(workerAlwaysBundle("@openclaw/fs-safe")).toBe(true);
+    expect(workerAlwaysBundle("@openclaw/fs-safe/temp")).toBe(true);
+  });
+
   it("always bundles plugin SDK package-local runtime dependencies", () => {
     const unifiedGraph = requireUnifiedDistGraph();
     const alwaysBundle = unifiedGraph.deps?.alwaysBundle;
@@ -380,8 +423,6 @@ describe("tsdown config", () => {
       throw new Error("expected unified graph alwaysBundle predicate");
     }
 
-    expect(alwaysBundle("@openclaw/fs-safe")).toBe(true);
-    expect(alwaysBundle("@openclaw/fs-safe/path")).toBe(true);
     expect(alwaysBundle("openclaw/plugin-sdk/ssrf-runtime-internal")).toBe(true);
     expect(alwaysBundle("openclaw/plugin-sdk/ssrf-runtime")).toBe(false);
     expect(alwaysBundle("zod")).toBe(true);

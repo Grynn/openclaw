@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   collectCliBootstrapExternalImportErrors,
   collectGatewayRunChunkBudgetErrors,
+  collectStableRuntimeSidecarArtifactErrors,
   collectWorkerDeployArtifactErrors,
   listStaticImportSpecifiers,
 } from "../../scripts/check-cli-bootstrap-imports.mts";
@@ -76,6 +77,25 @@ describe("check-cli-bootstrap-imports", () => {
     expect(collectGatewayRunChunkBudgetErrors({ rootDir: root })).toStrictEqual([]);
   });
 
+  it("allows pinned fs-safe package imports while rejecting lookalike packages", () => {
+    const root = makeTempRoot();
+    writeFixture(
+      root,
+      "dist/entry.js",
+      `import "@openclaw/fs-safe/config";\nimport "./cli/run-main.js";\n`,
+    );
+    writeFixture(
+      root,
+      "dist/cli/run-main.js",
+      `import "@openclaw/fs-safe";\nimport "@openclaw/fs-safe-extra";\n`,
+    );
+    writeGatewayRunChunk(root);
+
+    expect(collectCliBootstrapExternalImportErrors({ rootDir: root })).toEqual([
+      'CLI bootstrap static graph imports external package "@openclaw/fs-safe-extra" from dist/cli/run-main.js.',
+    ]);
+  });
+
   it("reports external packages in the static bootstrap graph", () => {
     const root = makeTempRoot();
     writeFixture(root, "dist/entry.js", `import "./cli/run-main.js";\n`);
@@ -126,6 +146,35 @@ describe("check-cli-bootstrap-imports", () => {
       collectGatewayRunChunkBudgetErrors({ rootDir: root, gatewayRunChunkMaxBytes: 50 }),
     ).toEqual([
       `Gateway run chunk dist/run-gateway.js is ${gatewayRunChunkBytes} bytes, above budget 50 bytes.`,
+    ]);
+  });
+
+  it("requires every stable lazy-runtime sidecar as a regular build artifact", () => {
+    const root = makeTempRoot();
+    writeFixture(root, "package.json", '{"type":"module"}\n');
+    writeFixture(root, "dist/current-plugin-metadata-snapshot.js", "export const loaded = true;\n");
+    writeFixture(root, "dist/facade-activation-check.runtime.js", "export const loaded = true;\n");
+    writeFixture(root, "dist/plugin-metadata-snapshot.js", "export const loaded = true;\n");
+    writeFixture(
+      root,
+      "dist/provider-model-normalization-provider.runtime.js",
+      "export const loaded = true;\n",
+    );
+    writeFixture(root, "dist/task-registry-control.runtime.js", "export const loaded = true;\n");
+
+    expect(collectStableRuntimeSidecarArtifactErrors({ rootDir: root })).toEqual([]);
+    rmSync(join(root, "dist", "provider-model-normalization-provider.runtime.js"));
+    expect(collectStableRuntimeSidecarArtifactErrors({ rootDir: root })).toEqual([
+      "Stable runtime sidecar dist/provider-model-normalization-provider.runtime.js is missing. Run pnpm build first.",
+    ]);
+
+    writeFixture(
+      root,
+      "dist/provider-model-normalization-provider.runtime.js",
+      'export { missing } from "./missing.js";\n',
+    );
+    expect(collectStableRuntimeSidecarArtifactErrors({ rootDir: root })).toEqual([
+      "Stable runtime sidecar dist/provider-model-normalization-provider.runtime.js failed its isolated cold import.",
     ]);
   });
 

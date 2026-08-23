@@ -282,6 +282,7 @@ const explicitNeverBundleDependencies = [
   "@larksuiteoapi/node-sdk",
   "@matrix-org/matrix-sdk-crypto-nodejs",
   "@openclaw/ai",
+  "@openclaw/fs-safe",
   "@vitest/expect",
   "jimp",
   "matrix-js-sdk",
@@ -304,8 +305,6 @@ function shouldNeverBundleDeclarationDependency(id: string): boolean {
 function shouldAlwaysBundleDependency(id: string): boolean {
   return (
     id === "openclaw/plugin-sdk/ssrf-runtime-internal" ||
-    id === "@openclaw/fs-safe" ||
-    id.startsWith("@openclaw/fs-safe/") ||
     id === "@openclaw/normalization-core" ||
     id.startsWith("@openclaw/normalization-core/") ||
     id === "@openclaw/retry" ||
@@ -355,6 +354,8 @@ function buildCoreDistEntries(): Record<string, string> {
     "agents/auth-profiles.runtime": "src/agents/auth-profiles.runtime.ts",
     "agents/model-catalog.runtime": "src/agents/model-catalog.runtime.ts",
     "agents/models-config.runtime": "src/agents/models-config.runtime.ts",
+    "provider-model-normalization-provider.runtime":
+      "src/agents/provider-model-normalization-provider.runtime.ts",
     "agents/code-mode.worker": "src/agents/code-mode.worker.ts",
     "agents/compaction-planning.worker": "src/agents/compaction-planning.worker.ts",
     "agents/model-provider-auth.worker": "src/agents/model-provider-auth.worker.ts",
@@ -390,6 +391,8 @@ function buildCoreDistEntries(): Record<string, string> {
     "infra/boundary-file-read": "src/infra/boundary-file-read.ts",
     "plugins/provider-discovery.runtime": "src/plugins/provider-discovery.runtime.ts",
     "plugins/provider-runtime.runtime": "src/plugins/provider-runtime.runtime.ts",
+    "current-plugin-metadata-snapshot": "src/plugins/current-plugin-metadata-snapshot.ts",
+    "plugin-metadata-snapshot": "src/plugins/plugin-metadata-snapshot.ts",
     "web-fetch/runtime": "src/web-fetch/runtime.ts",
     "plugins/public-surface-runtime": "src/plugins/public-surface-runtime.ts",
     "plugins/loader": "src/plugins/loader.ts",

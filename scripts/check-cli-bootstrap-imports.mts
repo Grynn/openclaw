@@ -1,17 +1,25 @@
 #!/usr/bin/env node
 
 // Checks CLI bootstrap chunks for forbidden eager imports and size regressions.
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import module from "node:module";
+import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { parse, type Node as AcornNode } from "acorn";
 import {
   WORKER_BUNDLE_ENTRY_PATH,
   WORKER_BUNDLE_RSYNC_RECEIVER_PATH,
 } from "../src/shared/worker-bundle-hash.js";
 import { isDirectRunUrl } from "./lib/direct-run.mjs";
+import { STABLE_RUNTIME_SIDECAR_PATHS } from "./lib/stable-runtime-sidecars.mts";
 
 const DEFAULT_ENTRYPOINTS = ["dist/entry.js", "dist/cli/run-main.js"];
+// fs-safe owns platform-native asset resolution inside its installed package.
+// Keeping it external prevents flattened chunks from resolving those assets
+// relative to dist/ while the exact pinned dependency remains release-gated.
+const CLI_BOOTSTRAP_ALLOWED_EXTERNAL_PACKAGES = ["@openclaw/fs-safe"] as const;
 const WORKER_DEPLOY_ENTRYPOINTS = [
   `dist/worker/${WORKER_BUNDLE_ENTRY_PATH}`,
   `dist/worker/${WORKER_BUNDLE_RSYNC_RECEIVER_PATH}`,
@@ -40,6 +48,8 @@ type CliBootstrapCheckParams = {
   gatewayRunChunkMaxBytes?: number;
   fs?: typeof fs;
   logger?: { error(message: string): void };
+  nodePath?: string;
+  spawnSync?: typeof spawnSync;
 };
 
 function isBuiltinSpecifier(specifier: string) {
@@ -48,6 +58,12 @@ function isBuiltinSpecifier(specifier: string) {
 
 function isRelativeSpecifier(specifier: string) {
   return specifier.startsWith("./") || specifier.startsWith("../") || specifier.startsWith("/");
+}
+
+function isAllowedCliBootstrapExternalSpecifier(specifier: string): boolean {
+  return CLI_BOOTSTRAP_ALLOWED_EXTERNAL_PACKAGES.some(
+    (packageName) => specifier === packageName || specifier.startsWith(`${packageName}/`),
+  );
 }
 
 function resolveRelativeImport(importer: string, specifier: string, fsImpl: typeof fs = fs) {
@@ -242,15 +258,13 @@ export function collectCliBootstrapExternalImportErrors(params: CliBootstrapChec
   const rootDir = params.rootDir ?? process.cwd();
   const entrypoints = params.entrypoints ?? DEFAULT_ENTRYPOINTS;
   const fsImpl = params.fs ?? fs;
-  const errors = walkStaticImportGraph(
-    fsImpl,
-    rootDir,
-    entrypoints,
-    (filePath, specifier) =>
-      `CLI bootstrap static graph imports external package "${specifier}" from ${path.relative(
-        rootDir,
-        filePath,
-      )}.`,
+  const errors = walkStaticImportGraph(fsImpl, rootDir, entrypoints, (filePath, specifier) =>
+    isAllowedCliBootstrapExternalSpecifier(specifier)
+      ? ""
+      : `CLI bootstrap static graph imports external package "${specifier}" from ${path.relative(
+          rootDir,
+          filePath,
+        )}.`,
   );
 
   return errors.toSorted((left, right) => left.localeCompare(right));
@@ -425,6 +439,57 @@ export function collectWorkerDeployArtifactErrors(params: CliBootstrapCheckParam
   return errors.toSorted((left, right) => left.localeCompare(right));
 }
 
+/** Collects missing or non-regular stable lazy-runtime entry errors. */
+export function collectStableRuntimeSidecarArtifactErrors(params: CliBootstrapCheckParams = {}) {
+  const rootDir = params.rootDir ?? process.cwd();
+  const fsImpl = params.fs ?? fs;
+  const spawn = params.spawnSync ?? spawnSync;
+  const errors: string[] = [];
+  const scratch = fsImpl.mkdtempSync(path.join(os.tmpdir(), "openclaw-sidecar-smoke-"));
+  try {
+    for (const relativePath of STABLE_RUNTIME_SIDECAR_PATHS) {
+      const entrypoint = path.resolve(rootDir, relativePath);
+      try {
+        const stats = fsImpl.lstatSync(entrypoint);
+        if (stats.isSymbolicLink() || !stats.isFile()) {
+          errors.push(`Stable runtime sidecar ${relativePath} must be a regular file.`);
+          continue;
+        }
+      } catch {
+        errors.push(`Stable runtime sidecar ${relativePath} is missing. Run pnpm build first.`);
+        continue;
+      }
+      const result = spawn(
+        params.nodePath ?? process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          `const loaded = await import(${JSON.stringify(pathToFileURL(entrypoint).href)}); if (Object.keys(loaded).length === 0) throw new Error("sidecar has no exports");`,
+        ],
+        {
+          cwd: rootDir,
+          encoding: "utf8",
+          env: {
+            HOME: scratch,
+            NODE_DISABLE_COMPILE_CACHE: "1",
+            OPENCLAW_STATE_DIR: path.join(scratch, "state"),
+            PATH: process.env.PATH,
+            SystemRoot: process.env.SystemRoot,
+            USERPROFILE: scratch,
+          },
+          timeout: 30_000,
+        },
+      );
+      if (result.error || result.signal !== null || result.status !== 0 || result.stderr !== "") {
+        errors.push(`Stable runtime sidecar ${relativePath} failed its isolated cold import.`);
+      }
+    }
+  } finally {
+    fsImpl.rmSync(scratch, { force: true, recursive: true });
+  }
+  return errors;
+}
+
 /**
  * Runs the CLI bootstrap import, chunk-budget, and worker deploy checks.
  */
@@ -432,6 +497,7 @@ export function checkCliBootstrapExternalImports(params: CliBootstrapCheckParams
   const errors = [
     ...collectCliBootstrapExternalImportErrors(params),
     ...collectGatewayRunChunkBudgetErrors(params),
+    ...collectStableRuntimeSidecarArtifactErrors(params),
     ...collectWorkerDeployArtifactErrors(params),
   ];
   if (errors.length === 0) {

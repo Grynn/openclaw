@@ -17,6 +17,7 @@ import {
   listPackagedPrivatePluginSdkRuntimeArtifacts,
   listUnpackagedPrivatePluginSdkDistArtifacts,
 } from "../scripts/lib/plugin-sdk-entries.mts";
+import { STABLE_RUNTIME_SIDECAR_PATHS } from "../scripts/lib/stable-runtime-sidecars.mts";
 import {
   WORKSPACE_TEMPLATE_PACK_PATHS,
   createWorkspaceBootstrapSmokeEnv,
@@ -720,7 +721,7 @@ describe("collectMissingPackPaths", () => {
       "dist/config/sessions/session-transcript-reconcile.worker.js",
       "dist/state/openclaw-database-verify.worker.js",
       "dist/system-agent/setup-inference-detection.worker.js",
-      "dist/task-registry-control.runtime.js",
+      ...STABLE_RUNTIME_SIDECAR_PATHS,
       "dist/telegram-ingress-worker.runtime.js",
       bundledDistPluginFile("telegram", "runtime-api.js"),
       bundledDistPluginFile("telegram", "openclaw.plugin.json"),
@@ -759,7 +760,7 @@ describe("collectMissingPackPaths", () => {
         "dist/config/sessions/session-transcript-reconcile.worker.js",
         "dist/state/openclaw-database-verify.worker.js",
         "dist/system-agent/setup-inference-detection.worker.js",
-        "dist/task-registry-control.runtime.js",
+        ...STABLE_RUNTIME_SIDECAR_PATHS,
         "dist/telegram-ingress-worker.runtime.js",
         "dist/build-info.json",
         "dist/channel-catalog.json",

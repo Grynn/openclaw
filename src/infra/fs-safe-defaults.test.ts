@@ -50,6 +50,15 @@ describe("fs-safe defaults", () => {
     expect(configureFsSafeNative).not.toHaveBeenCalled();
   });
 
+  it("forces the native helper off in worker deploy builds despite env overrides", async () => {
+    vi.stubGlobal("WORKER_DEPLOY_BUILD", true);
+    process.env.FS_SAFE_NATIVE_MODE = "require";
+
+    await importDefaults();
+
+    expect(configureFsSafeNative).toHaveBeenCalledWith({ mode: "off" });
+  });
+
   it("honors case-insensitive mode overrides on Windows", async () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
     process.env.openclaw_fs_safe_native_mode = "require";

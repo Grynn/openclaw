@@ -7,16 +7,17 @@ import { createRequire } from "node:module";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
 
 type ProviderRuntimeModule = Pick<
-  typeof import("../plugins/provider-runtime.js"),
+  typeof import("./provider-model-normalization-provider.runtime.js"),
   "normalizeProviderModelIdWithPlugin"
 >;
 
 const require = createRequire(import.meta.url);
-// Built code loads .js while source/test paths may still resolve .ts. Try both
-// once, then cache the absence to avoid repeated require work on hot paths.
+// The unified build flattens shared chunks into dist/, so this adjacent stable
+// entry resolves from both source and packaged artifacts. Try the source
+// extension only for source/jiti execution.
 const PROVIDER_RUNTIME_CANDIDATES = [
-  "../plugins/provider-runtime.js",
-  "../plugins/provider-runtime.ts",
+  "./provider-model-normalization-provider.runtime.js",
+  "./provider-model-normalization-provider.runtime.ts",
 ] as const;
 
 let providerRuntimeModule: ProviderRuntimeModule | undefined;

@@ -29,6 +29,7 @@ import {
   listPluginSdkDeclarationOutputs,
   pluginSdkEntrypoints,
 } from "../../scripts/lib/plugin-sdk-entries.mts";
+import { STABLE_RUNTIME_SIDECAR_PATHS } from "../../scripts/lib/stable-runtime-sidecars.mts";
 
 function getBuildAllStep(label: string) {
   const step = BUILD_ALL_STEPS.find((entry) => entry.label === label);
@@ -556,7 +557,10 @@ describe("resolveBuildAllSteps", () => {
     expect(productionOutputs).toContain("dist/plugin-sdk/provider-auth-runtime.d.ts");
     expect(productionOutputs).not.toContain("dist/plugin-sdk/test-fixtures.d.ts");
     expect(privateQaOutputs).toContain("dist/plugin-sdk/test-fixtures.d.ts");
-    expect(unified.cache?.requiredCacheHitOutputs).toEqual(listPluginSdkDistArtifacts());
+    expect(unified.cache?.requiredCacheHitOutputs).toEqual([
+      ...listPluginSdkDistArtifacts(),
+      ...STABLE_RUNTIME_SIDECAR_PATHS,
+    ]);
   });
 
   it("uses a runtime artifact plus plugin SDK export profile for ci artifacts", () => {

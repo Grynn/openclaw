@@ -15,6 +15,7 @@ import {
   listPluginSdkDeclarationOutputs,
   pluginSdkEntrypoints,
 } from "./lib/plugin-sdk-entries.mts";
+import { STABLE_RUNTIME_SIDECAR_PATHS } from "./lib/stable-runtime-sidecars.mts";
 import {
   TSDOWN_PACKAGE_CONFIG_GROUP,
   TSDOWN_UNIFIED_CONFIG_GROUP,
@@ -244,7 +245,7 @@ export const BUILD_ALL_STEPS: BuildAllStep[] = [
           : listPluginSdkDeclarationOutputs(),
       // Shared declaration snapshots cannot make a replaced live dist complete.
       // Rebuild the unified unit when its package artifacts are no longer intact.
-      requiredCacheHitOutputs: listPluginSdkDistArtifacts(),
+      requiredCacheHitOutputs: [...listPluginSdkDistArtifacts(), ...STABLE_RUNTIME_SIDECAR_PATHS],
       restore: "always",
       runOnHit: {
         env: { OPENCLAW_RUN_NODE_SKIP_DTS_BUILD: "1" },
