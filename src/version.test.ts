@@ -52,14 +52,17 @@ function expectVersionMetadataToBeMissing(moduleUrl: string) {
 }
 
 describe("version resolution", () => {
-  it("resolves package version from nested dist/plugin-sdk module URL", async () => {
-    await withVersionFixtureDir(async (root) => {
-      await writeJsonFixture(root, "package.json", { name: "openclaw", version: "1.2.3" });
-      const moduleUrl = await ensureModuleFixture(root);
-      expect(readVersionFromPackageJsonForModuleUrl(moduleUrl)).toBe("1.2.3");
-      expect(resolveVersionFromModuleUrl(moduleUrl)).toBe("1.2.3");
-    });
-  });
+  it.each(["dist/plugin-sdk/core.js", "src/plugin-sdk/core.js"])(
+    "resolves package version from nested %s module URL",
+    async (relativePath) => {
+      await withVersionFixtureDir(async (root) => {
+        await writeJsonFixture(root, "package.json", { name: "openclaw", version: "1.2.3" });
+        const moduleUrl = await ensureModuleFixture(root, relativePath);
+        expect(readVersionFromPackageJsonForModuleUrl(moduleUrl)).toBe("1.2.3");
+        expect(resolveVersionFromModuleUrl(moduleUrl)).toBe("1.2.3");
+      });
+    },
+  );
 
   it("ignores unrelated nearby package.json files", async () => {
     await withVersionFixtureDir(async (root) => {
@@ -73,9 +76,38 @@ describe("version resolution", () => {
     });
   });
 
+  it("reads version and build provenance only from the owning package root", async () => {
+    await withVersionFixtureDir(async (root) => {
+      await writeJsonFixture(root, "package.json", { name: "openclaw", version: "1.2.3" });
+      await writeJsonFixture(root, "dist/build-info.json", {
+        version: "4.5.6",
+        buildId: "canonical-build",
+      });
+      await writeJsonFixture(root, "dist/plugin-sdk/package.json", {
+        name: "openclaw",
+        version: "9.9.9",
+      });
+      await writeJsonFixture(root, "dist/plugin-sdk/internal/package.json", {
+        name: "openclaw",
+        version: "8.8.8",
+      });
+      await writeJsonFixture(root, "dist/plugin-sdk/build-info.json", {
+        version: "9.9.9",
+        buildId: "decoy-build",
+      });
+      const moduleUrl = await ensureModuleFixture(root, "dist/plugin-sdk/internal/core.js");
+
+      expect(readVersionFromPackageJsonForModuleUrl(moduleUrl)).toBe("1.2.3");
+      expect(readVersionFromBuildInfoForModuleUrl(moduleUrl)).toBe("4.5.6");
+      expect(readBuildIdFromBuildInfoForModuleUrl(moduleUrl)).toBe("canonical-build");
+      expect(resolveVersionFromModuleUrl(moduleUrl)).toBe("1.2.3");
+    });
+  });
+
   it("falls back to build-info when package metadata is unavailable", async () => {
     await withVersionFixtureDir(async (root) => {
-      await writeJsonFixture(root, "build-info.json", { version: "4.5.6" });
+      await writeJsonFixture(root, "package.json", { name: "openclaw" });
+      await writeJsonFixture(root, "dist/build-info.json", { version: "4.5.6" });
       const moduleUrl = await ensureModuleFixture(root);
       expect(readVersionFromPackageJsonForModuleUrl(moduleUrl)).toBeNull();
       expect(readVersionFromBuildInfoForModuleUrl(moduleUrl)).toBe("4.5.6");
@@ -86,15 +118,45 @@ describe("version resolution", () => {
   it("reads the bounded immutable build id from generated provenance", async () => {
     await withVersionFixtureDir(async (root) => {
       const moduleUrl = await ensureModuleFixture(root);
-      await writeJsonFixture(root, "build-info.json", { buildId: "build-a" });
+      await writeJsonFixture(root, "package.json", { name: "openclaw" });
+      await writeJsonFixture(root, "dist/build-info.json", { buildId: "build-a" });
       expect(readBuildIdFromBuildInfoForModuleUrl(moduleUrl)).toBe("build-a");
     });
     await withVersionFixtureDir(async (root) => {
       const moduleUrl = await ensureModuleFixture(root);
-      await writeJsonFixture(root, "build-info.json", { buildId: "x".repeat(97) });
+      await writeJsonFixture(root, "package.json", { name: "openclaw" });
+      await writeJsonFixture(root, "dist/build-info.json", { buildId: "x".repeat(97) });
       expect(readBuildIdFromBuildInfoForModuleUrl(moduleUrl)).toBeNull();
     });
   });
+
+  it.each([
+    { name: "missing", packageJson: undefined },
+    { name: "invalid", packageJson: "{ invalid" },
+  ])(
+    "rejects an outer package decoy when the owning manifest is $name",
+    async ({ packageJson }) => {
+      await withVersionFixtureDir(async (outerRoot) => {
+        const innerRoot = path.join(outerRoot, "nested-package");
+        await writeJsonFixture(outerRoot, "package.json", {
+          name: "openclaw",
+          version: "9.9.9",
+        });
+        await writeJsonFixture(outerRoot, "build-info.json", {
+          version: "9.9.9",
+          buildId: "decoy-build",
+        });
+        if (packageJson !== undefined) {
+          await fs.mkdir(innerRoot, { recursive: true });
+          await fs.writeFile(path.join(innerRoot, "package.json"), packageJson, "utf-8");
+        }
+        const moduleUrl = await ensureModuleFixture(innerRoot, "dist/version.js");
+
+        expectVersionMetadataToBeMissing(moduleUrl);
+        expect(readBuildIdFromBuildInfoForModuleUrl(moduleUrl)).toBeNull();
+      });
+    },
+  );
 
   it("returns null when no version metadata exists", async () => {
     await withVersionFixtureDir(async (root) => {
@@ -103,12 +165,36 @@ describe("version resolution", () => {
     });
   });
 
-  it("ignores non-openclaw package and blank build-info versions", async () => {
+  it("keeps missing canonical build-info fail-closed for the process", async () => {
     await withVersionFixtureDir(async (root) => {
-      await writeJsonFixture(root, "package.json", { name: "other-package", version: "9.9.9" });
-      await writeJsonFixture(root, "build-info.json", { version: "  " });
+      await writeJsonFixture(root, "package.json", { name: "openclaw" });
+      expect(readVersionFromBuildInfoForModuleUrl(await ensureModuleFixture(root))).toBeNull();
+
+      await writeJsonFixture(root, "dist/build-info.json", { version: "4.5.6" });
+      const secondModuleUrl = await ensureModuleFixture(root, "dist/other.js");
+      expect(readVersionFromBuildInfoForModuleUrl(secondModuleUrl)).toBeNull();
+    });
+  });
+
+  it("rejects blank canonical build-info versions", async () => {
+    await withVersionFixtureDir(async (root) => {
+      await writeJsonFixture(root, "package.json", { name: "openclaw" });
+      await writeJsonFixture(root, "dist/build-info.json", { version: "  " });
       const moduleUrl = await ensureModuleFixture(root);
       expectVersionMetadataToBeMissing(moduleUrl);
+    });
+  });
+
+  it("rejects metadata owned by a non-openclaw package", async () => {
+    await withVersionFixtureDir(async (root) => {
+      await writeJsonFixture(root, "package.json", { name: "other-package", version: "9.9.9" });
+      await writeJsonFixture(root, "dist/build-info.json", {
+        version: "9.9.9",
+        buildId: "other-build",
+      });
+      const moduleUrl = await ensureModuleFixture(root);
+      expectVersionMetadataToBeMissing(moduleUrl);
+      expect(readBuildIdFromBuildInfoForModuleUrl(moduleUrl)).toBeNull();
     });
   });
 

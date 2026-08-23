@@ -173,6 +173,44 @@ describe("git commit resolution", () => {
     expect(readPackageJsonCommit.mock.calls.length).toBe(firstCallRequires);
   });
 
+  it("reads packaged commit metadata from the owning canonical files", async () => {
+    const temp = await makeTempDir("git-commit-packaged-metadata");
+    const packageRoot = path.join(temp, "openclaw");
+    await fs.mkdir(path.join(packageRoot, "dist", "nested"), { recursive: true });
+    await fs.writeFile(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({ name: "openclaw", gitHead: "badc0ffee1234567890" }),
+      "utf-8",
+    );
+    await fs.writeFile(
+      path.join(packageRoot, "dist", "build-info.json"),
+      JSON.stringify({ commit: "deadbeef1234567890" }),
+      "utf-8",
+    );
+    const moduleUrl = pathToFileURL(path.join(packageRoot, "dist", "nested", "entry.js")).href;
+
+    expect(resolveCommitHash({ moduleUrl, env: {} })).toBe("deadbee");
+  });
+
+  it("falls back to the owning package gitHead without crossing its boundary", async () => {
+    const temp = await makeTempDir("git-commit-packaged-githead");
+    await fs.writeFile(
+      path.join(temp, "package.json"),
+      JSON.stringify({ name: "openclaw", gitHead: "abcdef0123456789" }),
+      "utf-8",
+    );
+    const packageRoot = path.join(temp, "nested-package");
+    await fs.mkdir(path.join(packageRoot, "dist"), { recursive: true });
+    await fs.writeFile(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({ name: "openclaw", gitHead: "1234567890abcdef" }),
+      "utf-8",
+    );
+    const moduleUrl = pathToFileURL(path.join(packageRoot, "dist", "entry.js")).href;
+
+    expect(resolveCommitHash({ moduleUrl, env: {} })).toBe("1234567");
+  });
+
   it("treats invalid moduleUrl inputs as a fallback hint instead of throwing", async () => {
     const temp = await makeTempDir("git-commit-invalid-module-url");
     const repoRoot = path.join(temp, "openclaw");

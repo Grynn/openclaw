@@ -1,6 +1,5 @@
 // Resolves git commit metadata for build/runtime diagnostics.
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
@@ -8,6 +7,10 @@ import { isMissingPathError } from "./errors.js";
 import { readFileWindowFullySync } from "./file-read.js";
 import { resolveGitHeadPath } from "./git-root.js";
 import { pruneMapToMaxSize } from "./map-size.js";
+import {
+  readOpenClawBuildInfoForModuleUrl,
+  readOpenClawPackageJsonForModuleUrl,
+} from "./openclaw-package-metadata.js";
 import { resolveOpenClawPackageRootSync } from "./openclaw-root.js";
 
 const formatCommit = (value?: string | null) => {
@@ -168,43 +171,29 @@ const resolveRefPath = (refsBase: string, ref: string) => {
   return resolved;
 };
 
-const readCommitFromPackageJson = () => {
+const readCommitFromPackageJson = (moduleUrl: string | undefined) => {
   if (typeof WORKER_DEPLOY_BUILD === "boolean" && WORKER_DEPLOY_BUILD) {
     return null;
   }
-  try {
-    const require = createRequire(import.meta.url);
-    const pkg = require("../../package.json") as {
-      gitHead?: string;
-      githead?: string;
-    };
-    return formatCommit(pkg.gitHead ?? pkg.githead ?? null);
-  } catch {
+  if (!moduleUrl) {
     return null;
   }
+  const pkg = readOpenClawPackageJsonForModuleUrl(moduleUrl);
+  return formatCommit(
+    typeof pkg?.gitHead === "string"
+      ? pkg.gitHead
+      : typeof pkg?.githead === "string"
+        ? pkg.githead
+        : null,
+  );
 };
 
-const readCommitFromBuildInfo = () => {
-  try {
-    const require = createRequire(import.meta.url);
-    const candidates = ["../build-info.json", "./build-info.json"];
-    for (const candidate of candidates) {
-      try {
-        const info = require(candidate) as {
-          commit?: string | null;
-        };
-        const formatted = formatCommit(info.commit ?? null);
-        if (formatted) {
-          return formatted;
-        }
-      } catch {
-        // ignore missing candidate
-      }
-    }
-    return null;
-  } catch {
+const readCommitFromBuildInfo = (moduleUrl: string | undefined) => {
+  if (!moduleUrl) {
     return null;
   }
+  const info = readOpenClawBuildInfoForModuleUrl(moduleUrl);
+  return formatCommit(typeof info?.commit === "string" ? info.commit : null);
 };
 
 export const resolveCommitHash = (
@@ -244,11 +233,17 @@ export const resolveCommitHash = (
   } catch {
     // Fall through to baked metadata for packaged installs that are not in a live checkout.
   }
-  const buildInfoCommit = readers.readBuildInfoCommit?.() ?? readCommitFromBuildInfo();
+  // Callers that supply only cwd are asking about that checkout, not the
+  // package containing this helper. Runtime callers pass their module URL so
+  // packaged provenance stays anchored to the owning distribution.
+  const metadataModuleUrl = options.moduleUrl;
+  const buildInfoCommit =
+    readers.readBuildInfoCommit?.() ?? readCommitFromBuildInfo(metadataModuleUrl);
   if (buildInfoCommit) {
     return cacheGitCommit(searchDir, buildInfoCommit);
   }
-  const pkgCommit = readers.readPackageJsonCommit?.() ?? readCommitFromPackageJson();
+  const pkgCommit =
+    readers.readPackageJsonCommit?.() ?? readCommitFromPackageJson(metadataModuleUrl);
   if (pkgCommit) {
     return cacheGitCommit(searchDir, pkgCommit);
   }

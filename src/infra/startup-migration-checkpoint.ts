@@ -1,6 +1,5 @@
 // Coordinates automatic state-migration and gateway-startup checkpoints in shared state.
 import { randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
 import { hostname } from "node:os";
 import { performance } from "node:perf_hooks";
 import type { DatabaseSync } from "node:sqlite";
@@ -17,6 +16,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
+import { readOpenClawBuildInfoForModuleUrl } from "./openclaw-package-metadata.js";
 import { runSqliteImmediateTransactionSync } from "./sqlite-transaction.js";
 
 type StartupMigrationCheckpointDatabase = Pick<
@@ -122,27 +122,8 @@ function isStartupMigrationLeaseOwnerDefinitelyGone(
 // Built-at provenance changes when mutable source is rebuilt even if package version and commit do
 // not. Missing provenance deliberately keeps migrations enabled instead of trusting stale code.
 function resolveStartupMigrationBuildIdentity(moduleUrl: string = import.meta.url): string | null {
-  try {
-    const require = createRequire(moduleUrl);
-    for (const candidate of [
-      "./build-info.json",
-      "../build-info.json",
-      "../../dist/build-info.json",
-    ]) {
-      try {
-        const info = require(candidate) as { builtAt?: unknown };
-        if (typeof info.builtAt !== "string" || !info.builtAt.trim()) {
-          continue;
-        }
-        return info.builtAt.trim();
-      } catch {
-        // Try the next packaged/source-build location.
-      }
-    }
-  } catch {
-    // Missing build provenance disables the fast path below.
-  }
-  return null;
+  const builtAt = readOpenClawBuildInfoForModuleUrl(moduleUrl)?.builtAt;
+  return typeof builtAt === "string" && builtAt.trim() ? builtAt.trim() : null;
 }
 
 function withStartupMigrationCheckpointDatabase<T>(

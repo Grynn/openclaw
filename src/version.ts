@@ -1,69 +1,9 @@
 // Resolves package version metadata for CLI and library callers.
-import { createRequire } from "node:module";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-
-const CORE_PACKAGE_NAME = "openclaw";
-
-const PACKAGE_JSON_CANDIDATES = [
-  "../package.json",
-  "../../package.json",
-  "../../../package.json",
-  "./package.json",
-] as const;
-
-const BUILD_INFO_CANDIDATES = [
-  "../build-info.json",
-  "../../build-info.json",
-  "./build-info.json",
-] as const;
-
-function readVersionFromJsonCandidates(
-  moduleUrl: string,
-  candidates: readonly string[],
-  opts: { requirePackageName?: boolean } = {},
-): string | null {
-  try {
-    const require = createRequire(moduleUrl);
-    for (const candidate of candidates) {
-      try {
-        const parsed = require(candidate) as { name?: string; version?: string };
-        const version = normalizeOptionalString(parsed.version);
-        if (!version) {
-          continue;
-        }
-        if (opts.requirePackageName && parsed.name !== CORE_PACKAGE_NAME) {
-          continue;
-        }
-        return version;
-      } catch {
-        // ignore missing or unreadable candidate
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function readBuildIdFromJsonCandidates(moduleUrl: string): string | null {
-  try {
-    const require = createRequire(moduleUrl);
-    for (const candidate of BUILD_INFO_CANDIDATES) {
-      try {
-        const parsed = require(candidate) as { buildId?: unknown };
-        const buildId = normalizeOptionalString(parsed.buildId);
-        if (buildId && buildId.length <= 96) {
-          return buildId;
-        }
-      } catch {
-        // ignore missing or unreadable candidate
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
+import {
+  readOpenClawBuildInfoForModuleUrl,
+  readOpenClawPackageJsonForModuleUrl,
+} from "./infra/openclaw-package-metadata.js";
 
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
   for (const value of values) {
@@ -76,17 +16,19 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
 }
 
 export function readVersionFromPackageJsonForModuleUrl(moduleUrl: string): string | null {
-  return readVersionFromJsonCandidates(moduleUrl, PACKAGE_JSON_CANDIDATES, {
-    requirePackageName: true,
-  });
+  const packageJson = readOpenClawPackageJsonForModuleUrl(moduleUrl);
+  return normalizeOptionalString(packageJson?.version) ?? null;
 }
 
 export function readVersionFromBuildInfoForModuleUrl(moduleUrl: string): string | null {
-  return readVersionFromJsonCandidates(moduleUrl, BUILD_INFO_CANDIDATES);
+  const buildInfo = readOpenClawBuildInfoForModuleUrl(moduleUrl);
+  return normalizeOptionalString(buildInfo?.version) ?? null;
 }
 
 export function readBuildIdFromBuildInfoForModuleUrl(moduleUrl: string): string | null {
-  return readBuildIdFromJsonCandidates(moduleUrl);
+  const buildInfo = readOpenClawBuildInfoForModuleUrl(moduleUrl);
+  const buildId = normalizeOptionalString(buildInfo?.buildId);
+  return buildId && buildId.length <= 96 ? buildId : null;
 }
 
 export function resolveVersionFromModuleUrl(moduleUrl: string): string | null {
