@@ -26,10 +26,7 @@ import type {
   SessionTranscriptReadScope,
   SessionTranscriptWriteScope,
 } from "./session-accessor.sqlite-contract.js";
-import {
-  listSqliteSessionEntriesFromDatabase,
-  readSessionEntrySnapshot,
-} from "./session-accessor.sqlite-entry-list.js";
+import { listSqliteSessionEntriesFromDatabase } from "./session-accessor.sqlite-entry-list.js";
 import {
   assertLifecycleTargetSnapshotUnchanged,
   assertSessionEntrySelectionUnchanged,
@@ -69,7 +66,10 @@ import {
 } from "./session-accessor.sqlite-scope.js";
 import { readSessionEntriesByStatus } from "./session-accessor.sqlite-status.js";
 import type { SessionEntryListScope } from "./session-accessor.types.js";
-import { assertCanonicalSessionKeyWrite } from "./session-canonical-key.js";
+import {
+  assertCanonicalSessionKeyWrite,
+  assertCanonicalSqliteSessionKeysCurrent,
+} from "./session-canonical-key.js";
 import { preserveSqliteSameKeySessionRolloverLineage } from "./session-entry-lineage.js";
 import { buildSessionCreationStamp } from "./session-entry-provenance.js";
 import { kickSessionHistoryDiskBudgetMaintenance } from "./session-history-eviction.js";

@@ -75,7 +75,7 @@ export function listSqliteSessionEntriesFromDatabase(
   });
 }
 
-export function readSessionEntrySnapshot(
+function readSessionEntrySnapshot(
   database: Pick<OpenClawAgentDatabase, "agentId" | "db" | "path">,
   resolved: ResolvedSqliteScope,
   readConsistency: SessionAccessScope["readConsistency"],

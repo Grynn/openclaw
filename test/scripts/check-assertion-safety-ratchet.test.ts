@@ -62,6 +62,10 @@ describe("check-assertion-safety-ratchet", () => {
       "const angle = <Shape>value;",
       "const unknown = value as unknown;",
       "const angleUnknown = <unknown>value;",
+      "const rendered = `before ${value} and ${checked}`;",
+      "// SAFETY: parser-owned trivia preserves this standalone invariant.",
+      "const safeAfterTemplate = value as Shape;",
+      "const inlineSafeAfterTemplate = value as Shape; // SAFETY: parser-owned trivia preserves this inline invariant.",
     ].join("\n");
 
     expect(countUnsafeAssertions(source, "src/example.ts")).toBe(3);
@@ -77,6 +81,78 @@ describe("check-assertion-safety-ratchet", () => {
     expect(isGovernedAssertionSourcePath("src/example.test.ts")).toBe(false);
     expect(isGovernedAssertionSourcePath("packages/example/test-utils/value.ts")).toBe(false);
     expect(isGovernedAssertionSourcePath("scripts/example.ts")).toBe(false);
+  });
+
+  it("recognizes only parser-owned SAFETY comments across contextual tokens", () => {
+    const cases = [
+      {
+        name: "nested templates and object braces",
+        source: [
+          "const rendered = `before ${{ nested: `value ${value}` }.nested} after`;",
+          "// SAFETY: template parsing preserves this real comment.",
+          "const safe = value as Shape;",
+        ].join("\n"),
+        expected: 0,
+        filePath: "src/example.ts",
+      },
+      {
+        name: "an open brace in a regex substitution",
+        source: [
+          "const rendered = `before ${/\\{/.test(value)} after`;",
+          "// SAFETY: regex parsing preserves this real comment.",
+          "const safe = value as Shape;",
+        ].join("\n"),
+        expected: 0,
+        filePath: "src/example.ts",
+      },
+      {
+        name: "a close brace regex before a multiline assertion",
+        source: [
+          "const rendered = `before ${/\\}/.test(value) &&",
+          "  // SAFETY: this is a real comment inside the substitution.",
+          "  (value as Shape)} after`;",
+        ].join("\n"),
+        expected: 0,
+        filePath: "src/example.ts",
+      },
+      {
+        name: "comment-shaped template text",
+        source: [
+          "const rendered = `before ${value}",
+          "// SAFETY: this is template text, not a comment.",
+          "${value as Shape} after`;",
+        ].join("\n"),
+        expected: 1,
+        filePath: "src/example.ts",
+      },
+      {
+        name: "comment-shaped text inside a block comment",
+        source: [
+          "/* explanatory text",
+          "// SAFETY: this is part of the block comment. */",
+          "const unsafe = value as Shape;",
+        ].join("\n"),
+        expected: 1,
+        filePath: "src/example.ts",
+      },
+      {
+        name: "comment-shaped JSX text",
+        source: [
+          "const rendered = <div>",
+          "// SAFETY: this is JSX text, not a comment.",
+          "{value as Shape}",
+          "</div>;",
+        ].join("\n"),
+        expected: 1,
+        filePath: "src/example.tsx",
+      },
+    ];
+
+    for (const testCase of cases) {
+      expect(countUnsafeAssertions(testCase.source, testCase.filePath), testCase.name).toBe(
+        testCase.expected,
+      );
+    }
   });
 
   it("blocks new debt, accepts SAFETY comments, and prunes reduced counts", () => {

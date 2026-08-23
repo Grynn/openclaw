@@ -36,7 +36,7 @@ export const codexTranscriptCoverageSchema = z
   })
   .strict();
 
-export type CodexTranscriptCoverage = z.infer<typeof codexTranscriptCoverageSchema>;
+type CodexTranscriptCoverage = z.infer<typeof codexTranscriptCoverageSchema>;
 
 type ExactCoverageSelectionResult =
   | { kind: "ok"; messages: AgentMessage[] }
@@ -45,7 +45,7 @@ type ExactCoverageSelectionResult =
 function readOpenClawMetadata(message: AgentMessage): Record<string, unknown> | undefined {
   const meta = CODEX_META_KEY in message ? message[CODEX_META_KEY] : undefined;
   return meta && typeof meta === "object" && !Array.isArray(meta)
-    ? (meta as Record<string, unknown>)
+    ? (meta as Record<string, unknown>) // SAFETY: The non-null object guard makes string-key reads safe.
     : undefined;
 }
 

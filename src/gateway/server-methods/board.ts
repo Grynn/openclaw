@@ -300,6 +300,7 @@ export function createBoardHandlers(
         invalidParams("board.metadata", validateBoardMetadataParams.errors, respond);
         return;
       }
+      // SAFETY: validateBoardMetadataParams has established the BoardMetadataParams schema.
       const boardParams = params as BoardMetadataParams;
       const outcomes: BoardMetadataResult["outcomes"] = boardParams.sessionKeys.map(
         (sessionKey) => {

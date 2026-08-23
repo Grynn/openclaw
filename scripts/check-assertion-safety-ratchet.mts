@@ -56,22 +56,63 @@ function scriptKindForPath(filePath: string) {
 }
 
 function collectSafetyCommentLines(sourceFile: ts.SourceFile, source: string) {
-  // Line text, not token scanning: a raw scanner desyncs on the `}` that ends a
-  // template substitution and then misses every later comment in the file.
   const sameLine = new Set<number>();
   const standalone = new Set<number>();
-  sourceFile.getLineStarts().forEach((lineStart, line) => {
-    const lineEnd = source.indexOf("\n", lineStart);
-    const text = source.slice(lineStart, lineEnd === -1 ? source.length : lineEnd);
-    const commentStart = text.indexOf("//");
-    if (commentStart === -1 || !/^\/\/\s*SAFETY:\s*\S/u.test(text.slice(commentStart).trim())) {
-      return;
+  if (!source.includes("SAFETY:")) {
+    return { sameLine, standalone };
+  }
+
+  const parserOwnedTextRanges: Array<{ start: number; end: number }> = [];
+  const collectParserOwnedTextRanges = (node: ts.Node): void => {
+    if (
+      ts.isStringLiteralLike(node) ||
+      ts.isTemplateLiteralToken(node) ||
+      ts.isRegularExpressionLiteral(node) ||
+      ts.isJsxText(node)
+    ) {
+      parserOwnedTextRanges.push({ start: node.getStart(sourceFile), end: node.end });
     }
-    sameLine.add(line);
-    if (text.slice(0, commentStart).trim() === "") {
-      standalone.add(line);
+    for (const child of node.getChildren(sourceFile)) {
+      collectParserOwnedTextRanges(child);
     }
-  });
+  };
+  collectParserOwnedTextRanges(sourceFile);
+
+  const seen = new Set<number>();
+  const collectRanges = (ranges: readonly ts.CommentRange[] | undefined) => {
+    for (const range of ranges ?? []) {
+      if (range.kind !== ts.SyntaxKind.SingleLineCommentTrivia || seen.has(range.pos)) {
+        continue;
+      }
+      seen.add(range.pos);
+      const comment = source.slice(range.pos, range.end).trim();
+      if (!/^\/\/\s*SAFETY:\s*\S/u.test(comment)) {
+        continue;
+      }
+      if (
+        parserOwnedTextRanges.some(
+          (ownedRange) => range.pos >= ownedRange.start && range.pos < ownedRange.end,
+        )
+      ) {
+        continue;
+      }
+
+      const line = sourceFile.getLineAndCharacterOfPosition(range.pos).line;
+      sameLine.add(line);
+      const lineStart = sourceFile.getPositionOfLineAndCharacter(line, 0);
+      if (source.slice(lineStart, range.pos).trim() === "") {
+        standalone.add(line);
+      }
+    }
+  };
+  const visit = (node: ts.Node): void => {
+    collectRanges(ts.getLeadingCommentRanges(source, node.pos));
+    collectRanges(ts.getTrailingCommentRanges(source, node.end));
+    for (const child of node.getChildren(sourceFile)) {
+      visit(child);
+    }
+  };
+  visit(sourceFile);
   return { sameLine, standalone };
 }
 

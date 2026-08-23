@@ -16,6 +16,7 @@ import type {
   EmbeddedRunFailureSignal,
   TraceAttempt,
 } from "../types.js";
+import { copyAttemptDeliveryState } from "./attempt-delivery-state.js";
 import { hasAttemptTerminalState } from "./attempt-terminal-evidence.js";
 import {
   markEmbeddedRunAuthProfileSuccess,
@@ -711,22 +712,5 @@ function completeEmbeddedRun(
       },
       ...copyAttemptDeliveryState(input.attempt),
     },
-  };
-}
-
-export function copyAttemptDeliveryState(attempt: EmbeddedRunAttemptResult) {
-  return {
-    latestMcpAppChannelView: attempt.latestMcpAppChannelView,
-    latestMcpConnectAction: attempt.latestMcpConnectAction,
-    didSendViaMessagingTool: attempt.didSendViaMessagingTool,
-    didDeliverSourceReplyViaMessageTool: attempt.didDeliverSourceReplyViaMessageTool === true,
-    didSendDeterministicApprovalPrompt: attempt.didSendDeterministicApprovalPrompt,
-    messagingToolSentTexts: attempt.messagingToolSentTexts,
-    messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls,
-    messagingToolSentTargets: attempt.messagingToolSentTargets,
-    messagingToolSourceReplyPayloads: attempt.messagingToolSourceReplyPayloads,
-    heartbeatToolResponse: attempt.heartbeatToolResponse,
-    successfulCronAdds: attempt.successfulCronAdds,
-    acceptedSessionSpawns: attempt.acceptedSessionSpawns,
   };
 }

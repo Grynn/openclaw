@@ -50,6 +50,7 @@ export function readActiveTranscriptContextByteSize(
   if (boundary) {
     let firstKeptEntryId: string | undefined;
     try {
+      // SAFETY: Only this optional field is read and narrowed; invalid JSON or shapes hit the catch.
       const parsed = JSON.parse(boundary.event_json) as { firstKeptEntryId?: unknown };
       firstKeptEntryId =
         typeof parsed.firstKeptEntryId === "string" ? parsed.firstKeptEntryId : undefined;

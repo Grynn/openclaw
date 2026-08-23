@@ -245,6 +245,7 @@ export async function prepareCodexAttemptContext(
     contextEngineProjection: undefined as CodexContextEngineThreadBootstrapProjection | undefined,
     precomputedStaleBindingContinuityProjectionResolved: false,
     precomputedStaleBindingContinuityProjectionApplied: false,
+    // SAFETY: This mutable slot starts absent and later receives only a thread id string.
     precomputedStaleBindingContinuityProjectionThreadId: undefined as string | undefined,
     staleBindingContinuityForcedFreshStart: false,
     // Set by the no-engine continuity appliers; gates calibration recording so a

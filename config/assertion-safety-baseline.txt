@@ -216,7 +216,6 @@ extensions/codex/src/app-server/reasoning-effort.ts	1
 extensions/codex/src/app-server/remote-workspace-media.ts	6
 extensions/codex/src/app-server/request.ts	2
 extensions/codex/src/app-server/run-attempt-context.ts	2
-extensions/codex/src/app-server/run-attempt-prompt.ts	2
 extensions/codex/src/app-server/run-attempt-resources.ts	13
 extensions/codex/src/app-server/run-attempt-runtime.ts	1
 extensions/codex/src/app-server/run-attempt-server-requests.ts	2
@@ -772,7 +771,7 @@ extensions/memory-core/src/memory/manager-reindex-lock.ts	1
 extensions/memory-core/src/memory/manager-search-orchestration.ts	3
 extensions/memory-core/src/memory/manager-search.ts	13
 extensions/memory-core/src/memory/manager-source-state.ts	2
-extensions/memory-core/src/memory/manager-sync-base.ts	5
+extensions/memory-core/src/memory/manager-sync-base.ts	4
 extensions/memory-core/src/memory/manager-vector-rebuild-state.ts	1
 extensions/memory-core/src/memory/manager-watch-ops.ts	4
 extensions/memory-core/src/memory/manager.ts	3
@@ -1720,7 +1719,6 @@ src/agents/bash-tools.exec-run.ts	2
 src/agents/bash-tools.exec-runtime.ts	2
 src/agents/bash-tools.exec-script-preflight.ts	2
 src/agents/bash-tools.process.ts	6
-src/agents/bootstrap-files.ts	1
 src/agents/bootstrap-hooks.ts	1
 src/agents/btw-transcript.ts	5
 src/agents/btw.ts	8
@@ -2389,7 +2387,7 @@ src/cli/cron-cli/list-jobs.ts	4
 src/cli/cron-cli/register.cron-add.ts	1
 src/cli/cron-cli/register.cron-edit.ts	1
 src/cli/cron-cli/register.cron-scratch.ts	2
-src/cli/cron-cli/register.cron-simple.ts	2
+src/cli/cron-cli/register.cron-simple.ts	1
 src/cli/cron-cli/shared.ts	8
 src/cli/daemon-cli/launchd-recovery.ts	1
 src/cli/daemon-cli/lifecycle.ts	1

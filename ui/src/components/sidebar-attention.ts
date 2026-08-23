@@ -23,6 +23,7 @@ import { SubscriptionsController } from "../lit/subscriptions-controller.ts";
 import "../styles/sidebar-attention-floating.css";
 import { icons } from "./icons.ts";
 import { CUSTODIAN_PANEL_TOGGLE_EVENT } from "./panel-toggle-contract.ts";
+import { SidebarAttentionCronEvents } from "./sidebar-attention-cron.ts";
 import {
   clearSidebarAttentionDismissal,
   dismissSidebarAttention,
@@ -63,38 +64,6 @@ const IDLE_REFRESH_INTERVAL_MS = 10 * 60_000;
 // Display is stylesheet-owned (layout.css `display: contents` in the footer,
 // flex when floating): the LightDomContents base's inline display would defeat
 // the floating override, re-piling the collapsed-nav cluster at the origin.
-// Cron lifecycle events may omit a job snapshot when the job is no longer available. Collapse
-// those bursts into one authoritative inventory recovery instead of recreating a request storm.
-const CRON_EVENT_FALLBACK_DEBOUNCE_MS = 50;
-const CRON_SNAPSHOT_ACTION_PATTERN = /^(?:added|updated|removed|started|finished|scheduled)$/;
-
-type CronSnapshotEvent = { removed: boolean; job: CronJob };
-
-function readCronSnapshotEvent(payload: unknown): CronSnapshotEvent | null {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return null;
-  }
-  const event = payload as { action?: unknown; jobId?: unknown; job?: Partial<CronJob> };
-  const job = event.job;
-  return typeof event.action === "string" &&
-    CRON_SNAPSHOT_ACTION_PATTERN.test(event.action) &&
-    typeof job?.id === "string" &&
-    job.id.length > 0 &&
-    job.id === event.jobId &&
-    typeof job.name === "string" &&
-    typeof job.enabled === "boolean" &&
-    Boolean(job.state && typeof job.state === "object" && !Array.isArray(job.state))
-    ? { removed: event.action === "removed", job: job as CronJob }
-    : null;
-}
-
-function projectCronJobSnapshot(jobs: CronJob[], jobId: string, job: CronJob | null): CronJob[] {
-  const index = jobs.findIndex((candidate) => candidate.id === jobId);
-  if (!job) {
-    return index === -1 ? jobs : jobs.toSpliced(index, 1);
-  }
-  return index === -1 ? [...jobs, job] : jobs.with(index, job);
-}
 
 class SidebarAttention extends OpenClawLightDomElement {
   @consume({ context: applicationContext, subscribe: true })
@@ -130,8 +99,7 @@ class SidebarAttention extends OpenClawLightDomElement {
   private panelRenderer: SidebarAttentionPanelRenderer | null = null;
   private panelLoad: Promise<SidebarAttentionPanelRuntime> | null = null;
   private nativeUpdateDeclined = false;
-  private cronFallbackRefreshTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
-  private readonly cronEventOverlays = new Map<string, CronJob | null>();
+  private readonly cronEvents = new SidebarAttentionCronEvents();
 
   private readonly loadTask = new Task(this, {
     autoRun: false,
@@ -144,7 +112,7 @@ class SidebarAttention extends OpenClawLightDomElement {
         true as boolean,
       ] as const,
     task: async ([gateway, client, agentScope, refreshModelAuth], { signal }) => {
-      this.cronEventOverlays.clear();
+      this.cronEvents.beginInventoryLoad();
       if (!gateway || !client || !agentScope) {
         return initialState;
       }
@@ -155,12 +123,7 @@ class SidebarAttention extends OpenClawLightDomElement {
           if (signal.aborted) {
             return;
           }
-          let cronJobs = cron.cronJobs;
-          for (const [jobId, job] of this.cronEventOverlays) {
-            cronJobs = projectCronJobSnapshot(cronJobs, jobId, job);
-          }
-          this.cronJobs = cronJobs;
-          this.cronEventOverlays.clear();
+          this.cronJobs = this.cronEvents.mergeInventory(cron.cronJobs);
         }),
       ];
       if (refreshModelAuth && agentScope.selectedId) {
@@ -185,7 +148,7 @@ class SidebarAttention extends OpenClawLightDomElement {
       return true;
     },
     onComplete: () => {
-      this.cronEventOverlays.clear();
+      this.cronEvents.finishInventoryLoad();
       this.loadedAtMs = Date.now();
       this.pruneAfterRefresh();
     },
@@ -216,14 +179,19 @@ class SidebarAttention extends OpenClawLightDomElement {
           if (this.context?.gateway !== gateway || event.event !== "cron") {
             return;
           }
-          const cronEvent = readCronSnapshotEvent(event.payload);
-          if (cronEvent) {
-            const job = cronEvent.removed ? null : cronEvent.job;
-            this.cronEventOverlays.set(cronEvent.job.id, job);
-            this.cronJobs = projectCronJobSnapshot(this.cronJobs, cronEvent.job.id, job);
+          const projected = this.cronEvents.projectEvent(event.payload, this.cronJobs);
+          if (projected) {
+            this.cronJobs = projected;
             this.pruneAfterRefresh();
           } else {
-            this.queueCronFallbackRefresh(gateway);
+            this.cronEvents.queueFallbackRefresh({
+              isCurrent: () => this.context?.gateway === gateway,
+              refresh: () => {
+                this.loadedClient = null;
+                this.synchronize(gateway, { refreshModelAuth: false });
+              },
+              waitForInventory: () => this.loadTask.taskComplete,
+            });
           }
         }),
     )
@@ -300,7 +268,7 @@ class SidebarAttention extends OpenClawLightDomElement {
       globalThis.clearInterval(this.idleRefreshTimer);
       this.idleRefreshTimer = null;
     }
-    this.clearCronFallbackRefresh();
+    this.cronEvents.clearFallbackRefresh();
     this.subscriptions.clear();
     void this.loadTask.run([null, null, null, false]);
     this.loadedClient = null;
@@ -364,7 +332,7 @@ class SidebarAttention extends OpenClawLightDomElement {
       this.reconcileScopeUpgradeDismissal();
     }
     if (snapshot.phase !== "connected" || !snapshot.client) {
-      this.clearCronFallbackRefresh();
+      this.cronEvents.clearFallbackRefresh();
       void this.loadTask.run([null, null, null, false]);
       this.loadedClient = null;
       this.loadedGateway = null;
@@ -394,37 +362,13 @@ class SidebarAttention extends OpenClawLightDomElement {
     this.loadedGateway = gateway;
     this.loadedClient = snapshot.client;
     this.loadedAgentScope = agentScope;
-    this.clearCronFallbackRefresh();
+    this.cronEvents.clearFallbackRefresh();
     void this.loadTask.run([
       gateway,
       snapshot.client,
       agentScope,
       options.refreshModelAuth !== false || agentScope.selectedId !== this.modelAuthAgentId,
     ]);
-  }
-
-  private queueCronFallbackRefresh(gateway: ApplicationContext["gateway"]) {
-    this.clearCronFallbackRefresh();
-    const timer = globalThis.setTimeout(() => {
-      void this.loadTask.taskComplete
-        .catch(() => undefined)
-        .then(() => {
-          if (this.cronFallbackRefreshTimer !== timer || this.context?.gateway !== gateway) {
-            return;
-          }
-          this.cronFallbackRefreshTimer = null;
-          this.loadedClient = null;
-          this.synchronize(gateway, { refreshModelAuth: false });
-        });
-    }, CRON_EVENT_FALLBACK_DEBOUNCE_MS);
-    this.cronFallbackRefreshTimer = timer;
-  }
-
-  private clearCronFallbackRefresh() {
-    if (this.cronFallbackRefreshTimer !== null) {
-      globalThis.clearTimeout(this.cronFallbackRefreshTimer);
-      this.cronFallbackRefreshTimer = null;
-    }
   }
 
   // Re-arm stale snoozes only from an authoritative refresh or lifecycle job

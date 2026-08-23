@@ -110,7 +110,7 @@ describe("resolveModelProviderRouteOverridePresence", () => {
       resolveModelProviderRouteOverridePresence({
         provider: "openai",
         modelId: "gpt-5.5",
-        config: { models: { providers: { openai: provider } } } as never,
+        authoredConfig: { models: { providers: { openai: provider } } } as never,
       }),
     ).toBe("none");
   });
@@ -120,7 +120,7 @@ describe("resolveModelProviderRouteOverridePresence", () => {
       resolveModelProviderRouteOverridePresence({
         provider: "openai",
         modelId: "gpt-5.5",
-        config: {
+        authoredConfig: {
           models: {
             providers: {
               openai: { params: { fastModeAllowed: false, serviceTier: "default" } },

@@ -821,9 +821,7 @@ export function wrapToolMemoryFlushAppendOnlyWrite(
         };
       }
       const separator =
-        contentBefore.length > 0 &&
-        !contentBefore.endsWith("\n") &&
-        !novelContent.startsWith("\n")
+        contentBefore.length > 0 && !contentBefore.endsWith("\n") && !novelContent.startsWith("\n")
           ? "\n"
           : "";
       const commit = async () => {

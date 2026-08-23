@@ -4,11 +4,11 @@ import {
   buildEmbeddedRunnerAssistant,
   makeEmbeddedRunnerAttempt,
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
+import { copyAttemptDeliveryState } from "./attempt-delivery-state.js";
 import { createEmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
 import { TRUNCATED_REPLY_NOTICE_TEXT } from "./incomplete-turn-resolution.js";
 import { resolveEmbeddedRunAttemptTerminalState } from "./terminal-outcome.js";
 import {
-  copyAttemptDeliveryState,
   createTerminalToolPresentationTracker,
   resolveEmbeddedRunTerminal,
   resolveSettledTurnFinalizationRequest,

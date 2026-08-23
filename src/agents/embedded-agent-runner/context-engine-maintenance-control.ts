@@ -134,6 +134,7 @@ function resetContextEngineTurnMaintenanceRunsForTests(): void {
 }
 
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  // SAFETY: globalThis is an object and this test-only symbol owns its isolated slot.
   (globalThis as Record<PropertyKey, unknown>)[
     Symbol.for("openclaw.contextEngineTurnMaintenanceControlTestApi")
   ] = {

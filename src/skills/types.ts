@@ -138,6 +138,8 @@ export type ModelInvocableSkillIdentity = {
 export type ResolvedSkill = Skill & {
   /** Undefined marks an older runtime snapshot and cannot authorize lazy model invocation. */
   skillKey?: string;
+  /** @deprecated New skill loaders no longer compute prompt content hashes. */
+  promptVersion?: string;
 };
 
 export type SkillSnapshot = {

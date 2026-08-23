@@ -10,8 +10,10 @@ const META_KEY = "memory_index_meta_v1";
 function readSourceMeta(sourceDb: DatabaseSync): MemoryIndexMeta | null {
   const row = sourceDb
     .prepare("SELECT value FROM memory_index_meta WHERE key = ?")
+    // SAFETY: This fixed SELECT returns no row or one row with its TEXT value column.
     .get(META_KEY) as { value: string } | undefined;
   try {
+    // SAFETY: This table is written from MemoryIndexMeta; callers validate each field they use.
     return row?.value ? (JSON.parse(row.value) as MemoryIndexMeta) : null;
   } catch {
     return null;
@@ -54,6 +56,7 @@ export async function seedMemoryEmbeddingCache(params: {
   );
   let lastRowid = 0;
   while (true) {
+    // SAFETY: The fixed SELECT returns exactly the CacheRow columns from the owned schema.
     const batch = selectBatch.all(lastRowid, BATCH_SIZE) as CacheRow[];
     if (batch.length === 0) {
       break;
@@ -160,6 +163,7 @@ export async function seedMemoryEmbeddingCacheFromChunks(params: {
   );
   let lastRowid = 0;
   while (true) {
+    // SAFETY: The fixed SELECT returns exactly the ChunkEmbeddingRow columns from the owned schema.
     const batch = selectBatch.all(lastRowid, identity.model, BATCH_SIZE) as ChunkEmbeddingRow[];
     if (batch.length === 0) {
       return;

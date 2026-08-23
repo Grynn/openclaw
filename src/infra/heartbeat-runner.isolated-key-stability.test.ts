@@ -60,7 +60,7 @@ describe("runHeartbeatOnce – isolated session key stability (#59493)", () => {
       lastTo: "+1555",
     });
 
-    const replySpy = vi.spyOn(replyModule, "getReplyFromConfig");
+    const replySpy = vi.spyOn(replyModule, "getReplyFromConfigWithoutPublishedRuntime");
     replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
 
     await runHeartbeatOnce({
@@ -130,7 +130,7 @@ describe("runHeartbeatOnce – isolated session key stability (#59493)", () => {
         lastTo: "+1555",
         heartbeatIsolatedBaseSessionKey: baseSessionKey,
       });
-      const replySpy = vi.spyOn(replyModule, "getReplyFromConfig");
+      const replySpy = vi.spyOn(replyModule, "getReplyFromConfigWithoutPublishedRuntime");
       replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
 
       await runHeartbeatOnce({
@@ -178,7 +178,7 @@ describe("runHeartbeatOnce – isolated session key stability (#59493)", () => {
         lastProvider: "whatsapp",
         lastTo: "+1555",
       });
-      const replySpy = vi.spyOn(replyModule, "getReplyFromConfig");
+      const replySpy = vi.spyOn(replyModule, "getReplyFromConfigWithoutPublishedRuntime");
       replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
 
       const result = await runHeartbeatOnce({
@@ -257,7 +257,7 @@ describe("runHeartbeatOnce – isolated session key stability (#59493)", () => {
     await withTempHeartbeatSandbox(async ({ tmpDir, storePath }) => {
       const cfg = makeIsolatedHeartbeatConfig(tmpDir, storePath);
       const baseSessionKey = resolveMainSessionKey(cfg);
-      const replySpy = vi.spyOn(replyModule, "getReplyFromConfig");
+      const replySpy = vi.spyOn(replyModule, "getReplyFromConfigWithoutPublishedRuntime");
       replySpy
         .mockResolvedValueOnce({ text: "Relay this cron update now" })
         .mockResolvedValueOnce({ text: "HEARTBEAT_OK" });
@@ -314,7 +314,7 @@ describe("runHeartbeatOnce – isolated session key stability (#59493)", () => {
         lastTo: "+1555",
         heartbeatIsolatedBaseSessionKey: baseSessionKey,
       });
-      const replySpy = vi.spyOn(replyModule, "getReplyFromConfig");
+      const replySpy = vi.spyOn(replyModule, "getReplyFromConfigWithoutPublishedRuntime");
       replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
 
       await runHeartbeatOnce({
@@ -344,7 +344,7 @@ describe("runHeartbeatOnce – isolated session key stability (#59493)", () => {
         heartbeatIsolatedBaseSessionKey: baseSessionKey,
       });
       enqueueSystemEvent("exec finished: deploy succeeded", { sessionKey: isolatedSessionKey });
-      const replySpy = vi.spyOn(replyModule, "getReplyFromConfig");
+      const replySpy = vi.spyOn(replyModule, "getReplyFromConfigWithoutPublishedRuntime");
       replySpy.mockResolvedValue({ text: "Handled internally" });
 
       const result = await runHeartbeatOnce({
@@ -395,7 +395,7 @@ describe("runHeartbeatOnce – isolated session key stability (#59493)", () => {
         heartbeatIsolatedBaseSessionKey: realSessionKey,
       });
 
-      const replySpy = vi.spyOn(replyModule, "getReplyFromConfig");
+      const replySpy = vi.spyOn(replyModule, "getReplyFromConfigWithoutPublishedRuntime");
       replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
 
       await runHeartbeatOnce({
@@ -448,7 +448,7 @@ describe("runHeartbeatOnce – isolated session key stability (#59493)", () => {
           "daily-check": 1,
         },
       });
-      const replySpy = vi.spyOn(replyModule, "getReplyFromConfig");
+      const replySpy = vi.spyOn(replyModule, "getReplyFromConfigWithoutPublishedRuntime");
       replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
 
       const result = await runHeartbeatOnce({
@@ -484,7 +484,7 @@ describe("runHeartbeatOnce – isolated session key stability (#59493)", () => {
         lastProvider: "whatsapp",
         lastTo: "+1555",
       });
-      const replySpy = vi.spyOn(replyModule, "getReplyFromConfig");
+      const replySpy = vi.spyOn(replyModule, "getReplyFromConfigWithoutPublishedRuntime");
       replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
 
       const result = await runHeartbeatOnce({
@@ -522,7 +522,7 @@ describe("runHeartbeatOnce – isolated session key stability (#59493)", () => {
         lastProvider: "whatsapp",
         lastTo: "+1555",
       });
-      const replySpy = vi.spyOn(replyModule, "getReplyFromConfig");
+      const replySpy = vi.spyOn(replyModule, "getReplyFromConfigWithoutPublishedRuntime");
       replySpy.mockResolvedValue({ text: "HEARTBEAT_OK" });
 
       await runHeartbeatOnce({

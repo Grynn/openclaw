@@ -40,7 +40,7 @@ export async function memorySearchGatewayCommand(
         ...(args.minScore === undefined ? {} : { minScore: args.minScore }),
       },
       { mode: "cli", scopes: ["operator.read"] },
-    )) as MemorySearchGatewayResponse;
+    )) as MemorySearchGatewayResponse; // SAFETY: The memory.search contract owns this response shape; results are rechecked below.
   } catch {
     // Let Commander use the existing local manager when the Gateway is offline
     // or older than the memory.search RPC surface.

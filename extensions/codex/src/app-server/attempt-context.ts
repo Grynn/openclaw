@@ -707,7 +707,7 @@ export function shouldInjectCodexOpenClawPromptContext(params: EmbeddedRunAttemp
   );
 }
 
-export const CODEX_SKILL_CATALOG_TOOL_NAME = "skill_catalog";
+const CODEX_SKILL_CATALOG_TOOL_NAME = "skill_catalog";
 const CODEX_SKILL_CATALOG_COLLABORATION_INSTRUCTIONS = [
   "## OpenClaw Skills",
   "",
