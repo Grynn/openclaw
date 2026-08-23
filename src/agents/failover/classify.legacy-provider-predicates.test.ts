@@ -4,10 +4,14 @@ import type { FailoverReason } from "./signal.js";
 
 const hoisted = vi.hoisted(() => ({
   classifyProviderFailoverSignalWithPlugin: vi.fn((): FailoverReason | null => null),
+  requireProviderRuntime: vi.fn(),
 }));
 
 vi.mock("../../logging/node-require.js", () => ({
-  resolveNodeRequireFromMeta: () => () => hoisted,
+  resolveNodeRequireFromMeta: () => (specifier: string) => {
+    hoisted.requireProviderRuntime(specifier);
+    return hoisted;
+  },
 }));
 
 import { classifyProviderRuntimeFailureKind } from "../embedded-agent-helpers/provider-runtime-failure.js";
@@ -24,6 +28,9 @@ describe("classifyProviderPluginError", () => {
     expect(
       classifyProviderPluginError({ provider: "demo-provider", errorMessage: "quota exhausted" }),
     ).toBeNull();
+    expect(hoisted.requireProviderRuntime).toHaveBeenCalledWith(
+      "openclaw/plugin-sdk/provider-catalog-runtime",
+    );
   });
 });
 

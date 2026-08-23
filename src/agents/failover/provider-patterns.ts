@@ -57,7 +57,10 @@ function resolveProviderRuntimeHooks(): ProviderRuntimeHooks | null {
     return cachedProviderRuntimeHooks;
   }
   try {
-    const runtime: unknown = requireProviderRuntime("../../plugins/provider-runtime.js");
+    // Use a package export rather than a source-relative path. This module is
+    // bundled into hashed dist chunks, where ../../plugins no longer points at
+    // the source tree and silently degraded provider failover classification.
+    const runtime: unknown = requireProviderRuntime("openclaw/plugin-sdk/provider-catalog-runtime");
     const classify = isRecord(runtime) ? runtime.classifyProviderFailoverSignalWithPlugin : null;
     if (typeof classify !== "function") {
       cachedProviderRuntimeHooks = null;
