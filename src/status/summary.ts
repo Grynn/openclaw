@@ -17,6 +17,7 @@ import {
   loadExactSessionEntryReadOnly,
 } from "../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
+import { resolvePersistedSessionStoreOwner } from "../config/sessions/session-store-owner.js";
 import {
   resolveFreshSessionTotalTokens,
   resolveSessionTotalTokens,
@@ -62,10 +63,7 @@ const taskRegistryMaintenanceModuleLoader = createLazyImportLoader(
 const staticModelCatalogResolverLoader = createLazyImportLoader(async () => {
   const modelCatalog = await import("../agents/embedded-agent-runner/model.static-catalog.js");
   return {
-    resolveManifestModel: modelCatalog.createBundledStaticCatalogModelResolver({
-      // Runtime-discovery manifest rows still provide a cold-cache fallback.
-      includeRuntimeDiscovery: true,
-    }),
+    createManifestModelResolver: modelCatalog.createBundledStaticCatalogModelResolver,
     createProviderContextResolver: modelCatalog.createBundledProviderStaticCatalogContextResolver,
   };
 });
@@ -162,9 +160,14 @@ function hasUserPinnedModelSelection(entry: SessionEntry | undefined): boolean {
 }
 
 type SessionCandidate = {
+  agentIdHint?: string;
   key: string;
   entry: SessionEntry;
   updatedAt: number | null;
+};
+
+type ResolvedSessionCandidate = SessionCandidate & {
+  agentId: string;
 };
 
 function compareSessionCandidatesByUpdatedAt(left: SessionCandidate, right: SessionCandidate) {
@@ -192,19 +195,49 @@ function selectRecentSessionCandidates(
   return selected;
 }
 
+function resolveSessionCandidateAgents(
+  candidates: SessionCandidate[],
+  params: { agentIdOverride?: string; defaultAgentId: string },
+): ResolvedSessionCandidate[] {
+  return candidates.map((candidate) => {
+    const resolved: ResolvedSessionCandidate = {
+      agentId:
+        params.agentIdOverride ??
+        parseAgentSessionKey(candidate.key)?.agentId ??
+        candidate.agentIdHint ??
+        params.defaultAgentId,
+      entry: candidate.entry,
+      key: candidate.key,
+      updatedAt: candidate.updatedAt,
+    };
+    if (candidate.agentIdHint) {
+      resolved.agentIdHint = candidate.agentIdHint;
+    }
+    return resolved;
+  });
+}
+
 function listSessionCandidates(storePath: string, agentId?: string) {
   return (
     listSessionEntriesReadOnly({
       ...(agentId ? { agentId } : {}),
+      clone: false,
+      projection: "list",
       storePath,
     })
       // Compatibility aggregate buckets are not real user sessions.
       .filter(({ sessionKey }) => sessionKey !== "global" && sessionKey !== "unknown")
-      .map(({ sessionKey, entry }) => ({
-        key: sessionKey,
-        entry,
-        updatedAt: entry?.updatedAt ?? null,
-      }))
+      .map(({ sessionKey, entry }) => {
+        const candidate: SessionCandidate = {
+          key: sessionKey,
+          entry,
+          updatedAt: entry?.updatedAt ?? null,
+        };
+        if (agentId) {
+          candidate.agentIdHint = agentId;
+        }
+        return candidate;
+      })
   );
 }
 
@@ -249,13 +282,25 @@ export async function getStatusSummary(
     resolveSessionModelRef,
     resolveStatusModelComparisonLabel,
     resolveStatusModelLookupRef,
+    resolveStatusPluginMetadataSnapshot,
+    prepareSessionRuntimeFacts,
     waitForContextWindowCacheLoad,
   } = await loadStatusSummaryRuntimeModule();
   const cfg = options.config ?? getRuntimeConfig();
   await waitForContextWindowCacheLoad();
-  const { resolveManifestModel, createProviderContextResolver } =
+  const metadataSnapshot = resolveStatusPluginMetadataSnapshot?.(cfg);
+  const { createManifestModelResolver, createProviderContextResolver } =
     await loadStaticModelCatalogResolvers();
-  const resolveProviderContext = createProviderContextResolver({ cfg });
+  const catalogResolverParams = {
+    cfg,
+    ...(metadataSnapshot ? { metadataSnapshot } : {}),
+  };
+  const resolveManifestModel = createManifestModelResolver({
+    ...catalogResolverParams,
+    // Runtime-discovery manifest rows still provide a cold-cache fallback.
+    includeRuntimeDiscovery: true,
+  });
+  const resolveProviderContext = createProviderContextResolver(catalogResolverParams);
   const modelContextCache = new Map<
     string,
     Promise<{ modelContextWindow?: number; modelContextTokens?: number }>
@@ -303,6 +348,11 @@ export async function getStatusSummary(
       )
     : null;
   const agentList = listGatewayAgentsBasic(cfg);
+  const persistedSessionStoreOwner = resolvePersistedSessionStoreOwner(cfg);
+  const aggregateDefaultAgentId =
+    persistedSessionStoreOwner.kind === "configured"
+      ? persistedSessionStoreOwner.agentId
+      : agentList.defaultId;
   const heartbeatAgents: HeartbeatStatus[] = agentList.agents.map((agent) => {
     const summary = resolveHeartbeatSummaryForAgent(cfg, agent.id);
     const heartbeatSession = resolveHeartbeatSessionKey(
@@ -401,15 +451,70 @@ export async function getStatusSummary(
     candidateCache.set(cacheKey, candidates);
     return candidates;
   };
-  const buildSessionRows = async (
-    candidates: SessionCandidate[],
-    opts: { agentIdOverride?: string } = {},
-  ) =>
+  const storeSources = agentList.agents.map((agent) => {
+    const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId: agent.id });
+    return {
+      agentId: agent.id,
+      databasePath: resolveSqliteTargetFromSessionStorePath(storePath, {
+        agentId: agent.id,
+      }).path,
+      storePath,
+    };
+  });
+  const paths = new Set<string>();
+  const pathCounts = new Map<string, number>();
+  for (const source of storeSources) {
+    paths.add(source.databasePath);
+    pathCounts.set(source.databasePath, (pathCounts.get(source.databasePath) ?? 0) + 1);
+  }
+  const byAgentCandidates = storeSources.map(({ agentId, databasePath, storePath }) => {
+    const candidates = loadSessionCandidates(storePath, agentId);
+    return {
+      agentId,
+      candidates,
+      databasePath,
+      recentCandidates: resolveSessionCandidateAgents(
+        selectRecentSessionCandidates(candidates, RECENT_SESSION_LIMIT),
+        { agentIdOverride: agentId, defaultAgentId: aggregateDefaultAgentId },
+      ),
+    };
+  });
+  const allSessions = storeSources
+    .filter((source, index, sources) => {
+      return (
+        sources.findIndex((candidate) => candidate.databasePath === source.databasePath) === index
+      );
+    })
+    .flatMap((source) =>
+      loadSessionCandidates(
+        source.storePath,
+        pathCounts.get(source.databasePath) === 1 ? source.agentId : undefined,
+      ),
+    );
+  const recentCandidates = resolveSessionCandidateAgents(
+    selectRecentSessionCandidates(allSessions, RECENT_SESSION_LIMIT),
+    { defaultAgentId: aggregateDefaultAgentId },
+  );
+  const sessionRuntimeFacts = prepareSessionRuntimeFacts?.({
+    cfg,
+    entries: [
+      ...byAgentCandidates.flatMap(({ agentId, recentCandidates: candidates }) =>
+        candidates.map(({ entry, key }) => ({ agentId, entry, sessionKey: key })),
+      ),
+      ...recentCandidates.map(({ agentId, entry, key }) => ({
+        agentId,
+        entry,
+        sessionKey: key,
+      })),
+    ],
+  }) ?? {
+    acpSessionMetaByEntry: new Map<SessionEntry, undefined>(),
+    classifyCliProvider: () => false,
+  };
+  const buildSessionRows = async (candidates: ResolvedSessionCandidate[]) =>
     Promise.all(
-      candidates.map(async ({ key, entry, updatedAt }) => {
+      candidates.map(async ({ agentId, key, entry, updatedAt }) => {
         const age = updatedAt ? now - updatedAt : null;
-        const parsedAgentId = parseAgentSessionKey(key)?.agentId;
-        const agentId = opts.agentIdOverride ?? parsedAgentId;
         const configuredForSession = resolveConfiguredStatusModelRef({
           cfg,
           defaultProvider: DEFAULT_PROVIDER,
@@ -463,7 +568,9 @@ export async function getStatusSummary(
           allowAsyncLoad: false,
         });
         const runtime = resolveSessionRuntime({
+          acpMeta: sessionRuntimeFacts.acpSessionMetaByEntry.get(entry),
           cfg,
+          classifyCliProvider: sessionRuntimeFacts.classifyCliProvider,
           entry,
           provider: lookupModel.provider,
           model: lookupModelId ?? "",
@@ -532,54 +639,20 @@ export async function getStatusSummary(
       }),
     );
 
-  const storeSources = agentList.agents.map((agent) => {
-    const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId: agent.id });
-    return {
-      agentId: agent.id,
-      databasePath: resolveSqliteTargetFromSessionStorePath(storePath, {
-        agentId: agent.id,
-      }).path,
-      storePath,
-    };
-  });
-  const paths = new Set<string>();
-  const pathCounts = new Map<string, number>();
-  for (const source of storeSources) {
-    paths.add(source.databasePath);
-    pathCounts.set(source.databasePath, (pathCounts.get(source.databasePath) ?? 0) + 1);
-  }
-
   const byAgent = await Promise.all(
-    storeSources.map(async ({ agentId, databasePath, storePath }) => {
-      const candidates = loadSessionCandidates(storePath, agentId);
-      const sessions = await buildSessionRows(
-        selectRecentSessionCandidates(candidates, RECENT_SESSION_LIMIT),
-        { agentIdOverride: agentId },
-      );
-      return {
-        agentId,
-        path: databasePath,
-        count: candidates.length,
-        recent: sessions,
-      };
-    }),
+    byAgentCandidates.map(
+      async ({ agentId, candidates, databasePath, recentCandidates: agentRecentCandidates }) => {
+        const sessions = await buildSessionRows(agentRecentCandidates);
+        return {
+          agentId,
+          path: databasePath,
+          count: candidates.length,
+          recent: sessions,
+        };
+      },
+    ),
   );
-
-  const allSessions = storeSources
-    .filter((source, index, sources) => {
-      return (
-        sources.findIndex((candidate) => candidate.databasePath === source.databasePath) === index
-      );
-    })
-    .flatMap((source) =>
-      loadSessionCandidates(
-        source.storePath,
-        pathCounts.get(source.databasePath) === 1 ? source.agentId : undefined,
-      ),
-    );
-  const recent = await buildSessionRows(
-    selectRecentSessionCandidates(allSessions, RECENT_SESSION_LIMIT),
-  );
+  const recent = await buildSessionRows(recentCandidates);
   const totalSessions = allSessions.length;
   const hostDesktopStatus =
     options.hostDesktopStatus ??

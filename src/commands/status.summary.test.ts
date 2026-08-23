@@ -856,10 +856,14 @@ describe("getStatusSummary", () => {
 
     expect(statusSummaryMocks.listSessionEntriesCore).toHaveBeenCalledWith({
       agentId: "main",
+      clone: false,
+      projection: "list",
       storePath: "/tmp/main/sessions.json",
     });
     expect(statusSummaryMocks.listSessionEntriesCore).toHaveBeenCalledWith({
       agentId: "ops",
+      clone: false,
+      projection: "list",
       storePath: "/tmp/ops/sessions.json",
     });
     expect(summary.sessions.count).toBe(2);
@@ -1074,9 +1078,8 @@ describe("getStatusSummary", () => {
   });
 
   it("resolves aggregate selected models from each row's agent", async () => {
-    const models: Record<string, string> = { ops: "ops", research: "research" };
     vi.mocked(statusSummaryRuntime.resolveSessionModelRef).mockImplementation(
-      (_cfg, _entry, id) => ({ provider: "openai", model: models[id ?? ""] ?? "global" }),
+      (_cfg, _entry, id) => ({ provider: "openai", model: id && id !== "main" ? id : "global" }),
     );
     statusSummaryMocks.listSessionEntriesCore.mockReturnValue(
       toSessionEntrySummaries({

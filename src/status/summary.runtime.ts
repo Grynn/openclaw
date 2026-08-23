@@ -6,7 +6,7 @@ import {
   normalizeOptionalString,
   normalizeOptionalLowercaseString,
 } from "@openclaw/normalization-core/string-coerce";
-import { readAcpSessionMeta } from "../acp/runtime/session-meta.js";
+import { readAcpSessionMetaBatch } from "../acp/runtime/session-meta.js";
 import { resolveCurrentSessionAgentRuntimeMetadata } from "../agents/agent-runtime-metadata.js";
 import { resolveAgentConfig } from "../agents/agent-scope-config.js";
 import { resolveConfiguredProviderFallback } from "../agents/configured-provider-fallback.js";
@@ -16,11 +16,18 @@ import {
 } from "../agents/context-resolution.js";
 import { waitForContextWindowCacheLoad } from "../agents/context.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
-import { parseModelRef, resolvePersistedSelectedModelRef } from "../agents/model-selection.js";
+import {
+  parseModelRef,
+  prepareCliProviderClassifier,
+  resolvePersistedSelectedModelRef,
+  type CliProviderClassifier,
+} from "../agents/model-selection.js";
 import { resolveAgentModelPrimaryValue } from "../config/model-input.js";
-import type { SessionEntry } from "../config/sessions/types.js";
+import type { SessionAcpMeta, SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { resolveStoredSessionKeyForAgentStore } from "../gateway/session-store-key.js";
+import { resolvePluginMetadataSnapshotRuntime } from "../plugins/plugin-metadata-snapshot.runtime.js";
+import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { classifySessionKind } from "../sessions/classify-session-kind.js";
 import { resolveAgentRuntimeLabel } from "./agent-runtime-label.js";
 
@@ -195,8 +202,64 @@ function resolveSessionModelRef(
   );
 }
 
-function resolveSessionRuntime(params: {
+function resolveStatusPluginMetadataSnapshot(
+  cfg: OpenClawConfig,
+): PluginMetadataSnapshot | undefined {
+  // Gateway calls reuse the lifecycle-owned generation. Standalone status
+  // resolves one request-local generation instead of rediscovering metadata
+  // from every model-id comparison.
+  return resolvePluginMetadataSnapshotRuntime({
+    config: cfg,
+    env: process.env,
+    allowWorkspaceScopedCurrent: true,
+  });
+}
+
+function prepareSessionRuntimeFacts(params: {
   cfg: OpenClawConfig;
+  entries: ReadonlyArray<{
+    agentId?: string;
+    entry: SessionEntry;
+    sessionKey: string;
+  }>;
+}): {
+  acpSessionMetaByEntry: Map<SessionEntry, SessionAcpMeta | undefined>;
+  classifyCliProvider: CliProviderClassifier;
+} {
+  const seenEntries = new Set<SessionEntry>();
+  const entries = params.entries.flatMap(({ agentId, entry, sessionKey }) => {
+    if (seenEntries.has(entry)) {
+      return [];
+    }
+    seenEntries.add(entry);
+    return [
+      {
+        ...(agentId ? { agentId } : {}),
+        entry,
+        sessionKey: agentId
+          ? resolveStoredSessionKeyForAgentStore({
+              cfg: params.cfg,
+              agentId,
+              sessionKey,
+            })
+          : sessionKey,
+      },
+    ];
+  });
+  return {
+    acpSessionMetaByEntry: readAcpSessionMetaBatch({
+      cfg: params.cfg,
+      entries,
+      repairLegacyRows: false,
+    }),
+    classifyCliProvider: prepareCliProviderClassifier(params.cfg),
+  };
+}
+
+function resolveSessionRuntime(params: {
+  acpMeta?: SessionAcpMeta;
+  cfg: OpenClawConfig;
+  classifyCliProvider?: CliProviderClassifier;
   entry?: SessionEntry;
   provider: string;
   model: string;
@@ -210,7 +273,6 @@ function resolveSessionRuntime(params: {
         sessionKey: params.sessionKey,
       })
     : params.sessionKey;
-  const acpMeta = readAcpSessionMeta({ sessionKey: acpSessionKey });
   const runtime = resolveCurrentSessionAgentRuntimeMetadata({
     cfg: params.cfg,
     agentId: params.agentId ?? "",
@@ -218,8 +280,8 @@ function resolveSessionRuntime(params: {
     model: params.model,
     sessionKey: acpSessionKey,
     sessionEntry: params.entry,
-    acpRuntime: acpMeta != null,
-    acpBackend: acpMeta?.backend,
+    acpRuntime: params.acpMeta != null,
+    acpBackend: params.acpMeta?.backend,
   });
   const id = normalizeOptionalLowercaseString(runtime.id);
   // OpenClaw/auto are generic labels; concrete harness ids give better operator signal.
@@ -231,6 +293,7 @@ function resolveSessionRuntime(params: {
       sessionEntry: params.entry,
       resolvedHarness,
       fallbackProvider: params.provider,
+      classifyCliProvider: params.classifyCliProvider,
     }),
   };
 }
@@ -245,4 +308,6 @@ export const statusSummaryRuntime = {
   resolveConfiguredStatusModelRef,
   resolveStatusModelLookupRef,
   resolveStatusModelComparisonLabel,
+  resolveStatusPluginMetadataSnapshot,
+  prepareSessionRuntimeFacts,
 };
