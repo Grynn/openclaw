@@ -48,6 +48,7 @@ import type {
 import { applyControlUiAccent } from "./control-ui-presentation.ts";
 import { syncCustomThemeStyleTag } from "./custom-theme.ts";
 import { createScopeUpgradeCapability } from "./device-scope-upgrade.ts";
+import { waitForGatewayClient } from "./gateway-readiness.ts";
 import { createApplicationGateway } from "./gateway-store.ts";
 import { createInitialUserMessageHandoff } from "./initial-user-message-handoff.ts";
 import { createNativeChatDrafts } from "./native-bridge.ts";
@@ -602,6 +603,18 @@ export function bootstrapApplication(
         if (initialFirstRunDecision) {
           steps.push(() => initialFirstRunDecision);
         }
+        // Route loaders own the authenticated application graph. Keep every route
+        // dormant through a rejected first attempt; reconnects retain the one start.
+        steps.push(() =>
+          waitForGatewayClient(gateway, startupLifecycle.signal).then(
+            () => undefined,
+            (error: unknown) => {
+              if (!startupLifecycle.signal.aborted) {
+                throw error;
+              }
+            },
+          ),
+        );
         steps.push(async () => {
           const pendingNavigation = pendingRouterStartNavigation;
           pendingRouterStartNavigation = null;
