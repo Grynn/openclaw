@@ -160,6 +160,8 @@ describe("check-cli-bootstrap-imports", () => {
       "dist/provider-model-normalization-provider.runtime.js",
       "export const loaded = true;\n",
     );
+    writeFixture(root, "dist/runtime-model-auth.runtime.js", "export const loaded = true;\n");
+    writeFixture(root, "dist/subagent-registry.runtime.js", "export const loaded = true;\n");
     writeFixture(root, "dist/task-registry-control.runtime.js", "export const loaded = true;\n");
 
     expect(collectStableRuntimeSidecarArtifactErrors({ rootDir: root })).toEqual([]);
@@ -223,6 +225,20 @@ describe("check-cli-bootstrap-imports", () => {
       'Worker deploy artifact dist/worker/worker.mjs retains runtime import "left-pad" instead of bundling it.',
       "Worker deploy artifact emits unstaged runtime asset dist/worker/lazy.mjs.",
       "Worker deploy artifact must not contain a dependency manifest or lifecycle scripts.",
+    ]);
+  });
+
+  it("rejects host-only fallback markers retained in a worker bundle", () => {
+    const root = makeTempRoot();
+    writeFixture(
+      root,
+      "dist/worker/worker.mjs",
+      'const sourceFallback = "./task-registry-control.runtime.ts";\n',
+    );
+    writeFixture(root, "dist/worker/workspace-rsync-receiver.mjs", "export {};\n");
+
+    expect(collectWorkerDeployArtifactErrors({ rootDir: root })).toEqual([
+      'Worker deploy artifact dist/worker/worker.mjs retains host-only runtime fallback marker "./task-registry-control.runtime.ts".',
     ]);
   });
 });

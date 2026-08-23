@@ -24,6 +24,15 @@ const WORKER_DEPLOY_ENTRYPOINTS = [
   `dist/worker/${WORKER_BUNDLE_ENTRY_PATH}`,
   `dist/worker/${WORKER_BUNDLE_RSYNC_RECEIVER_PATH}`,
 ] as const;
+const WORKER_DEPLOY_FORBIDDEN_HOST_FALLBACK_MARKERS = [
+  "./current-plugin-metadata-snapshot.ts",
+  "./facade-activation-check.runtime.ts",
+  "./plugin-metadata-snapshot.ts",
+  "./provider-model-normalization-provider.runtime.ts",
+  "./subagent-registry.runtime",
+  "./task-registry-control.runtime.ts",
+  "../../dist/build-info.json",
+] as const;
 const DEFAULT_GATEWAY_RUN_CHUNK_MAX_BYTES = 70 * 1024;
 const GATEWAY_RUN_CHUNK_MARKER_SETS = [
   ["const GATEWAY_AUTH_MODES", "function addGatewayRunCommand"],
@@ -419,6 +428,13 @@ export function collectWorkerDeployArtifactErrors(params: CliBootstrapCheckParam
     );
   }
   for (const { relativeEntrypoint, source } of sources) {
+    for (const marker of WORKER_DEPLOY_FORBIDDEN_HOST_FALLBACK_MARKERS) {
+      if (source.includes(marker)) {
+        errors.push(
+          `Worker deploy artifact ${relativeEntrypoint} retains host-only runtime fallback marker "${marker}".`,
+        );
+      }
+    }
     try {
       for (const specifier of listRuntimeImportSpecifiers(source)) {
         if (isBuiltinSpecifier(specifier)) {

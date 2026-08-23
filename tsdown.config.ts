@@ -380,6 +380,7 @@ function buildCoreDistEntries(): Record<string, string> {
     "plugins/hook-runner-global": "src/plugins/hook-runner-global.ts",
     "plugins/memory-state": "src/plugins/memory-state.ts",
     "plugins/synthetic-auth.runtime": "src/plugins/synthetic-auth.runtime.ts",
+    "runtime-model-auth.runtime": "src/plugins/runtime/runtime-model-auth.runtime.ts",
     "subagent-registry.runtime": "src/agents/subagents/registry/subagent-registry.runtime.ts",
     "task-registry-control.runtime": "src/tasks/task-registry-control.runtime.ts",
     "tasks/task-registry.maintenance": "src/tasks/task-registry.maintenance.ts",

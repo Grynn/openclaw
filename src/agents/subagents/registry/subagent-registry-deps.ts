@@ -8,6 +8,7 @@ import { onAgentEvent, type AgentEventPayload } from "../../../infra/agent-event
 import type { PluginRegistry } from "../../../plugins/registry-types.js";
 import { createLazyImportLoader, createLazyPromiseLoader } from "../../../shared/lazy-promise.js";
 import { importRuntimeModule } from "../../../shared/runtime-import.js";
+import { getWorkerDeploySubagentRegistryLoader } from "../../../worker/worker-deploy-runtime-registry.js";
 import { resolveAgentTimeoutMs } from "../../timeout.js";
 import {
   persistSubagentRunsToDisk,
@@ -98,15 +99,24 @@ type SubagentRegistryRuntimeModule = {
   ) => Promise<ContextEngine>;
 };
 
+declare const WORKER_DEPLOY_BUILD: boolean;
+
 const SUBAGENT_REGISTRY_RUNTIME_SPEC = ["./subagent-registry.runtime", ".js"] as const;
 
 // All three capabilities belong to the same lazy runtime module and lifecycle.
-const subagentRegistryRuntimeLoader = createLazyPromiseLoader(() =>
-  importRuntimeModule<SubagentRegistryRuntimeModule>(
+const subagentRegistryRuntimeLoader = createLazyPromiseLoader(async () => {
+  if (typeof WORKER_DEPLOY_BUILD === "boolean" && WORKER_DEPLOY_BUILD) {
+    const loadWorkerRuntime = getWorkerDeploySubagentRegistryLoader();
+    if (!loadWorkerRuntime) {
+      throw new Error("Worker deploy subagent registry runtime was not initialized");
+    }
+    return await loadWorkerRuntime();
+  }
+  return await importRuntimeModule<SubagentRegistryRuntimeModule>(
     import.meta.url,
     SUBAGENT_REGISTRY_RUNTIME_SPEC,
-  ),
-);
+  );
+});
 const subagentRegistryPluginRuntimeLoader = createLazyPromiseLoader(
   () => import("../../runtime-plugins.js"),
 );

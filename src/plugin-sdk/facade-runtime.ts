@@ -10,6 +10,7 @@ import {
   type PluginModuleLoaderCache,
 } from "../plugins/plugin-module-loader-cache.js";
 import { resolveLoaderPackageRoot } from "../plugins/sdk-alias.js";
+import { getWorkerDeployFacadeActivationCheck } from "../worker/worker-deploy-runtime-registry.js";
 import {
   loadBundledPluginPublicSurfaceModuleSyncCore as loadBundledPluginPublicSurfaceModuleSyncLight,
   loadFacadeModuleAtLocationSync as loadFacadeModuleAtLocationSyncShared,
@@ -116,6 +117,8 @@ type BundledPluginPublicSurfaceParams = {
 
 type FacadeActivationCheckRuntimeModule = typeof import("./facade-activation-check.runtime.js");
 
+declare const WORKER_DEPLOY_BUILD: boolean;
+
 const nodeRequire = createRequire(import.meta.url);
 const FACADE_ACTIVATION_CHECK_RUNTIME_CANDIDATES = [
   "./facade-activation-check.runtime.js",
@@ -153,6 +156,13 @@ function loadFacadeActivationCheckRuntimeFromCandidates(
 function loadFacadeActivationCheckRuntime(): FacadeActivationCheckRuntimeModule {
   if (facadeActivationCheckRuntimeModule) {
     return facadeActivationCheckRuntimeModule;
+  }
+  facadeActivationCheckRuntimeModule = getWorkerDeployFacadeActivationCheck();
+  if (facadeActivationCheckRuntimeModule) {
+    return facadeActivationCheckRuntimeModule;
+  }
+  if (typeof WORKER_DEPLOY_BUILD === "boolean" && WORKER_DEPLOY_BUILD) {
+    throw new Error("Worker deploy facade activation runtime was not initialized");
   }
   facadeActivationCheckRuntimeModule = loadFacadeActivationCheckRuntimeFromCandidates((candidate) =>
     nodeRequire(candidate),

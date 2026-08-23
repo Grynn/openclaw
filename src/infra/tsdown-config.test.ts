@@ -174,6 +174,7 @@ describe("tsdown config", () => {
       "agents/model-catalog.runtime",
       "agents/models-config.runtime",
       "provider-model-normalization-provider.runtime",
+      "runtime-model-auth.runtime",
       "cli/gateway-lifecycle.runtime",
       "agents/compaction-planning.worker",
       "agents/model-provider-auth.worker",
@@ -238,6 +239,9 @@ describe("tsdown config", () => {
 
     expect(sources["provider-model-normalization-provider.runtime"]).toBe(
       "src/agents/provider-model-normalization-provider.runtime.ts",
+    );
+    expect(sources["runtime-model-auth.runtime"]).toBe(
+      "src/plugins/runtime/runtime-model-auth.runtime.ts",
     );
     expect(sources["current-plugin-metadata-snapshot"]).toBe(
       "src/plugins/current-plugin-metadata-snapshot.ts",

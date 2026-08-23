@@ -10,6 +10,12 @@
  */
 import { createRequire } from "node:module";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import {
+  getWorkerDeployPluginMetadataCurrent,
+  getWorkerDeployPluginMetadataResolver,
+} from "../worker/worker-deploy-runtime-registry.js";
+
+declare const WORKER_DEPLOY_BUILD: boolean;
 
 type CurrentSnapshotModule = Pick<
   typeof import("./current-plugin-metadata-snapshot.js"),
@@ -39,7 +45,10 @@ export function registerPluginMetadataSnapshotReaders(readers: SnapshotReaderSlo
 
 const require = createRequire(import.meta.url);
 
-function createModuleLoader(candidates: readonly string[]): () => unknown {
+function createModuleLoader(
+  candidates: readonly string[],
+  getWorkerRuntime: () => unknown,
+): () => unknown {
   let loaded: unknown;
   let attempted = false;
   return () => {
@@ -50,6 +59,13 @@ function createModuleLoader(candidates: readonly string[]): () => unknown {
       return null;
     }
     attempted = true;
+    loaded = getWorkerRuntime();
+    if (loaded) {
+      return loaded;
+    }
+    if (typeof WORKER_DEPLOY_BUILD === "boolean" && WORKER_DEPLOY_BUILD) {
+      throw new Error("Worker deploy plugin metadata runtime was not initialized");
+    }
     for (const candidate of candidates) {
       try {
         loaded = require(candidate);
@@ -62,14 +78,18 @@ function createModuleLoader(candidates: readonly string[]): () => unknown {
   };
 }
 
-const loadCurrentSnapshotModule = createModuleLoader([
-  "./current-plugin-metadata-snapshot.js",
-  "./current-plugin-metadata-snapshot.ts",
-]) as () => CurrentSnapshotModule | null;
-const loadSnapshotLoaderModule = createModuleLoader([
-  "./plugin-metadata-snapshot.js",
-  "./plugin-metadata-snapshot.ts",
-]) as () => SnapshotLoaderModule | null;
+const loadCurrentSnapshotModule = createModuleLoader(
+  typeof WORKER_DEPLOY_BUILD === "boolean" && WORKER_DEPLOY_BUILD
+    ? []
+    : ["./current-plugin-metadata-snapshot.js", "./current-plugin-metadata-snapshot.ts"],
+  getWorkerDeployPluginMetadataCurrent,
+) as () => CurrentSnapshotModule | null;
+const loadSnapshotLoaderModule = createModuleLoader(
+  typeof WORKER_DEPLOY_BUILD === "boolean" && WORKER_DEPLOY_BUILD
+    ? []
+    : ["./plugin-metadata-snapshot.js", "./plugin-metadata-snapshot.ts"],
+  getWorkerDeployPluginMetadataResolver,
+) as () => SnapshotLoaderModule | null;
 
 /** Reads the current plugin metadata snapshot, loading the snapshot graph lazily. */
 export function getCurrentPluginMetadataSnapshotRuntime(

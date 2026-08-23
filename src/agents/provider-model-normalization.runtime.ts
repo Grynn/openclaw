@@ -5,11 +5,14 @@
  */
 import { createRequire } from "node:module";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
+import { getWorkerDeployProviderModelNormalization } from "../worker/worker-deploy-runtime-registry.js";
 
 type ProviderRuntimeModule = Pick<
   typeof import("./provider-model-normalization-provider.runtime.js"),
   "normalizeProviderModelIdWithPlugin"
 >;
+
+declare const WORKER_DEPLOY_BUILD: boolean;
 
 const require = createRequire(import.meta.url);
 // The unified build flattens shared chunks into dist/, so this adjacent stable
@@ -31,6 +34,13 @@ function loadProviderRuntime(): ProviderRuntimeModule | null {
     return null;
   }
   providerRuntimeLoadAttempted = true;
+  providerRuntimeModule = getWorkerDeployProviderModelNormalization();
+  if (providerRuntimeModule) {
+    return providerRuntimeModule;
+  }
+  if (typeof WORKER_DEPLOY_BUILD === "boolean" && WORKER_DEPLOY_BUILD) {
+    throw new Error("Worker deploy provider normalization runtime was not initialized");
+  }
   for (const candidate of PROVIDER_RUNTIME_CANDIDATES) {
     try {
       providerRuntimeModule = require(candidate) as ProviderRuntimeModule;

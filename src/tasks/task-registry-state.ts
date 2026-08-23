@@ -4,6 +4,7 @@ import { uniqueStrings } from "@openclaw/normalization-core/string-normalization
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { createLazyPromiseLoader } from "../shared/lazy-runtime.js";
+import { getWorkerDeployTaskRegistryControlLoader } from "../worker/worker-deploy-runtime-registry.js";
 import type { TaskRegistryControlRuntime } from "./task-registry-control.types.js";
 import {
   cloneTaskDeliveryState,
@@ -17,6 +18,8 @@ import {
   type TaskRegistryObserverEvent,
 } from "./task-registry.store.js";
 import type { TaskDeliveryState, TaskRecord, TaskRuntime } from "./task-registry.types.js";
+
+declare const WORKER_DEPLOY_BUILD: boolean;
 
 export const taskRegistryLog = createSubsystemLogger("tasks/registry");
 export const TASK_FLOW_SYNC_RETRY_DELAYS_MS = [1_000, 5_000, 25_000, 120_000, 600_000] as const;
@@ -65,6 +68,13 @@ export const deliveryRuntimeLoader = createLazyPromiseLoader(
 export const controlRuntimeLoader = createLazyPromiseLoader(
   () =>
     Promise.resolve().then(() => {
+      if (typeof WORKER_DEPLOY_BUILD === "boolean" && WORKER_DEPLOY_BUILD) {
+        const loadWorkerRuntime = getWorkerDeployTaskRegistryControlLoader();
+        if (!loadWorkerRuntime) {
+          throw new Error("Worker deploy task registry control runtime was not initialized");
+        }
+        return loadWorkerRuntime() as Promise<TaskRegistryControlRuntime>;
+      }
       for (const candidate of TASK_REGISTRY_CONTROL_RUNTIME_CANDIDATES) {
         try {
           return require(candidate) as TaskRegistryControlRuntime;
