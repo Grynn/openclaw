@@ -2792,9 +2792,16 @@ describe("createOpenClawCodingTools read behavior", () => {
     expect(extractToolText(await read.execute("sandbox-skill", { path: relativePath }))).toBe(
       "# Demo\ncomplete instructions",
     );
-    await expect(
-      read.execute("sandbox-skill-window", { path: `/workspace/${relativePath}`, cursor: 0 }),
-    ).rejects.toThrow(/whole|partial|window/i);
+    expect(
+      extractToolText(
+        await read.execute("sandbox-skill-window", {
+          path: relativePath,
+          offset: 2,
+          limit: 0,
+          cursor: 3,
+        }),
+      ),
+    ).toBe("# Demo\ncomplete instructions");
   });
 
   it("reads exact node skill locators without sending them to the filesystem backend", async () => {
@@ -2816,10 +2823,15 @@ describe("createOpenClawCodingTools read behavior", () => {
     const result = await tool.execute("node-skill-read", { path: locator });
 
     expect(extractToolText(result)).toContain("remote-marker");
-    for (const window of [{ offset: 1 }, { limit: 1 }, { cursor: 0 }]) {
-      await expect(
-        tool.execute("whole-skill-window", { path: locator, ...window }),
-      ).rejects.toThrow(/whole|partial|window/i);
+    for (const window of [
+      { offset: 2 },
+      { limit: 1 },
+      { cursor: 3 },
+      { offset: 1, limit: 0, cursor: 0 },
+    ]) {
+      expect(
+        extractToolText(await tool.execute("whole-skill-window", { path: locator, ...window })),
+      ).toBe("# Pond\nremote-marker");
     }
     expect(execute).not.toHaveBeenCalled();
   });

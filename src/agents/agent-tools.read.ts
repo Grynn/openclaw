@@ -1190,11 +1190,6 @@ export function wrapReadToolWithSkillContent(
       if (!normalizedPath || !instructionContent.has(resolveInstructionPath(normalizedPath))) {
         return tool.execute(toolCallId, args, signal, onUpdate);
       }
-      if (record && ["offset", "limit", "cursor"].some((key) => record[key] !== undefined)) {
-        throw new Error(
-          "Skill instructions must be read whole; offset, limit, and cursor windows are not allowed.",
-        );
-      }
       const instructionTool =
         typeof instructionContent.get(normalizedPath) === "string"
           ? (virtualRead ??= createOpenClawReadTool(
@@ -1211,8 +1206,17 @@ export function wrapReadToolWithSkillContent(
               options,
             ))
           : tool;
-      const instructionArgs =
-        normalizedPath === rawPath || !record ? args : { ...record, path: normalizedPath };
+      // Some providers routinely populate every optional read argument, and models may also
+      // request a window before recognizing this as an instruction file. Enforce the whole-read
+      // invariant at execution time instead of rejecting the call and inviting retry loops or
+      // shell-based bypasses.
+      const instructionArgs: Record<string, unknown> = {
+        ...record,
+        path: normalizedPath,
+      };
+      delete instructionArgs.offset;
+      delete instructionArgs.limit;
+      delete instructionArgs.cursor;
       const result = await instructionTool.execute(toolCallId, instructionArgs, signal, onUpdate);
       const details = result.details;
       if (
