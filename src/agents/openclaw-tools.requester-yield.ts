@@ -1,5 +1,3 @@
-import { isSubagentSessionKey } from "../sessions/session-key-utils.js";
-
 type YieldCompletionClaim = () => boolean | Promise<boolean>;
 
 export function createRequesterYieldCallback(params: {
@@ -8,9 +6,11 @@ export function createRequesterYieldCallback(params: {
   requesterTurnRunId?: string;
   claimYieldCompletion?: YieldCompletionClaim;
 }): YieldCompletionClaim | undefined {
-  const selfClaimed = isSubagentSessionKey(params.requesterSessionKey);
+  // A subagent session key identifies who is waiting for this turn; it does not
+  // prove this turn has a child completion that can wake it. Only the runtime or
+  // durable child registry may authorize a yield.
   const hasRegistryClaim = Boolean(params.requesterSessionKey && params.requesterTurnRunId);
-  if (!params.claimYieldCompletion && !selfClaimed && !hasRegistryClaim) {
+  if (!params.claimYieldCompletion && !hasRegistryClaim) {
     return undefined;
   }
   return async () => {
@@ -18,7 +18,7 @@ export function createRequesterYieldCallback(params: {
     // so a runtime failure cannot record a yield that never reaches onYield.
     const runtimeClaimed = (await params.claimYieldCompletion?.()) ?? false;
     if (!hasRegistryClaim) {
-      return runtimeClaimed || selfClaimed;
+      return runtimeClaimed;
     }
     const { markRequesterTurnYielded } = await import("./subagents/registry/subagent-registry.js");
     const registryClaimed =
@@ -27,6 +27,6 @@ export function createRequesterYieldCallback(params: {
         requesterAgentId: params.requesterAgentId,
         requesterTurnRunId: params.requesterTurnRunId as string,
       }) > 0;
-    return runtimeClaimed || selfClaimed || registryClaimed;
+    return runtimeClaimed || registryClaimed;
   };
 }

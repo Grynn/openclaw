@@ -700,7 +700,7 @@ describe("sessions_yield completion ownership", () => {
     }
   });
 
-  it("accepts a subagent self-yield without a pending child completion", async () => {
+  it("keeps a subagent turn active when it owns no pending child completion", async () => {
     const registry = await import("./subagents/registry/subagent-registry.js");
     const markRequesterTurnYielded = vi
       .spyOn(registry, "markRequesterTurnYielded")
@@ -722,14 +722,18 @@ describe("sessions_yield completion ownership", () => {
       );
 
       await expect(tool.execute("yield-subagent", {})).resolves.toMatchObject({
-        details: { status: "yielded" },
+        details: {
+          status: "error",
+          error:
+            "No pending child completion is owned by this turn. Continue working because independent background operations complete separately.",
+        },
       });
       expect(markRequesterTurnYielded).toHaveBeenCalledExactlyOnceWith({
         requesterAgentId: "main",
         requesterSessionKey: "agent:main:subagent:worker",
         requesterTurnRunId: "run-subagent",
       });
-      expect(onYield).toHaveBeenCalledOnce();
+      expect(onYield).not.toHaveBeenCalled();
     } finally {
       markRequesterTurnYielded.mockRestore();
     }
