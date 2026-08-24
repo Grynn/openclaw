@@ -797,7 +797,79 @@ describe("createCodexDynamicToolBridge", () => {
     expectNoNamespace(directMessage);
   });
 
-  it("keeps the full message schema directly visible in compatibility direct mode", () => {
+  it("enforces the root source-reply contract while retaining deferred rich actions", async () => {
+    const execute = vi.fn(async () => textToolResult("message accepted"));
+    const prepareArguments = vi.fn((arguments_: unknown) => arguments_);
+    const bridge = createCodexDynamicToolBridge({
+      tools: [
+        createTool({
+          name: "message",
+          description: "Full message manager.",
+          parameters: {
+            type: "object",
+            properties: {
+              action: { type: "string", enum: ["send", "react"] },
+              message: { type: "string" },
+              emoji: { type: "string" },
+              target: { type: "string" },
+            },
+            required: ["action"],
+            additionalProperties: false,
+          },
+          prepareArguments,
+          execute,
+        }),
+      ],
+      signal: new AbortController().signal,
+      directToolNames: ["message"],
+    });
+
+    const richRootResult = await bridge.handleToolCall({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      callId: "call-root-rich",
+      namespace: null,
+      tool: "message",
+      arguments: { action: "react", emoji: "✅" },
+    });
+    expectSchemaRejection(richRootResult, execute, "action");
+
+    const routedRootResult = await bridge.handleToolCall({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      callId: "call-root-routed",
+      namespace: null,
+      tool: "message",
+      arguments: { action: "send", message: "hello", target: "other-destination" },
+    });
+    expectSchemaRejection(routedRootResult, execute, "additional properties");
+    expect(prepareArguments).not.toHaveBeenCalled();
+
+    const directResult = await bridge.handleToolCall({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      callId: "call-root-send",
+      namespace: null,
+      tool: "message",
+      arguments: { action: "send", message: "hello", final: true },
+    });
+    expect(directResult.success).toBe(true);
+
+    const deferredResult = await bridge.handleToolCall({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      callId: "call-deferred-rich",
+      namespace: CODEX_OPENCLAW_DYNAMIC_TOOL_NAMESPACE,
+      tool: "message",
+      arguments: { action: "react", emoji: "✅" },
+    });
+    expect(deferredResult.success).toBe(true);
+    expect(prepareArguments).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the full message schema directly visible in compatibility direct mode", async () => {
+    const execute = vi.fn(async () => textToolResult("compatibility message accepted"));
     const bridge = createCodexDynamicToolBridge({
       tools: [
         createTool({
@@ -807,6 +879,7 @@ describe("createCodexDynamicToolBridge", () => {
             type: "object",
             properties: { pollId: { type: "string" } },
           },
+          execute,
         }),
       ],
       signal: new AbortController().signal,
@@ -819,6 +892,17 @@ describe("createCodexDynamicToolBridge", () => {
     expectNoNamespace(specs[0]);
     expect(specs[0]?.description).toBe("Full message manager.");
     expect(JSON.stringify(specs[0]?.inputSchema)).toContain("pollId");
+
+    const result = await bridge.handleToolCall({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      callId: "call-direct-compatibility",
+      namespace: null,
+      tool: "message",
+      arguments: { pollId: "poll-1" },
+    });
+    expect(result.success).toBe(true);
+    expect(execute).toHaveBeenCalledOnce();
   });
 
   it("keeps progress_card direct when searchable loading defers broad tools", () => {

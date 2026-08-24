@@ -622,17 +622,18 @@ export function createCodexDynamicToolBridge(params: {
     ...ALWAYS_DIRECT_DYNAMIC_TOOL_NAMES,
     ...(params.directToolNames ?? []),
   ]);
+  const loading = params.loading ?? "searchable";
   let readRemoteWorkspaceFile: CodexRemoteWorkspaceFileReader | undefined;
   return {
     availableTools: availableTools.map((entry) => entry.tool),
     availableSpecs: createCodexDynamicToolSpecs({
       entries: availableTools,
-      loading: params.loading ?? "searchable",
+      loading,
       directToolNames,
     }),
     specs: createCodexDynamicToolSpecs({
       entries: registeredSpecTools,
-      loading: params.loading ?? "searchable",
+      loading,
       directToolNames,
     }),
     resultContentSourceForTool: (toolName) => toolMap.get(toolName)?.tool.resultContentSource,
@@ -682,6 +683,14 @@ export function createCodexDynamicToolBridge(params: {
       const { tool, name: toolName } = toolEntry;
       const rawArguments = call.arguments;
       const args = asNonArrayRecord(rawArguments);
+      const usesDirectSourceReplySchema =
+        toolName === "message" &&
+        loading !== "direct" &&
+        directToolNames.has(toolName) &&
+        (call.namespace === null || call.namespace === undefined);
+      const executionInputSchema = usesDirectSourceReplySchema
+        ? DIRECT_SOURCE_REPLY_MESSAGE_SCHEMA
+        : toolEntry.inputSchema;
       const startedAt = Date.now();
       const signal = composeAbortSignals(params.signal, options?.signal);
       let didStartExecution = false;
@@ -715,6 +724,16 @@ export function createCodexDynamicToolBridge(params: {
         }
       };
       try {
+        // The root source-reply schema is an execution boundary, not only catalog
+        // guidance. Reject forged rich/routed root calls before message-specific
+        // preparation can read media; the wrapper validates hook-adjusted args again.
+        if (usesDirectSourceReplySchema) {
+          assertCodexDynamicToolInputMatchesSchema({
+            toolName,
+            schema: executionInputSchema,
+            value: rawArguments,
+          });
+        }
         // Compatibility preparation owns raw arguments; record coercion must not run first.
         const prepare = tool.prepareArguments;
         const toolArgs = prepare ? Reflect.apply(prepare, tool, [rawArguments]) : args;
@@ -750,7 +769,7 @@ export function createCodexDynamicToolBridge(params: {
               validate: (value) =>
                 assertCodexDynamicToolInputMatchesSchema({
                   toolName,
-                  schema: toolEntry.inputSchema,
+                  schema: executionInputSchema,
                   value,
                 }),
             }),
