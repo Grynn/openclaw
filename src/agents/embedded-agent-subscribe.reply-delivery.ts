@@ -274,9 +274,13 @@ export function createReplyDelivery({ params, state, log }: ReplyDeliveryParams)
     if (state.includeReasoning && text && !params.onBlockReply) {
       replaceCurrentAssistantText(text);
       state.suppressBlockChunks = true;
-    } else if (!addedDuringMessage && !chunkerHasBuffered && text) {
-      // Non-streaming models (no text_delta): ensure assistantTexts gets the final
-      // text when the chunker has nothing buffered to drain.
+    } else if (
+      !addedDuringMessage &&
+      text &&
+      (!chunkerHasBuffered || shouldAllowSilentTurnText(text))
+    ) {
+      // Visible buffered text is recorded when the chunker drains. Exact
+      // silence suppresses that delivery, so preserve its terminal control now.
       pushAssistantText(text);
     }
 

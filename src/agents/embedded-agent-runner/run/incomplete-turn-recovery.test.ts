@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
 import {
   buildEmbeddedRunnerAssistant,
   makeEmbeddedRunnerAttempt,
@@ -27,6 +28,22 @@ function emptyAttempt(assistant = emptyAssistant()) {
     lastAssistant: assistant,
     currentAttemptAssistant: assistant,
     currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+  });
+}
+
+function explicitSilentSideEffectAttempt(
+  overrides: Parameters<typeof makeEmbeddedRunnerAttempt>[0] = {},
+) {
+  const assistant = emptyAssistant({
+    content: [{ type: "text", text: SILENT_REPLY_TOKEN }],
+  });
+  return makeEmbeddedRunnerAttempt({
+    assistantTexts: [SILENT_REPLY_TOKEN],
+    toolMetas: [{ toolName: "write", meta: "path=note.txt", replaySafe: false }],
+    itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+    lastAssistant: assistant,
+    currentAttemptAssistant: assistant,
+    ...overrides,
   });
 }
 
@@ -162,6 +179,112 @@ describe("incomplete-turn recovery policy", () => {
         aborted: false,
         timedOut: false,
         attempt,
+      }),
+    ).toBe(false);
+  });
+
+  it("treats a required explicit silent reply as terminal after successful side effects", () => {
+    expect(
+      shouldTreatEmptyAssistantReplyAsSilent({
+        allowEmptyAssistantReplyAsSilent: true,
+        terminalReplyExpectation: "required",
+        payloadCount: 0,
+        aborted: false,
+        timedOut: false,
+        attempt: explicitSilentSideEffectAttempt(),
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    {
+      name: "allow-empty policy",
+      allowEmptyAssistantReplyAsSilent: true,
+      silentExpected: false,
+      expected: true,
+    },
+    {
+      name: "expected-silence policy",
+      allowEmptyAssistantReplyAsSilent: false,
+      silentExpected: true,
+      expected: true,
+    },
+    {
+      name: "no silence policy",
+      allowEmptyAssistantReplyAsSilent: false,
+      silentExpected: false,
+      expected: false,
+    },
+  ])(
+    "authorizes explicit silence through $name",
+    ({ allowEmptyAssistantReplyAsSilent, silentExpected, expected }) => {
+      expect(
+        shouldTreatEmptyAssistantReplyAsSilent({
+          allowEmptyAssistantReplyAsSilent,
+          silentExpected,
+          terminalReplyExpectation: "required",
+          payloadCount: 0,
+          aborted: false,
+          timedOut: false,
+          attempt: explicitSilentSideEffectAttempt(),
+        }),
+      ).toBe(expected);
+    },
+  );
+
+  it("does not let expected silence authorize a bare empty reply", () => {
+    expect(
+      shouldTreatEmptyAssistantReplyAsSilent({
+        allowEmptyAssistantReplyAsSilent: false,
+        silentExpected: true,
+        terminalReplyExpectation: "required",
+        payloadCount: 0,
+        aborted: false,
+        timedOut: false,
+        attempt: emptyAttempt(),
+      }),
+    ).toBe(false);
+  });
+
+  it.each([
+    { name: "caller abort", aborted: true },
+    { name: "timeout", timedOut: true },
+    {
+      name: "pending tool lifecycle",
+      attempt: { itemLifecycle: { startedCount: 1, completedCount: 0, activeCount: 1 } },
+    },
+    {
+      name: "pending client tool call",
+      attempt: { clientToolCalls: [{ name: "client", params: {} }] },
+    },
+    { name: "yield", attempt: { yieldDetected: true } },
+    {
+      name: "approval prompt",
+      attempt: { didSendDeterministicApprovalPrompt: true },
+    },
+    {
+      name: "last tool error",
+      attempt: { lastToolError: { toolName: "write", error: "write failed" } },
+    },
+    {
+      name: "accepted session spawn",
+      attempt: {
+        acceptedSessionSpawns: [{ runId: "child-run", childSessionKey: "agent:child" }],
+      },
+    },
+    {
+      name: "committed message delivery",
+      attempt: { messagingToolSentTexts: ["already delivered"] },
+    },
+  ])("does not let explicit silence bypass $name", ({ aborted, timedOut, attempt: overrides }) => {
+    expect(
+      shouldTreatEmptyAssistantReplyAsSilent({
+        allowEmptyAssistantReplyAsSilent: true,
+        terminalReplyExpectation: "required",
+        payloadCount: 0,
+        aborted: aborted ?? false,
+        timedOut: timedOut ?? false,
+        attempt: explicitSilentSideEffectAttempt(overrides),
       }),
     ).toBe(false);
   });

@@ -95,6 +95,8 @@ function shouldSkipNonVisibleTurnRetry(params: {
   return Boolean(
     params.aborted ||
     params.timedOut ||
+    params.attempt.itemLifecycle.activeCount > 0 ||
+    params.attempt.itemLifecycle.completedCount !== params.attempt.itemLifecycle.startedCount ||
     params.attempt.clientToolCalls ||
     params.attempt.yieldDetected ||
     params.attempt.didSendDeterministicApprovalPrompt ||
@@ -115,18 +117,22 @@ export function shouldTreatEmptyAssistantReplyAsSilent(params: {
   timedOut: boolean;
   attempt: IncompleteTurnAttempt;
 }): boolean {
-  // "optional" is the run consumer's declaration that no user-facing reply is
-  // owed (e.g. cron without a delivery route). Silence after side-effecting
-  // tools is intentional there; retry is replay-unsafe, so erroring would mark
-  // successful tool-only runs as failures.
+  const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
+  const explicitSilentReply =
+    params.payloadCount === 0 &&
+    assistant?.stopReason !== "error" &&
+    hasOnlySilentAssistantReply(params.attempt.assistantTexts);
+  const permittedExplicitSilence =
+    explicitSilentReply &&
+    (params.allowEmptyAssistantReplyAsSilent === true || params.silentExpected === true);
+  // Reply-optional runs owe no visible answer, while an explicit silent reply
+  // fulfills a required run. Neither should replay successful side effects.
   const terminalReplyOptional = params.terminalReplyExpectation === "optional";
-  const expectedExplicitSilence =
-    params.silentExpected === true && hasOnlySilentAssistantReply(params.attempt.assistantTexts);
   if (
-    (!params.allowEmptyAssistantReplyAsSilent && !expectedExplicitSilence) ||
+    (!params.allowEmptyAssistantReplyAsSilent && !permittedExplicitSilence) ||
     shouldSkipNonVisibleTurnRetry({
       ...params,
-      tolerateSideEffects: terminalReplyOptional || expectedExplicitSilence,
+      tolerateSideEffects: terminalReplyOptional || permittedExplicitSilence,
     })
   ) {
     return false;
@@ -134,12 +140,7 @@ export function shouldTreatEmptyAssistantReplyAsSilent(params: {
   if (hasCommittedMessagingToolDeliveryEvidence(params.attempt)) {
     return false;
   }
-  const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
-  if (
-    params.payloadCount === 0 &&
-    assistant?.stopReason !== "error" &&
-    hasOnlySilentAssistantReply(params.attempt.assistantTexts)
-  ) {
+  if (permittedExplicitSilence) {
     return true;
   }
   // A visible turn owes a reply unless the model explicitly chose NO_REPLY.

@@ -59,10 +59,7 @@ const COMPACTION_CONTINUATION_RETRY_INSTRUCTION =
 const BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX =
   "Before accepting the previous final answer, apply this revision request and produce the revised final answer. Do not repeat completed work or rerun tools unless the request explicitly requires it.";
 
-type TerminalPresentationObservation = {
-  terminalPresentation?: string;
-  toolCallOrdinal?: number;
-};
+type TerminalPresentationObservation = { terminalPresentation?: string; toolCallOrdinal?: number };
 
 export function createTerminalToolPresentationTracker() {
   let latestOrdinal = -1;
