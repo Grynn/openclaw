@@ -266,8 +266,12 @@ already crossed by a transcript cursor.
   risk in the underlying transcript; the runner then keeps the generic
   precheck active and takes the maximum of the assembled estimate and the
   pre-assembly (unwindowed) session-history estimate when deciding whether to
-  preemptively compact. Either way, the messages you return are still what the
-  model sees - `promptAuthority` only affects the precheck.
+  preemptively compact. The engine still receives raw messages, while this
+  diagnostic estimate applies the host's nonmutating provider-bound caps to
+  tool-result text so bytes that cannot reach the model do not cause a false
+  overflow. Either way, the messages you return remain authoritative, subject
+  to normal host/provider normalization and tool-result projection -
+  `promptAuthority` only affects the precheck view.
 </ParamField>
 <ParamField path="contextProjection" type="ContextEngineProjection">
   Optional projection lifecycle for hosts with persistent backend threads (for example Codex app-server). `mode: "thread_bootstrap"` with a stable `epoch` asks the host to inject the assembled context once per epoch and reuse the backend thread until the epoch changes, instead of re-projecting every turn. Omit this field for normal per-turn projection.

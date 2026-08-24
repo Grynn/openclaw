@@ -13,6 +13,11 @@ import { log } from "./logger.js";
 import { MidTurnPrecheckSignal, type MidTurnPrecheckRequest } from "./run/midturn-precheck.js";
 import { shouldPreemptivelyCompactBeforePrompt } from "./run/preemptive-compaction.js";
 import {
+  cloneToolResultPromptProjectionState,
+  createToolResultPromptProjectionState,
+  type ToolResultPromptProjectionState,
+} from "./session-prompt-state.js";
+import {
   TOOL_RESULT_CHARS_PER_TOKEN_ESTIMATE,
   type MessageCharEstimateCache,
   createMessageCharEstimateCache,
@@ -20,7 +25,13 @@ import {
   getToolResultText,
   isToolResultMessage,
 } from "./tool-result-char-estimator.js";
-import { truncateToolResultMessage, truncateToolResultText } from "./tool-result-truncation.js";
+import {
+  resolveProviderPromptToolResultAggregateMaxChars,
+  resolveProviderPromptToolResultMaxChars,
+  truncateOversizedToolResultsInMessages,
+  truncateToolResultMessage,
+  truncateToolResultText,
+} from "./tool-result-truncation.js";
 
 const SINGLE_TOOL_RESULT_CONTEXT_SHARE = 0.5;
 const TRANSCRIPT_PROMPT_TEXT_KEY = "__openclawTranscriptPromptText";
@@ -41,6 +52,7 @@ type MidTurnPrecheckOptions = {
   contextTokenBudget: number;
   reserveTokens: () => number;
   toolResultMaxChars?: number;
+  toolResultPromptProjectionState?: ToolResultPromptProjectionState;
   getSystemPrompt?: () => string | undefined;
   getPrePromptMessageCount?: () => number;
   onMidTurnPrecheck?: (request: MidTurnPrecheckRequest) => void;
@@ -508,15 +520,35 @@ export function installToolResultContextGuard(params: {
         // Use the same post-truncation view the runtime will send to the next model call.
         // Recovery re-applies truncation to the persisted session manager, so
         // this precheck is only a routing signal, not the source of truth.
+        const precheckToolResultMaxChars =
+          params.midTurnPrecheck.toolResultMaxChars ??
+          resolveProviderPromptToolResultMaxChars({
+            contextWindowTokens: params.midTurnPrecheck.contextTokenBudget,
+          });
+        const precheckProjection = truncateOversizedToolResultsInMessages(
+          contextMessages,
+          params.midTurnPrecheck.contextTokenBudget,
+          precheckToolResultMaxChars,
+          resolveProviderPromptToolResultAggregateMaxChars({
+            contextWindowTokens: params.midTurnPrecheck.contextTokenBudget,
+            perResultMaxChars: precheckToolResultMaxChars,
+          }),
+          cloneToolResultPromptProjectionState(
+            params.midTurnPrecheck.toolResultPromptProjectionState ??
+              createToolResultPromptProjectionState(),
+          ),
+        );
+        const precheckMessages = precheckProjection.messages;
         const precheck = shouldPreemptivelyCompactBeforePrompt({
-          messages: contextMessages,
+          messages: precheckMessages,
           systemPrompt: params.midTurnPrecheck.getSystemPrompt?.(),
           // During a tool loop, the active user prompt is already part of messages.
           prompt: "",
           providerBoundaryIncludesSystemPromptFromIndex: prePromptMessageCount,
           contextTokenBudget: params.midTurnPrecheck.contextTokenBudget,
           reserveTokens: params.midTurnPrecheck.reserveTokens(),
-          toolResultMaxChars: params.midTurnPrecheck.toolResultMaxChars,
+          toolResultMaxChars: precheckToolResultMaxChars,
+          providerProjectionFirstChangedMessageIndex: precheckProjection.firstChangedMessageIndex,
         });
         const request = toMidTurnPrecheckRequest(precheck);
         log.debug(

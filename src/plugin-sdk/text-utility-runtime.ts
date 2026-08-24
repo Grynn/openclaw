@@ -11,6 +11,7 @@ export {
 export {
   DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS,
   resolveLiveToolResultMaxChars,
+  resolveProviderPromptToolResultMaxChars,
 } from "../agents/tool-result-limits.js";
 export { escapeHtml } from "../shared/html-escape.js";
 

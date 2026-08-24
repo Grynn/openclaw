@@ -9,6 +9,7 @@ import { sanitizeToolUseResultPairing } from "../session-transcript-repair.js";
 import { castAgentMessage } from "../test-helpers/agent-message-fixtures.js";
 import { formatContextLimitTruncationNotice } from "./context-truncation-notice.js";
 import { MidTurnPrecheckSignal } from "./run/midturn-precheck.js";
+import { createToolResultPromptProjectionState } from "./session-prompt-state.js";
 import {
   installContextEngineLoopHook,
   installToolResultContextGuard,
@@ -434,7 +435,7 @@ describe("installToolResultContextGuard", () => {
       expect(err).toBeInstanceOf(MidTurnPrecheckSignal);
       const signal = err as MidTurnPrecheckSignal;
       expect(signal.name).toBe("MidTurnPrecheckSignal");
-      expect(signal.request.route).toBe("compact_then_truncate");
+      expect(signal.request.route).toBe("compact_only");
       expect(typeof signal.request.overflowTokens).toBe("number");
       expect(typeof signal.request.toolResultReducibleChars).toBe("number");
     }
@@ -503,6 +504,41 @@ describe("installToolResultContextGuard", () => {
     });
 
     expect(transformed).toBe(contextForNextCall);
+  });
+
+  it("prechecks the bounded provider tail without mutating full live results", async () => {
+    const agent = makeGuardableAgent();
+    const fullOutput = "r".repeat(32_000);
+    const contextForNextCall = [
+      makeUser("run a wide tool batch"),
+      ...Array.from({ length: 12 }, (_, index) => makeToolResult(`call_${index}`, fullOutput)),
+    ];
+    const projectionState = createToolResultPromptProjectionState();
+    installToolResultContextGuard({
+      agent,
+      contextWindowTokens: 200_000,
+      midTurnPrecheck: {
+        enabled: true,
+        contextTokenBudget: 200_000,
+        reserveTokens: () => 20_000,
+        getPrePromptMessageCount: () => 1,
+        toolResultPromptProjectionState: projectionState,
+      },
+    });
+
+    const transformed = await agent.transformContext?.(
+      contextForNextCall,
+      new AbortController().signal,
+    );
+
+    expect(transformed).toBe(contextForNextCall);
+    expect(
+      contextForNextCall
+        .filter((message) => message.role === "toolResult")
+        .every((message) => getToolResultText(message) === fullOutput),
+    ).toBe(true);
+    expect(projectionState.replacements.size).toBe(0);
+    expect(projectionState.frozen.size).toBe(0);
   });
 
   it("does not run mid-turn precheck when no new tool result was appended", async () => {

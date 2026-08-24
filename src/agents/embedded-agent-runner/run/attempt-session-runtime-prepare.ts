@@ -192,6 +192,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
     sessionManager,
     settingsManager,
     sandbox: input.transport.sandbox,
+    toolResultPromptProjectionState,
   });
   input.lifecycle.onContextGuardsInstalled(contextGuards.remove);
 

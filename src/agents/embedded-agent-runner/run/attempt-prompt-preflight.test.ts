@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "../../runtime/index.js";
 import { SessionManager } from "../../sessions/index.js";
+import { createToolResultPromptProjectionState } from "../session-prompt-state.js";
 import {
   handleEmbeddedAttemptMidTurnPrecheck,
   prepareEmbeddedAttemptPromptPreflight,
@@ -155,7 +156,9 @@ describe("attempt prompt preflight", () => {
         skipPromptSubmission: false,
       },
       systemPrompt: "",
+      toolResultAggregateMaxChars: 1_000,
       toolResultMaxChars: 1_000,
+      toolResultPromptProjectionState: createToolResultPromptProjectionState(),
     });
 
     expect(result.skipPromptSubmission).toBe(false);
@@ -189,7 +192,9 @@ describe("attempt prompt preflight", () => {
       sessionMessageCount: 0,
       state,
       systemPrompt: "",
+      toolResultAggregateMaxChars: 1_000,
       toolResultMaxChars: 1_000,
+      toolResultPromptProjectionState: createToolResultPromptProjectionState(),
     });
 
     expect(result).toEqual(state);
@@ -225,7 +230,9 @@ describe("attempt prompt preflight", () => {
         skipPromptSubmission: false,
       },
       systemPrompt: "sys",
+      toolResultAggregateMaxChars: 1_000,
       toolResultMaxChars: 1_000,
+      toolResultPromptProjectionState: createToolResultPromptProjectionState(),
     });
 
     expect(result.skipPromptSubmission).toBe(false);
@@ -233,5 +240,68 @@ describe("attempt prompt preflight", () => {
     expect(result.promptErrorSource).toBeNull();
     expect(result.preflightRecovery).toBeUndefined();
     expect(sessionManager.buildSessionContext().messages).toEqual([toolResult]);
+  });
+
+  it("bounds context-engine preassembly tool results before they override preflight pressure", async () => {
+    const unwindowedMessages = [
+      { role: "user", content: "raw context", timestamp: 1 } as AgentMessage,
+      ...Array.from({ length: 12 }, (_, index) => ({
+        ...makeToolResultMessage(String(index).repeat(60_000)),
+        toolCallId: `call-${index}`,
+        timestamp: index + 2,
+      })),
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "prior provider reply" }],
+        usage: {
+          input: 119_800,
+          output: 200,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 120_000,
+          contextUsage: { state: "available", promptTokens: 119_800, totalTokens: 120_000 },
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "stop",
+        timestamp: 20,
+      } as AgentMessage,
+    ];
+    const sourceBytes = JSON.stringify(unwindowedMessages);
+    const unboundedEstimate = estimateLlmBoundaryTokenPressure({
+      messages: unwindowedMessages,
+      systemPrompt: "system",
+      prompt: "continue",
+    });
+
+    const result = await prepareEmbeddedAttemptPromptPreflight({
+      attempt,
+      contextEngineAssemblySucceeded: true,
+      contextEnginePromptAuthority: "preassembly_may_overflow",
+      contextTokenBudget: 128_000,
+      hookMessagesForCurrentPrompt: [
+        { role: "user", content: "small assembled context", timestamp: 20 } as AgentMessage,
+      ],
+      includeBoundaryTimestamp: false,
+      promptForPrecheck: "continue",
+      reserveTokens: 20_000,
+      sessionMessageCount: unwindowedMessages.length,
+      state: {
+        contextBudgetStatus: undefined,
+        preflightRecovery: undefined,
+        promptError: null,
+        promptErrorSource: null,
+        skipPromptSubmission: false,
+      },
+      systemPrompt: "system",
+      toolResultAggregateMaxChars: 128_000,
+      toolResultMaxChars: 32_000,
+      toolResultPromptProjectionState: createToolResultPromptProjectionState(),
+      unwindowedContextEngineMessagesForPrecheck: unwindowedMessages,
+    });
+
+    expect(result.contextBudgetStatus?.route).toBe("fits");
+    expect(result.contextBudgetStatus?.shouldCompact).toBe(false);
+    expect(result.contextBudgetStatus?.estimatedPromptTokens).toBeLessThan(unboundedEstimate);
+    expect(JSON.stringify(unwindowedMessages)).toBe(sourceBytes);
   });
 });

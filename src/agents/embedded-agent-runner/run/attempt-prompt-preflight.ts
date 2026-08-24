@@ -9,7 +9,12 @@ import type { AgentMessage } from "../../runtime/index.js";
 import type { SessionManager } from "../../sessions/index.js";
 import { log } from "../logger.js";
 import {
+  cloneToolResultPromptProjectionState,
+  type ToolResultPromptProjectionState,
+} from "../session-prompt-state.js";
+import {
   resolveLiveToolResultMaxChars,
+  truncateOversizedToolResultsInMessages,
   truncateOversizedToolResultsInSessionManager,
 } from "../tool-result-truncation.js";
 import type { AttemptContextEngine } from "./attempt-context-engine-helpers.js";
@@ -171,7 +176,10 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
   state: AttemptPromptPreflightState;
   systemPrompt: string;
   timezone?: string;
+  toolResultPromptProjectionFirstChangedMessageIndex?: number;
+  toolResultAggregateMaxChars: number;
   toolResultMaxChars: number;
+  toolResultPromptProjectionState: ToolResultPromptProjectionState;
   unwindowedContextEngineMessagesForPrecheck?: AgentMessage[];
 }): Promise<AttemptPromptPreflightState> {
   const { attempt } = input;
@@ -184,7 +192,7 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
           ...(input.includeBoundaryTimestamp ? {} : { includeTimestamp: false }),
         }
       : undefined;
-  const unwindowedLlmBoundaryMessagesForPrecheck =
+  const unwindowedLlmBoundaryMessages =
     input.contextEnginePromptAuthority === "preassembly_may_overflow" &&
     input.unwindowedContextEngineMessagesForPrecheck
       ? normalizeMessagesForLlmBoundary(
@@ -192,10 +200,24 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
           boundaryOptions,
         )
       : undefined;
+  // The context engine's raw pre-assembly view may diagnose pressure, but it
+  // must not reintroduce tool-result bytes removed from the provider projection.
+  const unwindowedPromptProjection = unwindowedLlmBoundaryMessages
+    ? truncateOversizedToolResultsInMessages(
+        unwindowedLlmBoundaryMessages,
+        input.contextTokenBudget,
+        input.toolResultMaxChars,
+        input.toolResultAggregateMaxChars,
+        cloneToolResultPromptProjectionState(input.toolResultPromptProjectionState),
+      )
+    : undefined;
+  const unwindowedLlmBoundaryMessagesForPrecheck = unwindowedPromptProjection?.messages;
   const llmBoundaryTokenPressure = estimateLlmBoundaryTokenPressure({
     messages: input.hookMessagesForCurrentPrompt,
     systemPrompt: input.systemPrompt,
     prompt: input.promptForPrecheck,
+    providerProjectionFirstChangedMessageIndex:
+      input.toolResultPromptProjectionFirstChangedMessageIndex,
   });
   let preemptiveCompaction: ReturnType<typeof shouldPreemptivelyCompactBeforePrompt> | null = null;
   const shouldSkipPrecheck =
@@ -221,6 +243,8 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
       contextTokenBudget: input.contextTokenBudget,
       reserveTokens: input.reserveTokens,
       toolResultMaxChars: input.toolResultMaxChars,
+      providerProjectionFirstChangedMessageIndex:
+        unwindowedPromptProjection?.firstChangedMessageIndex,
       llmBoundaryTokenPressure: {
         estimatedPromptTokens: llmBoundaryTokenPressure,
         source: "llm_boundary_normalized_prompt",

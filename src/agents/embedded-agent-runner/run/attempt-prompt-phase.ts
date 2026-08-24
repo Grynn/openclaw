@@ -87,7 +87,10 @@ type PromptPreflightPhaseInput = Omit<
   | "sessionMessageCount"
   | "state"
   | "systemPrompt"
+  | "toolResultAggregateMaxChars"
   | "toolResultMaxChars"
+  | "toolResultPromptProjectionFirstChangedMessageIndex"
+  | "toolResultPromptProjectionState"
 > & {
   activeContextEngine?: PromptPreflightInput["activeContextEngine"];
 };
@@ -361,7 +364,15 @@ export async function runEmbeddedAttemptPromptPhase(input: {
       sessionMessageCount: activeSession.messages.length,
       state,
       systemPrompt: promptContext.systemPromptForHook,
+      ...(promptContext.promptToolResultProjectionFirstChangedMessageIndex !== undefined
+        ? {
+            toolResultPromptProjectionFirstChangedMessageIndex:
+              promptContext.promptToolResultProjectionFirstChangedMessageIndex,
+          }
+        : {}),
+      toolResultAggregateMaxChars: promptContext.promptToolResultAggregateMaxChars,
       toolResultMaxChars: promptContext.promptToolResultMaxChars,
+      toolResultPromptProjectionState: input.context.toolResultPromptProjectionState,
     });
     publishDispatchState(state);
 

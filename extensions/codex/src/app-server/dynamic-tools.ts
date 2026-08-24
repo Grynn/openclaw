@@ -59,7 +59,7 @@ import {
 import {
   DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS,
   estimateToolResultTextChars,
-  resolveLiveToolResultMaxChars,
+  resolveProviderPromptToolResultMaxChars,
   sliceToolResultTextToBudget,
 } from "openclaw/plugin-sdk/text-utility-runtime";
 import type { CodexDynamicToolsLoading } from "./config.js";
@@ -555,7 +555,7 @@ export function createCodexDynamicToolBridge(params: {
     typeof contextWindowTokens === "number" &&
     Number.isFinite(contextWindowTokens) &&
     contextWindowTokens > 0
-      ? Math.max(1, resolveLiveToolResultMaxChars({ contextWindowTokens }))
+      ? Math.max(1, resolveProviderPromptToolResultMaxChars({ contextWindowTokens }))
       : DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS;
   const availableProjection = projectCodexExecutableDynamicToolSurface(
     params.tools,

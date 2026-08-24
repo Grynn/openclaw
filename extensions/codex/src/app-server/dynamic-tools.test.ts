@@ -1797,7 +1797,7 @@ describe("createCodexDynamicToolBridge", () => {
     { label: "negative", contextWindowTokens: -1, maxChars: 16_000 },
     { label: "non-finite", contextWindowTokens: Number.POSITIVE_INFINITY, maxChars: 16_000 },
     { label: "tiny", contextWindowTokens: 1, maxChars: 1 },
-    { label: "extra-large", contextWindowTokens: 200_000, maxChars: 64_000 },
+    { label: "extra-large", contextWindowTokens: 200_000, maxChars: 32_000 },
   ])(
     "preserves the canonical cap for $label contexts",
     async ({ contextWindowTokens, maxChars }) => {

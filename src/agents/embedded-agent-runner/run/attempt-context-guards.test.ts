@@ -37,6 +37,12 @@ function createInput(overrides: Record<string, unknown> = {}) {
     getBlockImages: vi.fn(() => false),
     getCompactionReserveTokens: vi.fn(() => 64),
   } as unknown as AgentSession["settingsManager"];
+  const toolResultPromptProjectionState = {
+    ambiguousBaseKeys: new Set<string>(),
+    frozen: new Set<string>(),
+    replacements: new Map<string, AgentMessage>(),
+    sourceTextByKey: new Map<string, string[]>(),
+  };
   return {
     activeSession,
     agentDir: "/tmp/agent",
@@ -65,6 +71,7 @@ function createInput(overrides: Record<string, unknown> = {}) {
     sessionAgentId: "main",
     sessionManager: {},
     settingsManager,
+    toolResultPromptProjectionState,
     ...overrides,
   };
 }
@@ -102,6 +109,7 @@ describe("installEmbeddedAttemptContextGuards", () => {
         enabled: true,
         contextTokenBudget: 1_024,
         toolResultMaxChars: expect.any(Number),
+        toolResultPromptProjectionState: input.toolResultPromptProjectionState,
       },
     });
 

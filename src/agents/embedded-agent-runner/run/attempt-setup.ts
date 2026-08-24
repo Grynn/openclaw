@@ -55,6 +55,7 @@ import {
   mapSandboxSkillUsagePaths,
   resolveSandboxSkillRuntimeInputs,
 } from "../sandbox-skills.js";
+import type { ToolResultPromptProjectionState } from "../session-prompt-state.js";
 import {
   installContextEngineLoopHook,
   installToolResultContextGuard,
@@ -62,7 +63,7 @@ import {
 import {
   pruneExpiredCacheTtlToolResults,
   resolveCacheTtlPruningSettings,
-  resolveLiveToolResultMaxChars,
+  resolveProviderPromptToolResultMaxChars,
 } from "../tool-result-truncation.js";
 import { mapThinkingLevel, mapThinkingLevelForProvider } from "../utils.js";
 import { buildLoopPromptCacheInfo } from "./attempt-context-engine-helpers.js";
@@ -278,6 +279,7 @@ export function installEmbeddedAttemptContextGuards(input: {
   sessionAgentId: string;
   sessionManager: ReturnType<typeof guardSessionManager>;
   settingsManager: AgentSession["settingsManager"];
+  toolResultPromptProjectionState?: ToolResultPromptProjectionState;
   sandbox?: SandboxContext | null;
 }): {
   getAfterTurnCheckpoint: () => number | null;
@@ -294,7 +296,7 @@ export function installEmbeddedAttemptContextGuards(input: {
         DEFAULT_CONTEXT_TOKENS,
     ),
   );
-  const toolResultMaxChars = resolveLiveToolResultMaxChars({
+  const toolResultMaxChars = resolveProviderPromptToolResultMaxChars({
     contextWindowTokens: contextTokenBudget,
   });
   let pendingMidTurnPrecheckRequest: MidTurnPrecheckRequest | null = null;
@@ -308,6 +310,7 @@ export function installEmbeddedAttemptContextGuards(input: {
             contextTokenBudget,
             reserveTokens: () => settingsManager.getCompactionReserveTokens(),
             toolResultMaxChars,
+            toolResultPromptProjectionState: input.toolResultPromptProjectionState,
             getSystemPrompt: input.getSystemPrompt,
             getPrePromptMessageCount: input.getPrePromptMessageCount,
             onMidTurnPrecheck: (request: MidTurnPrecheckRequest) => {

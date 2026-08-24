@@ -260,14 +260,22 @@ function isProviderContextUsageBarrier(message: AgentMessage): boolean {
 
 function resolveProviderContextBoundary(
   messages: AgentMessage[],
+  providerProjectionFirstChangedMessageIndex?: number,
 ): ProviderContextBoundary | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
+    const boundaryIsStale =
+      providerProjectionFirstChangedMessageIndex !== undefined &&
+      index >= providerProjectionFirstChangedMessageIndex;
     if (message && isProviderContextUsageBarrier(message)) {
-      return undefined;
+      if (!boundaryIsStale) {
+        return undefined;
+      }
+      continue;
     }
     const contextUsage = message?.role === "assistant" ? message.usage?.contextUsage : undefined;
     if (
+      !boundaryIsStale &&
       contextUsage?.state === "available" &&
       Number.isFinite(contextUsage.totalTokens) &&
       contextUsage.totalTokens > 0
@@ -284,6 +292,7 @@ function resolveProviderContextBoundary(
     // a hard barrier above. An explicit unavailable marker likewise wins over
     // these legacy fields and must not be promoted into context provenance.
     if (
+      !boundaryIsStale &&
       message?.role === "assistant" &&
       message.usage &&
       message.usage.contextUsage === undefined &&
@@ -305,8 +314,13 @@ function estimateTranscriptBoundaryTokenPressure(params: {
   prompt: string;
   /** A provider boundary at or after this fence already includes the current system prompt. */
   providerBoundaryIncludesSystemPromptFromIndex?: number;
+  /** First message changed by provider projection; usage at or after it is stale. */
+  providerProjectionFirstChangedMessageIndex?: number;
 }): TranscriptBoundaryTokenPressure {
-  const boundary = resolveProviderContextBoundary(params.messages);
+  const boundary = resolveProviderContextBoundary(
+    params.messages,
+    params.providerProjectionFirstChangedMessageIndex,
+  );
   const boundaryIncludesSystemPrompt =
     boundary !== undefined &&
     params.providerBoundaryIncludesSystemPromptFromIndex !== undefined &&
@@ -335,6 +349,8 @@ export function estimateLlmBoundaryTokenPressure(params: {
   messages: AgentMessage[];
   systemPrompt?: string;
   prompt: string;
+  /** First message changed by provider projection; usage at or after it is stale. */
+  providerProjectionFirstChangedMessageIndex?: number;
 }): number {
   return estimateTranscriptBoundaryTokenPressure(params).estimatedPromptTokens;
 }
@@ -375,6 +391,8 @@ export function shouldPreemptivelyCompactBeforePrompt(params: {
   prompt: string;
   /** A provider boundary at or after this fence already includes the current system prompt. */
   providerBoundaryIncludesSystemPromptFromIndex?: number;
+  /** First message changed by provider projection; usage at or after it is stale. */
+  providerProjectionFirstChangedMessageIndex?: number;
   contextTokenBudget: number;
   reserveTokens: number;
   toolResultMaxChars?: number;
@@ -392,6 +410,8 @@ export function shouldPreemptivelyCompactBeforePrompt(params: {
         prompt: params.prompt,
         providerBoundaryIncludesSystemPromptFromIndex:
           params.providerBoundaryIncludesSystemPromptFromIndex,
+        providerProjectionFirstChangedMessageIndex:
+          params.providerProjectionFirstChangedMessageIndex,
       });
   let estimatedPromptTokens =
     llmBoundaryTokenPressure?.estimatedPromptTokens ??
@@ -404,6 +424,7 @@ export function shouldPreemptivelyCompactBeforePrompt(params: {
       messages: params.unwindowedMessages,
       systemPrompt: params.systemPrompt,
       prompt: params.prompt,
+      providerProjectionFirstChangedMessageIndex: params.providerProjectionFirstChangedMessageIndex,
     });
     if (unwindowedTokenPressure.estimatedPromptTokens > estimatedPromptTokens) {
       estimatedPromptTokens = unwindowedTokenPressure.estimatedPromptTokens;

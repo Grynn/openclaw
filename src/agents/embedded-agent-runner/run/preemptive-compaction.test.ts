@@ -3,7 +3,11 @@
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import "../../test-helpers/agent-session-token-mock.js";
-import { estimateToolResultReductionPotential } from "../tool-result-truncation.js";
+import { createToolResultPromptProjectionState } from "../session-prompt-state.js";
+import {
+  estimateToolResultReductionPotential,
+  truncateOversizedToolResultsInMessages,
+} from "../tool-result-truncation.js";
 
 let PREEMPTIVE_OVERFLOW_ERROR_TEXT: typeof import("./preemptive-compaction.js").PREEMPTIVE_OVERFLOW_ERROR_TEXT;
 let estimateLlmBoundaryTokenPressure: typeof import("./preemptive-compaction.js").estimateLlmBoundaryTokenPressure;
@@ -221,6 +225,87 @@ describe("preemptive-compaction", () => {
     expect(result.estimatedPromptTokens).toBeGreaterThan(240_304);
     expect(result.estimatedPromptTokens).toBeLessThan(252_000);
     expect(result.route).toBe("fits");
+  });
+
+  it("drops a stale provider-usage floor when prompt projection changed earlier results", () => {
+    const rawMessages = [
+      { role: "user", content: "run the batch", timestamp: timestamp++ } as AgentMessage,
+      ...Array.from({ length: 12 }, () => makeToolResultMessage("r".repeat(60_000))),
+      makeProviderAssistant({ promptTokens: 278_803, totalTokens: 279_011 }),
+    ];
+    const projection = truncateOversizedToolResultsInMessages(
+      rawMessages,
+      272_000,
+      32_000,
+      256_000,
+      createToolResultPromptProjectionState(),
+    );
+    const projectedMessages = projection.messages;
+
+    const staleFloor = shouldPreemptivelyCompactBeforePrompt({
+      messages: projectedMessages,
+      prompt: "continue",
+      contextTokenBudget: 272_000,
+      reserveTokens: 20_000,
+    });
+    const projectedEstimate = shouldPreemptivelyCompactBeforePrompt({
+      messages: projectedMessages,
+      prompt: "continue",
+      contextTokenBudget: 272_000,
+      reserveTokens: 20_000,
+      providerProjectionFirstChangedMessageIndex: projection.firstChangedMessageIndex,
+    });
+
+    expect(projectedMessages).not.toBe(rawMessages);
+    expect(staleFloor.pressureSource).toBe("provider_context_usage");
+    expect(staleFloor.estimatedPromptTokens).toBeGreaterThanOrEqual(279_011);
+    expect(projectedEstimate.pressureSource).toBe("transcript_estimate");
+    expect(projectedEstimate.estimatedPromptTokens).toBeLessThan(200_000);
+    expect(projectedEstimate.estimatedPromptTokens).toBeLessThan(staleFloor.estimatedPromptTokens);
+    expect(projectedEstimate.route).toBe("fits");
+  });
+
+  it("preserves an authoritative provider-usage floor for an unchanged view", () => {
+    const result = shouldPreemptivelyCompactBeforePrompt({
+      messages: [
+        { role: "user", content: "short history", timestamp: timestamp++ } as AgentMessage,
+        makeProviderAssistant({ promptTokens: 278_803, totalTokens: 279_011 }),
+      ],
+      prompt: "continue",
+      contextTokenBudget: 300_000,
+      reserveTokens: 20_000,
+    });
+
+    expect(result.pressureSource).toBe("provider_context_usage");
+    expect(result.estimatedPromptTokens).toBeGreaterThanOrEqual(279_011);
+  });
+
+  it("preserves a provider-usage prefix when only trailing results are projected", () => {
+    const rawMessages = [
+      { role: "user", content: "x".repeat(1_000_000), timestamp: timestamp++ } as AgentMessage,
+      makeProviderAssistant({ promptTokens: 150_000, totalTokens: 150_200 }),
+      ...Array.from({ length: 12 }, () => makeToolResultMessage("r".repeat(60_000))),
+    ];
+    const projection = truncateOversizedToolResultsInMessages(
+      rawMessages,
+      1_000_000,
+      32_000,
+      256_000,
+      createToolResultPromptProjectionState(),
+    );
+
+    const result = shouldPreemptivelyCompactBeforePrompt({
+      messages: projection.messages,
+      prompt: "continue",
+      contextTokenBudget: 1_000_000,
+      reserveTokens: 20_000,
+      providerProjectionFirstChangedMessageIndex: projection.firstChangedMessageIndex,
+    });
+
+    expect(projection.firstChangedMessageIndex).toBeGreaterThan(1);
+    expect(result.pressureSource).toBe("provider_context_usage");
+    expect(result.estimatedPromptTokens).toBeGreaterThan(150_200);
+    expect(result.estimatedPromptTokens).toBeLessThan(400_000);
   });
 
   it("uses legacy embedded provider usage when contextUsage is absent", () => {

@@ -2,6 +2,7 @@ import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ImageContent } from "../../../llm/types.js";
 import type { AgentMessage } from "../../runtime/index.js";
+import { SessionManager } from "../../sessions/index.js";
 import {
   clearEmbeddedSessionPromptStates,
   getEmbeddedSessionPromptState,
@@ -199,5 +200,95 @@ describe("submitEmbeddedAttemptPrompt", () => {
     expect(
       originalHugeResult?.role === "toolResult" ? originalHugeResult.content : undefined,
     ).toEqual([{ type: "text", text: oversized }]);
+  });
+
+  it("projects the exact incident tail only at provider dispatch", async () => {
+    const { activeSession } = createSession();
+    const input = createBaseInput();
+    const incidentChars = [
+      50_000, 50_000, 50_000, 50_000, 50_000, 50_000, 50_000, 50_000, 50_000, 50_000, 65_954,
+      66_337,
+    ];
+    const durableMessages = [
+      { role: "user", content: "continue", timestamp: 1 },
+      {
+        role: "assistant",
+        content: incidentChars.map((_, index) => ({
+          type: "toolCall",
+          id: `incident-${index}`,
+          name: "read",
+          arguments: { path: `/tmp/incident-${index}` },
+        })),
+        stopReason: "toolUse",
+        api: "openai-responses",
+        provider: "openai",
+        model: "gpt-test",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        timestamp: 2,
+      } satisfies AgentMessage,
+      ...incidentChars.map(
+        (chars, index) =>
+          ({
+            role: "toolResult",
+            toolCallId: `incident-${index}`,
+            toolName: "read",
+            content: [{ type: "text", text: String(index % 10).repeat(chars) }],
+            isError: false,
+            timestamp: index + 3,
+          }) as AgentMessage,
+      ),
+    ];
+    const durableSession = SessionManager.inMemory();
+    for (const message of durableMessages) {
+      durableSession.appendMessage(message as Parameters<typeof durableSession.appendMessage>[0]);
+    }
+    activeSession.agent.state.messages = durableSession.buildSessionContext().messages;
+    const sourceBytes = JSON.stringify(activeSession.messages);
+    const durableBytes = JSON.stringify(durableSession.getEntries());
+    let providerMessages: AgentMessage[] = [];
+    activeSession.agent.streamFn = ((_model, context) => {
+      providerMessages = (context as { messages: AgentMessage[] }).messages;
+      return undefined as never;
+    }) as StreamFn;
+
+    await submitEmbeddedAttemptPrompt({
+      ...input,
+      activeSession,
+      contextTokenBudget: 272_000,
+      toolResultAggregateMaxChars: 256_000,
+      toolResultMaxChars: 32_000,
+      promptActiveSession: async () => {
+        expect(input.toolResultPromptProjectionState.frozen.size).toBe(0);
+        expect(input.toolResultPromptProjectionState.replacements.size).toBe(0);
+        await activeSession.agent.streamFn(
+          {} as never,
+          { messages: activeSession.messages } as never,
+          {} as never,
+        );
+        expect(input.toolResultPromptProjectionState.frozen.size).toBe(12);
+        expect(input.toolResultPromptProjectionState.replacements.size).toBeGreaterThan(0);
+      },
+    });
+
+    const providerResults = providerMessages.filter((message) => message.role === "toolResult");
+    const providerLengths = providerResults.map((message) =>
+      message.content.reduce(
+        (sum, block) => sum + (block.type === "text" ? block.text.length : 0),
+        0,
+      ),
+    );
+    expect(incidentChars.reduce((sum, chars) => sum + chars, 0)).toBe(632_291);
+    expect(providerResults).toHaveLength(12);
+    expect(providerLengths.every((chars) => chars > 0 && chars <= 32_000)).toBe(true);
+    expect(providerLengths.reduce((sum, chars) => sum + chars, 0)).toBeLessThanOrEqual(256_000);
+    expect(JSON.stringify(activeSession.messages)).toBe(sourceBytes);
+    expect(JSON.stringify(durableSession.getEntries())).toBe(durableBytes);
   });
 });

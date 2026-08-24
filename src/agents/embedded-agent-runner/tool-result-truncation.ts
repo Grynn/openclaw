@@ -18,6 +18,7 @@ import {
   calculateMaxToolResultCharsWithCap,
   resolveAutoLiveToolResultMaxChars,
   resolveLiveToolResultMaxChars,
+  resolveProviderPromptToolResultMaxChars,
 } from "../tool-result-limits.js";
 import { formatContextLimitTruncationNotice } from "./context-truncation-notice.js";
 import { log } from "./logger.js";
@@ -37,9 +38,12 @@ import {
 export {
   DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS,
   resolveLiveToolResultMaxChars,
+  resolveProviderPromptToolResultMaxChars,
 } from "../tool-result-limits.js";
-const PROMPT_TOOL_RESULT_AGGREGATE_CAP_MULTIPLIER = 4;
+const PROMPT_TOOL_RESULT_AGGREGATE_CHARS_PER_TOKEN = 2;
 const AGGREGATE_TOOL_RESULT_CONTEXT_SHARE = 0.5;
+const MAX_PROMPT_TOOL_RESULT_AGGREGATE_CHARS = 256_000;
+const LEGACY_TOOL_RESULT_AGGREGATE_CAP_MULTIPLIER = 4;
 const CACHE_TTL_IMAGE_CHARS = 8_000;
 const CACHE_TTL_IMAGE_MARKER = "[image removed during context pruning]";
 const CACHE_TTL_DEFAULT_PLACEHOLDER = "[Old tool result content cleared]";
@@ -257,6 +261,7 @@ const COMPACT_RECOVERY_SUFFIX = (truncatedChars: number) =>
   `[... ${Math.max(1, Math.floor(truncatedChars))} chars truncated; narrow args]`;
 const AGGREGATE_ELISION_MARKER =
   "[tool result elided: aggregate tool-result budget exceeded; rerun the command if the output is needed]";
+const COMPACT_AGGREGATE_ELISION_MARKER = "[tool result elided]";
 
 function logToolResultSessionTruncation(params: {
   rewrittenEntries: number;
@@ -450,13 +455,41 @@ export function resolveLiveToolResultAggregateMaxChars(params: {
   const contextWindowTokens = Number.isFinite(params.contextWindowTokens)
     ? Math.max(1, Math.floor(params.contextWindowTokens))
     : 1;
-  // Match the 0.5 safeguard/mid-turn pressure invariant so truncation cannot hide pressure.
+  // Preserve the recovery/session budget independently from the stricter
+  // provider-bound prompt projection below.
   const contextShareChars = Math.floor(
     contextWindowTokens * 4 * AGGREGATE_TOOL_RESULT_CONTEXT_SHARE,
   );
   return Math.max(
-    perResultMaxChars * PROMPT_TOOL_RESULT_AGGREGATE_CAP_MULTIPLIER,
+    perResultMaxChars * LEGACY_TOOL_RESULT_AGGREGATE_CAP_MULTIPLIER,
     contextShareChars,
+  );
+}
+
+export function resolveProviderPromptToolResultAggregateMaxChars(params: {
+  contextWindowTokens: number;
+  perResultMaxChars?: number;
+}): number {
+  const perResultMaxChars = Math.max(
+    1,
+    Math.floor(
+      params.perResultMaxChars ??
+        resolveProviderPromptToolResultMaxChars({
+          contextWindowTokens: params.contextWindowTokens,
+        }),
+    ),
+  );
+  const contextWindowTokens = Number.isFinite(params.contextWindowTokens)
+    ? Math.max(1, Math.floor(params.contextWindowTokens))
+    : 1;
+  const contextShareChars = Math.floor(
+    contextWindowTokens *
+      PROMPT_TOOL_RESULT_AGGREGATE_CHARS_PER_TOKEN *
+      AGGREGATE_TOOL_RESULT_CONTEXT_SHARE,
+  );
+  return Math.max(
+    perResultMaxChars,
+    Math.min(MAX_PROMPT_TOOL_RESULT_AGGREGATE_CHARS, contextShareChars),
   );
 }
 
@@ -642,8 +675,9 @@ export function truncateOversizedToolResultsInMessages(
   aggregateTruncatedCount: number;
   aggregatePressureEngaged: boolean;
   aggregateBudgetChars: number;
+  firstChangedMessageIndex?: number;
 } {
-  const { maxChars, aggregateBudgetChars } = resolveToolResultBudgets({
+  const { maxChars, aggregateBudgetChars } = resolveProviderPromptToolResultBudgets({
     contextWindowTokens,
     maxCharsOverride,
     aggregateMaxCharsOverride,
@@ -664,8 +698,10 @@ export function truncateOversizedToolResultsInMessages(
   const projectionKeys = projection?.keys ?? [];
   const plan = buildToolResultReplacementPlan({
     branch,
+    spillSourceBranch: sourceBranch,
     maxChars,
     aggregateBudgetChars,
+    enforceProviderHardCaps: true,
     minKeepChars: RECOVERY_MIN_KEEP_CHARS,
     protectTrailingToolResults: Boolean(projectionState),
   });
@@ -687,16 +723,45 @@ export function truncateOversizedToolResultsInMessages(
     }
   }
   const output = replacedBranch.map((entry) => entry.message as AgentMessage);
+  const firstChangedMessageIndex = output.findIndex(
+    (message, index) => message !== messages[index],
+  );
   return {
     messages: output.some((message, index) => message !== messages[index]) ? output : messages,
     truncatedCount: new Set(plan.replacements.map((replacement) => replacement.entryId)).size,
     aggregateTruncatedCount: plan.aggregateReplacementCount,
     aggregatePressureEngaged: plan.aggregatePressureExceeded,
     aggregateBudgetChars,
+    ...(firstChangedMessageIndex >= 0 ? { firstChangedMessageIndex } : {}),
   };
 }
 
-function resolveToolResultBudgets(params: {
+function resolveProviderPromptToolResultBudgets(params: {
+  contextWindowTokens: number;
+  maxCharsOverride?: number;
+  aggregateMaxCharsOverride?: number;
+}): { maxChars: number; aggregateBudgetChars: number } {
+  const maxChars = Math.max(
+    1,
+    params.maxCharsOverride ??
+      resolveProviderPromptToolResultMaxChars({
+        contextWindowTokens: params.contextWindowTokens,
+      }),
+  );
+  return {
+    maxChars,
+    aggregateBudgetChars: Math.max(
+      1,
+      params.aggregateMaxCharsOverride ??
+        resolveProviderPromptToolResultAggregateMaxChars({
+          contextWindowTokens: params.contextWindowTokens,
+          perResultMaxChars: maxChars,
+        }),
+    ),
+  };
+}
+
+function resolveLiveToolResultBudgets(params: {
   contextWindowTokens: number;
   maxCharsOverride?: number;
   aggregateMaxCharsOverride?: number;
@@ -832,9 +897,7 @@ function mergeProjectedToolResultMessage(
   if (!Array.isArray(currentContent) || !Array.isArray(projectedContent)) {
     return projectedMessage;
   }
-  const projectedText = projectedContent.flatMap((block) =>
-    isRecord(block) && block.type === "text" && typeof block.text === "string" ? [block.text] : [],
-  );
+  const projectedText = getToolResultTextBlocks(projectedMessage);
   const currentText = getToolResultTextBlocks(message);
   if (
     (sourceText && currentText.some((text, index) => text !== sourceText[index])) ||
@@ -844,10 +907,14 @@ function mergeProjectedToolResultMessage(
   }
   let textIndex = 0;
   const mergedContent = currentContent.map((block) => {
-    if (!isRecord(block) || block.type !== "text") {
+    if (!isToolResultTextBlock(block)) {
       return block;
     }
-    return Object.assign({}, block, { text: projectedText[textIndex++] });
+    const text = projectedText[textIndex++];
+    return Object.assign({}, block, {
+      text,
+      ...(typeof block.content === "string" ? { content: text } : {}),
+    });
   });
   return { ...message, content: mergedContent } as AgentMessage;
 }
@@ -902,14 +969,10 @@ function projectToolResultBranch(params: {
   };
 }
 
-function getToolResultTextBlocks(message: AgentMessage): string[] {
+export function getToolResultTextBlocks(message: AgentMessage): string[] {
   const content = (message as { content?: unknown }).content;
   return Array.isArray(content)
-    ? content.flatMap((block) =>
-        isRecord(block) && block.type === "text"
-          ? [typeof block.text === "string" ? block.text : ""]
-          : [],
-      )
+    ? content.flatMap((block) => (isToolResultTextBlock(block) ? [block.text] : []))
     : [];
 }
 
@@ -917,31 +980,39 @@ function buildAggregateToolResultReplacements(params: {
   branch: ToolResultBranchEntry[];
   spillSourceBranch?: ToolResultBranchEntry[];
   aggregateBudgetChars: number;
+  enforceProviderHardCaps: boolean;
+  spillMarkersByEntry?: Map<string, AggregateElisionMarkers | undefined>;
   minKeepChars?: number;
   protectedEntryIds?: Set<string>;
-}): { replacements: ToolResultReplacement[]; pressureExceeded: boolean } {
+}): {
+  replacements: ToolResultReplacement[];
+  pressureExceeded: boolean;
+  remainingReductionChars: number;
+} {
   const minKeepChars = params.minKeepChars ?? MIN_KEEP_CHARS;
   const candidates = params.branch
     .flatMap((entry, index) => {
       const message = entry.message;
-      return entry.type === "message" && message?.role === "toolResult"
-        ? [
-            {
-              entryId: entry.id,
-              message,
-              spillSourceMessage: params.spillSourceBranch?.[index]?.message ?? message,
-              textLength: getToolResultTextBudget(message),
-              aggregateEligible: entry.aggregateEligible !== false,
-              deferredByFreshProjection: entry.deferAggregateRecovery === true,
-              protectedByTrailingBatch: params.protectedEntryIds?.has(entry.id) ?? false,
-            },
-          ]
-        : [];
+      if (entry.type !== "message" || message?.role !== "toolResult") {
+        return [];
+      }
+      const spillSourceMessage = params.spillSourceBranch?.[index]?.message ?? message;
+      return [
+        {
+          entryId: entry.id,
+          message,
+          spillSourceMessage,
+          textLength: getToolResultTextBudget(message),
+          aggregateEligible: entry.aggregateEligible !== false,
+          deferredByFreshProjection: entry.deferAggregateRecovery === true,
+          protectedByTrailingBatch: params.protectedEntryIds?.has(entry.id) ?? false,
+        },
+      ];
     })
     .filter((item) => item.textLength > 0);
 
-  if (candidates.length < 2) {
-    return { replacements: [], pressureExceeded: false };
+  if (candidates.length === 0) {
+    return { replacements: [], pressureExceeded: false, remainingReductionChars: 0 };
   }
 
   const suffixFactory =
@@ -953,45 +1024,88 @@ function buildAggregateToolResultReplacements(params: {
 
   const totalChars = candidates.reduce((sum, item) => sum + item.textLength, 0);
   if (totalChars <= params.aggregateBudgetChars) {
-    return { replacements: [], pressureExceeded: false };
+    return { replacements: [], pressureExceeded: false, remainingReductionChars: 0 };
   }
+  const spillMarkersByEntry =
+    params.spillMarkersByEntry ?? new Map<string, AggregateElisionMarkers | undefined>();
+  const resolveCandidateSpillMarkers = (candidate: (typeof candidates)[number]) => {
+    if (spillMarkersByEntry.has(candidate.entryId)) {
+      return spillMarkersByEntry.get(candidate.entryId);
+    }
+    const spillMarkers = resolveAggregateElisionMarkers(candidate.spillSourceMessage);
+    spillMarkersByEntry.set(candidate.entryId, spillMarkers);
+    return spillMarkers;
+  };
 
   let remainingReduction = totalChars - params.aggregateBudgetChars;
   const replacements = new Map<string, ToolResultReplacement>();
   // Frozen projections shrink first; stable sorting preserves the original oldest-first order.
-  const recoveryCandidates = candidates
+  const historicalCandidates = candidates
     .filter((candidate) => !candidate.protectedByTrailingBatch)
     .toSorted(
       (left, right) =>
         Number(left.deferredByFreshProjection) - Number(right.deferredByFreshProjection) ||
         Number(right.aggregateEligible) - Number(left.aggregateEligible),
     );
+  const trailingBatchCandidates = candidates.filter(
+    (candidate) => candidate.protectedByTrailingBatch,
+  );
+  const minimumRepresentationChars = new Map(
+    candidates.map((candidate) => {
+      return [
+        candidate.entryId,
+        estimateToolResultTextChars(
+          resolveCandidateSpillMarkers(candidate)?.compact ?? COMPACT_AGGREGATE_ELISION_MARKER,
+        ),
+      ];
+    }),
+  );
+  const preserveRepresentations =
+    [...minimumRepresentationChars.values()].reduce((sum, chars) => sum + chars, 0) <=
+    params.aggregateBudgetChars;
 
-  // Trim all older entries before clearing any, so fresh output and spill pointers stay recoverable.
-  for (const clear of [false, true]) {
-    for (const candidate of recoveryCandidates) {
+  // Reduce historical output first. A fresh tail is reduced only when it alone
+  // prevents the provider projection from satisfying the hard aggregate cap.
+  const recoveryPasses = [
+    { candidates: historicalCandidates, clear: false },
+    { candidates: historicalCandidates, clear: true },
+    { candidates: trailingBatchCandidates, clear: false },
+    { candidates: trailingBatchCandidates, clear: true },
+  ];
+  for (const pass of recoveryPasses) {
+    for (const candidate of pass.candidates) {
       if (remainingReduction <= 0) {
         break;
       }
       const baseMessage = replacements.get(candidate.entryId)?.message ?? candidate.message;
       const baseTextLength = getToolResultTextBudget(baseMessage);
-      if (!clear && baseTextLength <= minTruncatedTextChars) {
+      if (!pass.clear && baseTextLength <= minTruncatedTextChars) {
         continue;
       }
-      const spillMarkers = resolveAggregateElisionMarkers(candidate.spillSourceMessage);
+      const spillMarkers = resolveCandidateSpillMarkers(candidate);
       let message: AgentMessage;
-      if (clear) {
+      if (pass.clear) {
+        const spillMarkersFitFloor = spillMarkers
+          ? estimateToolResultTextChars(spillMarkers.compact)
+          : 0;
+        const minimumChars = params.enforceProviderHardCaps
+          ? preserveRepresentations
+            ? (minimumRepresentationChars.get(candidate.entryId) ?? 0)
+            : 0
+          : spillMarkersFitFloor;
         message = clearToolResultText(
           candidate.message,
-          Math.max(0, baseTextLength - remainingReduction),
-          spillMarkers,
+          Math.max(minimumChars, baseTextLength - remainingReduction),
+          spillMarkers ?? null,
+          params.enforceProviderHardCaps,
         );
       } else {
         const suffix = spillMarkers?.truncationSuffix ?? suffixFactory;
+        const suffixFloorChars = estimateToolResultTextChars(suffix(baseTextLength));
         const targetChars = Math.max(
           minTruncatedTextChars,
           baseTextLength - remainingReduction,
-          estimateToolResultTextChars(suffix(1)),
+          suffixFloorChars,
         );
         message = truncateToolResultMessage(candidate.message, targetChars, {
           minKeepChars,
@@ -999,7 +1113,7 @@ function buildAggregateToolResultReplacements(params: {
         });
       }
       const actualReduction = Math.max(0, baseTextLength - getToolResultTextBudget(message));
-      if (actualReduction <= 0 && (!clear || !spillMarkers)) {
+      if (actualReduction <= 0 && (!pass.clear || !spillMarkers)) {
         continue;
       }
       replacements.set(candidate.entryId, { entryId: candidate.entryId, message });
@@ -1007,7 +1121,56 @@ function buildAggregateToolResultReplacements(params: {
     }
   }
 
-  return { replacements: [...replacements.values()], pressureExceeded: true };
+  // Structural marker floors are conditional on fitting the aggregate budget.
+  // This final pass is deliberately floor-free so no metadata or spill pointer
+  // can make the provider projection exceed its hard cap.
+  if (params.enforceProviderHardCaps && remainingReduction > 0) {
+    for (const candidate of [...historicalCandidates, ...trailingBatchCandidates]) {
+      if (remainingReduction <= 0) {
+        break;
+      }
+      const baseMessage = replacements.get(candidate.entryId)?.message ?? candidate.message;
+      const baseTextLength = getToolResultTextBudget(baseMessage);
+      if (baseTextLength <= 0) {
+        continue;
+      }
+      const message = clearToolResultText(
+        candidate.message,
+        Math.max(0, baseTextLength - remainingReduction),
+        resolveCandidateSpillMarkers(candidate) ?? null,
+        true,
+      );
+      const actualReduction = Math.max(0, baseTextLength - getToolResultTextBudget(message));
+      if (actualReduction <= 0) {
+        continue;
+      }
+      replacements.set(candidate.entryId, { entryId: candidate.entryId, message });
+      remainingReduction -= actualReduction;
+    }
+  }
+  if (params.enforceProviderHardCaps && remainingReduction > 0) {
+    // A malformed multi-block result must still not escape the provider cap.
+    // Emptying text is the deterministic last resort; non-text blocks are not
+    // part of this text budget and remain untouched.
+    for (const candidate of candidates) {
+      replacements.set(candidate.entryId, {
+        entryId: candidate.entryId,
+        message: clearToolResultText(
+          candidate.message,
+          0,
+          resolveCandidateSpillMarkers(candidate) ?? null,
+          true,
+        ),
+      });
+    }
+    remainingReduction = 0;
+  }
+
+  return {
+    replacements: [...replacements.values()],
+    pressureExceeded: true,
+    remainingReductionChars: Math.max(0, remainingReduction),
+  };
 }
 
 function getTrailingToolResultEntryIds(branch: ToolResultBranchEntry[]): Set<string> {
@@ -1031,21 +1194,25 @@ function getTrailingToolResultEntryIds(branch: ToolResultBranchEntry[]): Set<str
 function clearToolResultText(
   message: AgentMessage,
   maxTextChars = Number.POSITIVE_INFINITY,
-  resolvedSpillMarkers?: AggregateElisionMarkers,
+  resolvedSpillMarkers?: AggregateElisionMarkers | null,
+  enforceHardCap = false,
 ): AgentMessage {
   const content = (message as { content?: unknown }).content;
   if (!Array.isArray(content)) {
     return message;
   }
   let remainingTextBudget = Math.max(0, Math.floor(maxTextChars));
-  const spillMarkers = resolvedSpillMarkers ?? resolveAggregateElisionMarkers(message);
-  if (spillMarkers) {
-    // Keep recoverable pointers; their ~130 chars are negligible against the 64k+ floor.
+  const spillMarkers =
+    resolvedSpillMarkers === undefined
+      ? resolveAggregateElisionMarkers(message)
+      : (resolvedSpillMarkers ?? undefined);
+  if (spillMarkers && !enforceHardCap) {
     remainingTextBudget = Math.max(
       remainingTextBudget,
       estimateToolResultTextChars(spillMarkers.compact),
     );
   }
+  let wroteMarker = false;
   return {
     ...message,
     content: content.map((block) => {
@@ -1053,11 +1220,20 @@ function clearToolResultText(
         return block;
       }
       const replacementText =
-        [spillMarkers?.full, spillMarkers?.compact].find(
-          (marker): marker is string =>
-            typeof marker === "string" &&
-            estimateToolResultTextChars(marker) <= remainingTextBudget,
-        ) ?? sliceToolResultTextToBudget(AGGREGATE_ELISION_MARKER, remainingTextBudget);
+        enforceHardCap && wroteMarker
+          ? ""
+          : ([spillMarkers?.full, spillMarkers?.compact, AGGREGATE_ELISION_MARKER].find(
+              (marker): marker is string =>
+                typeof marker === "string" &&
+                estimateToolResultTextChars(marker) <= remainingTextBudget,
+            ) ??
+            sliceToolResultTextToBudget(
+              enforceHardCap
+                ? (spillMarkers?.compact ?? COMPACT_AGGREGATE_ELISION_MARKER)
+                : AGGREGATE_ELISION_MARKER,
+              remainingTextBudget,
+            ));
+      wroteMarker ||= enforceHardCap && replacementText.length > 0;
       remainingTextBudget = Math.max(
         0,
         remainingTextBudget - estimateToolResultTextChars(replacementText),
@@ -1095,8 +1271,10 @@ function applyToolResultReplacementsToBranch(
 
 function buildToolResultReplacementPlan(params: {
   branch: ToolResultBranchEntry[];
+  spillSourceBranch?: ToolResultBranchEntry[];
   maxChars: number;
   aggregateBudgetChars: number;
+  enforceProviderHardCaps?: boolean;
   minKeepChars?: number;
   protectTrailingToolResults?: boolean;
 }): {
@@ -1112,7 +1290,8 @@ function buildToolResultReplacementPlan(params: {
   const protectedEntryIds = params.protectTrailingToolResults
     ? getTrailingToolResultEntryIds(params.branch)
     : undefined;
-  const oversizedReplacements = params.branch.flatMap((entry): ToolResultReplacement[] => {
+  const spillMarkersByEntry = new Map<string, AggregateElisionMarkers | undefined>();
+  const oversizedReplacements = params.branch.flatMap((entry, index): ToolResultReplacement[] => {
     const message = entry.message;
     if (
       entry.type !== "message" ||
@@ -1121,8 +1300,15 @@ function buildToolResultReplacementPlan(params: {
     ) {
       return [];
     }
-    const suffix = resolveAggregateElisionMarkers(message)?.truncationSuffix;
-    const maxChars = Math.max(params.maxChars, suffix ? estimateToolResultTextChars(suffix(1)) : 0);
+    const spillSourceMessage = params.spillSourceBranch?.[index]?.message ?? message;
+    const spillMarkers = spillSourceMessage
+      ? resolveAggregateElisionMarkers(spillSourceMessage)
+      : undefined;
+    spillMarkersByEntry.set(entry.id, spillMarkers);
+    const suffix = spillMarkers?.truncationSuffix;
+    const maxChars = params.enforceProviderHardCaps
+      ? params.maxChars
+      : Math.max(params.maxChars, suffix ? estimateToolResultTextChars(suffix(1)) : 0);
     return [
       {
         entryId: entry.id,
@@ -1138,8 +1324,10 @@ function buildToolResultReplacementPlan(params: {
   const oversizedPhase = applyToolResultReplacementsToBranch(params.branch, oversizedReplacements);
   const aggregatePlan = buildAggregateToolResultReplacements({
     branch: oversizedPhase.branch,
-    spillSourceBranch: params.branch,
+    spillSourceBranch: params.spillSourceBranch ?? params.branch,
     aggregateBudgetChars: params.aggregateBudgetChars,
+    enforceProviderHardCaps: params.enforceProviderHardCaps === true,
+    spillMarkersByEntry,
     minKeepChars,
     protectedEntryIds,
   });
@@ -1171,7 +1359,7 @@ function buildRecoveryToolResultReplacementPlan(params: {
   aggregateBudgetChars: number;
   plan: ReturnType<typeof buildToolResultReplacementPlan>;
 } {
-  const { maxChars, aggregateBudgetChars } = resolveToolResultBudgets(params);
+  const { maxChars, aggregateBudgetChars } = resolveLiveToolResultBudgets(params);
   const projectedBranch = params.projectionState
     ? projectToolResultBranch({
         branch: params.branch,
@@ -1181,6 +1369,7 @@ function buildRecoveryToolResultReplacementPlan(params: {
     : params.branch;
   const plan = buildToolResultReplacementPlan({
     branch: projectedBranch,
+    spillSourceBranch: params.branch,
     maxChars,
     aggregateBudgetChars,
     minKeepChars: RECOVERY_MIN_KEEP_CHARS,
@@ -1216,7 +1405,7 @@ export function estimateToolResultReductionPotential(params: {
   aggregateMaxCharsOverride?: number;
 }): ToolResultReductionPotential {
   const { messages } = params;
-  const { maxChars, aggregateBudgetChars } = resolveToolResultBudgets(params);
+  const { maxChars, aggregateBudgetChars } = resolveLiveToolResultBudgets(params);
   const branch = messages.map((message, index) => ({
     id: `message-${index}`,
     type: "message",

@@ -7,6 +7,7 @@ const LARGE_CONTEXT_MAX_LIVE_TOOL_RESULT_CHARS = 32_000;
 const XL_CONTEXT_MAX_LIVE_TOOL_RESULT_CHARS = 64_000;
 const LARGE_CONTEXT_TOOL_RESULT_TOKENS = 100_000;
 const XL_CONTEXT_TOOL_RESULT_TOKENS = 200_000;
+const LARGE_PROVIDER_PROMPT_TOOL_RESULT_CHARS = 32_000;
 
 export function resolveAutoLiveToolResultMaxChars(contextWindowTokens: number): number {
   if (!Number.isFinite(contextWindowTokens)) {
@@ -36,4 +37,17 @@ export function resolveLiveToolResultMaxChars(params: { contextWindowTokens: num
     params.contextWindowTokens,
     resolveAutoLiveToolResultMaxChars(params.contextWindowTokens),
   );
+}
+
+/** Stricter nonmutating cap for tool-result text sent to a model provider. */
+export function resolveProviderPromptToolResultMaxChars(params: {
+  contextWindowTokens: number;
+}): number {
+  const contextWindowTokens = params.contextWindowTokens;
+  const providerPromptCap =
+    Number.isFinite(contextWindowTokens) &&
+    Math.floor(contextWindowTokens) >= LARGE_CONTEXT_TOOL_RESULT_TOKENS
+      ? LARGE_PROVIDER_PROMPT_TOOL_RESULT_CHARS
+      : DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS;
+  return calculateMaxToolResultCharsWithCap(contextWindowTokens, providerPromptCap);
 }

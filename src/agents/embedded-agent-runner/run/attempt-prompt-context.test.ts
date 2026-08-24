@@ -6,11 +6,21 @@ import type { ToolResultPromptProjectionState } from "../session-prompt-state.js
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
 const hoisted = vi.hoisted(() => ({
+  estimateToolResultReductionPotential: vi.fn(() => ({
+    maxChars: 100,
+    aggregateBudgetChars: 200,
+    toolResultCount: 0,
+    totalToolResultChars: 0,
+    oversizedCount: 0,
+    oversizedReducibleChars: 0,
+    aggregateReducibleChars: 0,
+    maxReducibleChars: 0,
+  })),
   info: vi.fn(),
   promptPressureKeys: new Set<string>(),
   reconcileToolResultPromptProjectionState: vi.fn(),
-  resolveLiveToolResultAggregateMaxChars: vi.fn(() => 200),
-  resolveLiveToolResultMaxChars: vi.fn(() => 100),
+  resolveProviderPromptToolResultAggregateMaxChars: vi.fn(() => 200),
+  resolveProviderPromptToolResultMaxChars: vi.fn(() => 100),
   truncateOversizedToolResultsInMessages: vi.fn(),
   warn: vi.fn(),
 }));
@@ -19,8 +29,20 @@ vi.mock("../logger.js", () => ({
   log: { info: hoisted.info, warn: hoisted.warn },
 }));
 vi.mock("../tool-result-truncation.js", () => ({
-  resolveLiveToolResultAggregateMaxChars: hoisted.resolveLiveToolResultAggregateMaxChars,
-  resolveLiveToolResultMaxChars: hoisted.resolveLiveToolResultMaxChars,
+  estimateToolResultReductionPotential: hoisted.estimateToolResultReductionPotential,
+  getToolResultTextBlocks: (message: AgentMessage) =>
+    message.role === "toolResult"
+      ? message.content.flatMap((block) => {
+          const candidate = block as unknown as { type?: unknown; text?: unknown };
+          return (candidate.type === "text" || candidate.type === "toolResult") &&
+            typeof candidate.text === "string"
+            ? [candidate.text]
+            : [];
+        })
+      : [],
+  resolveProviderPromptToolResultAggregateMaxChars:
+    hoisted.resolveProviderPromptToolResultAggregateMaxChars,
+  resolveProviderPromptToolResultMaxChars: hoisted.resolveProviderPromptToolResultMaxChars,
   reconcileToolResultPromptProjectionState: hoisted.reconcileToolResultPromptProjectionState,
   toolResultWarningDedupe: {
     promptPressure: {
@@ -37,6 +59,7 @@ vi.mock("../tool-result-truncation.js", () => ({
 }));
 
 import { prepareEmbeddedAttemptPromptContext } from "./attempt-prompt-build.js";
+import { estimateLlmBoundaryTokenPressure } from "./preemptive-compaction.js";
 
 const messages = [
   {
@@ -203,8 +226,9 @@ describe("prepareEmbeddedAttemptPromptContext", () => {
   });
 
   it("reports aggregate tool-result pressure for compact-then-truncate routing", () => {
-    hoisted.truncateOversizedToolResultsInMessages.mockImplementation((inputMessages) => ({
-      messages: [...inputMessages],
+    const boundedHistory = { ...messages[0]!, content: "bounded provider history" } as AgentMessage;
+    hoisted.truncateOversizedToolResultsInMessages.mockImplementation(() => ({
+      messages: [boundedHistory],
       truncatedCount: 2,
       aggregateTruncatedCount: 1,
       aggregatePressureEngaged: true,
@@ -217,9 +241,103 @@ describe("prepareEmbeddedAttemptPromptContext", () => {
     const result = prepareEmbeddedAttemptPromptContext(fixture.input);
 
     expect(result.aggregatePressureEngaged).toBe(true);
+    expect(result.hookMessagesForCurrentPrompt).toContain(boundedHistory);
     expect(hoisted.warn).toHaveBeenCalledWith(
       expect.stringContaining("aggregate tool-result pressure"),
     );
+  });
+
+  it("aligns projection provenance after filtering historical runtime carriers", () => {
+    const historicalCarrier = (timestamp: number): AgentMessage =>
+      ({
+        role: "custom",
+        customType: "openclaw.runtime-context",
+        content: `historical context ${timestamp}`,
+        display: false,
+        details: { source: "openclaw-runtime-context", runtimeContextCarrier: true },
+        timestamp,
+      }) as AgentMessage;
+    const staleUsage = {
+      role: "assistant",
+      content: [{ type: "text", text: "prior provider reply" }],
+      api: "openai-responses",
+      provider: "openai",
+      model: "gpt-test",
+      stopReason: "stop",
+      usage: {
+        input: 278_803,
+        output: 208,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 279_011,
+        contextUsage: { state: "available", promptTokens: 278_803, totalTokens: 279_011 },
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      timestamp: 5,
+    } satisfies AgentMessage;
+    const rawMessages = [
+      messages[0]!,
+      historicalCarrier(2),
+      historicalCarrier(3),
+      {
+        role: "toolResult",
+        toolCallId: "oversized-call",
+        toolName: "read",
+        content: [
+          {
+            type: "toolResult",
+            toolUseId: "oversized-call",
+            text: "x".repeat(1_000),
+            content: "x".repeat(1_000),
+          },
+        ],
+        isError: false,
+        timestamp: 4,
+      } as unknown as AgentMessage,
+      staleUsage,
+    ];
+    hoisted.truncateOversizedToolResultsInMessages.mockImplementation(
+      (inputMessages: AgentMessage[]) => ({
+        messages: inputMessages.map((message, index) =>
+          index === 3 && message.role === "toolResult"
+            ? {
+                ...message,
+                content: [
+                  {
+                    type: "toolResult",
+                    toolUseId: "oversized-call",
+                    text: "bounded",
+                    content: "bounded",
+                  },
+                ],
+              }
+            : message,
+        ),
+        truncatedCount: 1,
+        aggregateTruncatedCount: 0,
+        aggregatePressureEngaged: false,
+        aggregateBudgetChars: 200,
+        firstChangedMessageIndex: 3,
+      }),
+    );
+    const fixture = createInput();
+    fixture.input.messages = rawMessages;
+
+    const result = prepareEmbeddedAttemptPromptContext(fixture.input);
+    const staleUsageIndex = result.hookMessagesForCurrentPrompt.indexOf(staleUsage);
+
+    expect(result.hookMessagesForCurrentPrompt).not.toContain(rawMessages[1]);
+    expect(result.hookMessagesForCurrentPrompt).not.toContain(rawMessages[2]);
+    expect(result.promptToolResultProjectionFirstChangedMessageIndex).toBe(1);
+    expect(staleUsageIndex).toBe(2);
+    expect(
+      estimateLlmBoundaryTokenPressure({
+        messages: result.hookMessagesForCurrentPrompt,
+        prompt: "continue",
+        providerProjectionFirstChangedMessageIndex:
+          result.promptToolResultProjectionFirstChangedMessageIndex,
+      }),
+    ).toBeLessThan(100_000);
   });
 
   it("deduplicates aggregate pressure warnings per session key", () => {

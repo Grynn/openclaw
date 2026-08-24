@@ -47,8 +47,9 @@ import {
   type ToolResultPromptProjectionState,
 } from "../session-prompt-state.js";
 import {
-  resolveLiveToolResultAggregateMaxChars,
-  resolveLiveToolResultMaxChars,
+  resolveProviderPromptToolResultAggregateMaxChars,
+  resolveProviderPromptToolResultMaxChars,
+  getToolResultTextBlocks,
   reconcileToolResultPromptProjectionState,
   toolResultWarningDedupe,
   truncateOversizedToolResultsInMessages,
@@ -469,11 +470,38 @@ type EmbeddedAttemptPromptContext = {
   promptForModel: string;
   promptForSession: string;
   promptSubmission: ReturnType<typeof resolveRuntimeContextPromptParts>;
+  promptToolResultProjectionFirstChangedMessageIndex?: number;
   promptToolResultAggregateMaxChars: number;
   promptToolResultMaxChars: number;
   runtimeContextMessageForCurrentTurn?: RuntimeContextCustomMessage;
   systemPromptForHook: string;
 };
+
+function findFirstToolResultProjectionChangeIndex(
+  source: AgentMessage[],
+  projected: AgentMessage[],
+): number | undefined {
+  const commonLength = Math.min(source.length, projected.length);
+  for (let index = 0; index < commonLength; index += 1) {
+    const sourceMessage = source[index];
+    const projectedMessage = projected[index];
+    if (sourceMessage?.role !== projectedMessage?.role) {
+      return index;
+    }
+    if (sourceMessage?.role !== "toolResult" || projectedMessage?.role !== "toolResult") {
+      continue;
+    }
+    const sourceText = getToolResultTextBlocks(sourceMessage);
+    const projectedText = getToolResultTextBlocks(projectedMessage);
+    if (
+      sourceText.length !== projectedText.length ||
+      sourceText.some((text, textIndex) => text !== projectedText[textIndex])
+    ) {
+      return index;
+    }
+  }
+  return source.length === projected.length ? undefined : commonLength;
+}
 
 export function prepareEmbeddedAttemptPromptContext(input: {
   attempt: PromptContextAttempt;
@@ -513,13 +541,14 @@ export function prepareEmbeddedAttemptPromptContext(input: {
   }
   const prePromptMessageCount = sessionMessages.length;
   const contextTokenBudget = attempt.contextTokenBudget ?? DEFAULT_CONTEXT_TOKENS;
-  const promptToolResultMaxChars = resolveLiveToolResultMaxChars({
+  const promptToolResultMaxChars = resolveProviderPromptToolResultMaxChars({
     contextWindowTokens: contextTokenBudget,
   });
-  const promptToolResultAggregateMaxChars = resolveLiveToolResultAggregateMaxChars({
+  const promptToolResultAggregateMaxChars = resolveProviderPromptToolResultAggregateMaxChars({
     contextWindowTokens: contextTokenBudget,
     perResultMaxChars: promptToolResultMaxChars,
   });
+  const unprojectedSessionMessages = sessionMessages;
   const promptToolResultTruncation = truncateOversizedToolResultsInMessages(
     sessionMessages,
     contextTokenBudget,
@@ -639,6 +668,25 @@ export function prepareEmbeddedAttemptPromptContext(input: {
       ? { currentUserTimestamp: preparedUserTurnTimestamp }
       : {}),
   });
+  const unprojectedHookMessagesForCurrentPrompt = promptHistoryChanged
+    ? normalizeMessagesForCurrentPromptBoundary({
+        messages: runtimeContextMessageForCurrentTurn
+          ? [...unprojectedSessionMessages, runtimeContextMessageForCurrentTurn]
+          : unprojectedSessionMessages,
+        prompt: promptForModel,
+        ...(input.boundaryTimezone ? { timezone: input.boundaryTimezone } : {}),
+        ...(input.includeBoundaryTimestamp ? {} : { includeTimestamp: false }),
+        ...(typeof preparedUserTurnTimestamp === "number"
+          ? { currentUserTimestamp: preparedUserTurnTimestamp }
+          : {}),
+      })
+    : hookMessagesForCurrentPrompt;
+  const promptToolResultProjectionFirstChangedMessageIndex = promptHistoryChanged
+    ? findFirstToolResultProjectionChangeIndex(
+        unprojectedHookMessagesForCurrentPrompt,
+        hookMessagesForCurrentPrompt,
+      )
+    : undefined;
   if (input.systemPromptReport) {
     input.systemPromptReport.currentTurn = {
       ...(attempt.currentInboundEventKind ? { kind: attempt.currentInboundEventKind } : {}),
@@ -676,6 +724,11 @@ export function prepareEmbeddedAttemptPromptContext(input: {
     promptForModel,
     promptForSession,
     promptSubmission,
+    ...(promptToolResultProjectionFirstChangedMessageIndex !== undefined
+      ? {
+          promptToolResultProjectionFirstChangedMessageIndex,
+        }
+      : {}),
     promptToolResultAggregateMaxChars,
     promptToolResultMaxChars,
     ...(runtimeContextMessageForCurrentTurn ? { runtimeContextMessageForCurrentTurn } : {}),
