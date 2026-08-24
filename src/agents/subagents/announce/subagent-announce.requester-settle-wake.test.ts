@@ -6,14 +6,7 @@ import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatch.js";
 
 const deliverSpy = vi.fn(
-  async (
-    _params: Record<string, unknown>,
-  ): Promise<{
-    delivered: boolean;
-    path: string;
-    disposition?: "ambiguous" | "permanent_failure" | "intentional_non_delivery";
-    reason?: string;
-  }> => ({
+  async (_params: Record<string, unknown>): Promise<SubagentAnnounceDeliveryResult> => ({
     delivered: true,
     path: "direct",
   }),
@@ -724,12 +717,30 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     }
   });
 
-  it("replays an ambiguous transport failure with the same idempotency key", async () => {
+  it.each([
+    {
+      name: "an ambiguous transport exception",
+      arrange: () => deliverSpy.mockRejectedValueOnce(new Error("connection lost after admission")),
+      lastError: "connection lost after admission",
+    },
+    {
+      name: "a sent agent request timeout",
+      arrange: () =>
+        deliverSpy.mockResolvedValueOnce({
+          delivered: false,
+          path: "direct",
+          disposition: "ambiguous",
+          agentRunRequestTimedOut: true,
+          error: "gateway request timeout for agent",
+        }),
+      lastError: "gateway request timeout for agent",
+    },
+  ])("replays $name with the same idempotency key", async ({ arrange, lastError }) => {
     const firstChild = makeSettledChild({ runId: "run-a" });
     const secondChild = makeSettledChild({ runId: "run-b" });
     const children = [firstChild, secondChild];
     registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue(children);
-    deliverSpy.mockRejectedValueOnce(new Error("connection lost after admission"));
+    arrange();
 
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -742,7 +753,7 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
         attemptCount: 1,
         replayCount: 1,
         nextAttemptAt: 30_000,
-        lastError: "connection lost after admission",
+        lastError,
       });
 
       await vi.advanceTimersByTimeAsync(30_000);

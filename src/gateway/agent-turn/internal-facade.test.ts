@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { GatewayProtocolRequestTimeoutError } from "../../../packages/gateway-client/src/protocol-request.js";
 import type { GatewayRequestContext } from "../server-methods/types.js";
 import { createSyntheticPluginRuntimeClient } from "../server-plugin-runtime-client.js";
 import { createInternalAgentTurnFacade } from "./internal-facade.js";
@@ -101,6 +102,38 @@ describe("createInternalAgentTurnFacade", () => {
     rejectTurn(dispatchError);
 
     await expect(result).rejects.toBe(dispatchError);
+  });
+
+  it("types a caller deadline that expires after acceptance", async () => {
+    vi.useFakeTimers();
+    try {
+      startTurn.mockImplementation(
+        ({ io }) =>
+          new Promise<void>(() => {
+            io.emitAcceptance([true, { runId: "run-timeout", status: "accepted" }, undefined]);
+          }),
+      );
+      const onAccepted = vi.fn();
+      const result = createFacade().dispatchRaw(
+        { message: "test", idempotencyKey: "run-timeout" },
+        { expectFinal: true, onAccepted, timeoutMs: 10 },
+      );
+      const rejection = expect(result).rejects.toMatchObject({
+        name: "GatewayProtocolRequestTimeoutError",
+        code: "CLIENT_TIMEOUT",
+        method: "agent",
+        timeoutMs: 10,
+        requestSent: true,
+        message: "gateway request timeout for agent",
+      } satisfies Partial<GatewayProtocolRequestTimeoutError>);
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(onAccepted).toHaveBeenCalledWith({ runId: "run-timeout", status: "accepted" });
+      await vi.advanceTimersByTimeAsync(10);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns a single acceptance with its metadata when no final is requested", async () => {

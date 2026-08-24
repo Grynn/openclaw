@@ -35,6 +35,8 @@ export type SubagentAnnounceDeliveryResult = {
   enqueuedAt?: number;
   /** Direct completion that already sent the yielded requester's visible final. */
   requesterVisibleFinalDelivered?: true;
+  /** Caller deadline expired while a non-cancelling Gateway agent request may still admit or run. */
+  agentRunRequestTimedOut?: true;
   reason?: SubagentAnnounceDeliveryFailureReason;
   error?: string;
   // Stops fallback delivery when ownership changed or another terminal result

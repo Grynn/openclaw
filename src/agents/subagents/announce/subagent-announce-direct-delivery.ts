@@ -2,6 +2,7 @@
  * Requester-agent handoff and direct delivery for subagent announcements.
  */
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
+import { GatewayProtocolRequestTimeoutError } from "../../../../packages/gateway-client/src/protocol-request.js";
 import { completionRequiresMessageToolDelivery } from "../../../auto-reply/reply/completion-delivery-policy.js";
 import { stringifyRouteThreadId } from "../../../plugin-sdk/channel-route.js";
 import { defaultRuntime } from "../../../runtime.js";
@@ -579,16 +580,20 @@ export async function sendSubagentAnnounceDirectly(params: {
         : {}),
     };
   } catch (err) {
-    const disposition = hasAnnounceSendEvidence(err)
-      ? "ambiguous"
-      : isPermanentAnnounceDeliveryError(err)
-        ? "permanent_failure"
-        : "retryable";
+    const agentRunRequestTimedOut =
+      err instanceof GatewayProtocolRequestTimeoutError && err.requestSent;
+    const disposition =
+      agentRunRequestTimedOut || hasAnnounceSendEvidence(err)
+        ? "ambiguous"
+        : isPermanentAnnounceDeliveryError(err)
+          ? "permanent_failure"
+          : "retryable";
     return {
       delivered: false,
       path: "direct",
       error: summarizeDeliveryError(err),
       disposition,
+      ...(agentRunRequestTimedOut ? { agentRunRequestTimedOut: true as const } : {}),
     };
   }
 }

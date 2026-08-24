@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { GatewayProtocolRequestTimeoutError } from "../../packages/gateway-client/src/protocol-request.js";
 import { GatewayClientRequestError } from "../../packages/gateway-client/src/request-error.js";
 import type { ErrorShape } from "../../packages/gateway-protocol/src/schema/frames.js";
 import { createAbortError } from "../infra/abort-signal.js";
@@ -93,7 +94,12 @@ async function waitForDispatch<T>(
     const cancellation = new Promise<never>((_resolve, reject) => {
       if (remainingTimeoutMs !== undefined) {
         timeout = setTimeout(() => {
-          reject(new Error(`gateway request timeout for ${method}`));
+          reject(
+            new GatewayProtocolRequestTimeoutError(
+              { method, timeoutMs: remainingTimeoutMs, requestSent: true },
+              `gateway request timeout for ${method}`,
+            ),
+          );
         }, remainingTimeoutMs);
       }
       if (signal) {

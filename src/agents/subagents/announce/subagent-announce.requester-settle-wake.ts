@@ -429,6 +429,46 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(params: {
       params.transitionBatch(batchRunIds, state);
     }
 
+    const deferTransportReplay = (
+      lastError: string,
+      exhaustedDelivery: SubagentAnnounceDeliveryResult = {
+        delivered: false,
+        path: "none",
+        error: lastError,
+      },
+    ): false => {
+      const replayCount = (state.replayCount ?? 0) + 1;
+      const retryDelayMs = REQUESTER_SETTLE_WAKE_RETRY_DELAYS_MS[replayCount - 1];
+      if (
+        replayCount >= REQUESTER_SETTLE_WAKE_MAX_AMBIGUOUS_REPLAYS ||
+        retryDelayMs === undefined
+      ) {
+        completeRequesterSettleWakeBatch({
+          runIds: batchRunIds,
+          state,
+          completeBatch,
+          delivery: exhaustedDelivery,
+        });
+        return false;
+      }
+      state = {
+        status: "dispatching",
+        attemptCount: state.attemptCount,
+        replayCount,
+        nextAttemptAt: Date.now() + retryDelayMs,
+        batchRunIds,
+        ...(state.requesterYieldBatch === true ? { requesterYieldBatch: true } : {}),
+        ...(state.afterRequesterYield === true ? { afterRequesterYield: true } : {}),
+        ...(state.rearmGeneration !== undefined ? { rearmGeneration: state.rearmGeneration } : {}),
+        lastError,
+      };
+      params.transitionBatch(batchRunIds, state);
+      logWarn(
+        `requester settle wake transport replay ${replayCount} scheduled in ${Math.round(retryDelayMs / 1000)}s: ${lastError}`,
+      );
+      return false;
+    };
+
     let delivery: Awaited<ReturnType<typeof deliverSubagentAnnouncement>>;
     try {
       delivery = await deliverSubagentAnnouncement({
@@ -458,37 +498,14 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(params: {
       // A transport exception can arrive after gateway admission. Replay the
       // same persisted idempotency key; only a known no-turn result may rotate it.
       const lastError = error instanceof Error ? error.message : String(error);
-      const replayCount = (state.replayCount ?? 0) + 1;
-      const retryDelayMs = REQUESTER_SETTLE_WAKE_RETRY_DELAYS_MS[replayCount - 1];
-      if (
-        replayCount >= REQUESTER_SETTLE_WAKE_MAX_AMBIGUOUS_REPLAYS ||
-        retryDelayMs === undefined
-      ) {
-        completeRequesterSettleWakeBatch({
-          runIds: batchRunIds,
-          state,
-          completeBatch,
-          delivery: { delivered: false, path: "none", error: lastError },
-        });
-        return false;
-      }
-      const nextAttemptAt = Date.now() + retryDelayMs;
-      state = {
-        status: "dispatching",
-        attemptCount: state.attemptCount,
-        replayCount,
-        nextAttemptAt,
-        batchRunIds,
-        ...(state.requesterYieldBatch === true ? { requesterYieldBatch: true } : {}),
-        ...(state.afterRequesterYield === true ? { afterRequesterYield: true } : {}),
-        ...(state.rearmGeneration !== undefined ? { rearmGeneration: state.rearmGeneration } : {}),
-        lastError,
-      };
-      params.transitionBatch(batchRunIds, state);
-      logWarn(
-        `requester settle wake transport replay ${replayCount} scheduled in ${Math.round(retryDelayMs / 1000)}s: ${lastError}`,
+      return deferTransportReplay(lastError);
+    }
+    if (!delivery.delivered && delivery.agentRunRequestTimedOut === true) {
+      return deferTransportReplay(
+        delivery.error ??
+          "Gateway requester settle agent request timed out before a terminal response",
+        delivery,
       );
-      return false;
     }
     if (delivery.delivered) {
       completeRequesterSettleWakeBatch({

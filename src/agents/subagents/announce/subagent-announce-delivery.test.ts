@@ -1,6 +1,7 @@
 // Subagent announce delivery tests cover the last-mile routing used when child
 // runs report progress or completion back to the requester session.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { GatewayProtocolRequestTimeoutError } from "../../../../packages/gateway-client/src/protocol-request.js";
 import type { SessionEntry } from "../../../config/sessions.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { callGateway as runtimeCallGateway } from "../../../gateway/call.js";
@@ -4533,6 +4534,94 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       disposition: "ambiguous",
     });
     expect(callGateway).toHaveBeenCalledOnce();
+  });
+
+  it("marks a non-cancelling agent request timeout for same-key replay", async () => {
+    const callGateway: typeof runtimeCallGateway = vi.fn(async () => {
+      throw new GatewayProtocolRequestTimeoutError(
+        { method: "agent", timeoutMs: 120_000, requestSent: true },
+        "gateway request timeout for agent",
+      );
+    }) as unknown as typeof runtimeCallGateway;
+
+    const result = await deliverSlackChannelAnnouncement({
+      callGateway,
+      directIdempotencyKey: "announce-accepted-timeout",
+    });
+
+    expect(result).toMatchObject({
+      delivered: false,
+      path: "direct",
+      disposition: "ambiguous",
+      agentRunRequestTimedOut: true,
+    });
+    expect(callGateway).toHaveBeenCalledOnce();
+  });
+
+  it("does not preserve the key when the timed-out request was never sent", async () => {
+    const callGateway: typeof runtimeCallGateway = vi.fn(async () => {
+      throw new GatewayProtocolRequestTimeoutError({
+        method: "agent",
+        timeoutMs: 120_000,
+        requestSent: false,
+      });
+    }) as unknown as typeof runtimeCallGateway;
+
+    const result = await deliverSlackChannelAnnouncement({
+      callGateway,
+      directIdempotencyKey: "announce-unsent-timeout",
+    });
+
+    expect(result).toMatchObject({ delivered: false, path: "direct", disposition: "retryable" });
+    expect(result).not.toHaveProperty("agentRunRequestTimedOut");
+  });
+
+  it("preserves an authoritative agent execution failure", async () => {
+    const callGateway: typeof runtimeCallGateway = vi.fn(async () => {
+      throw Object.assign(new Error("agent execution failed"), { code: "ETURN" });
+    }) as unknown as typeof runtimeCallGateway;
+
+    const result = await deliverSlackChannelAnnouncement({
+      callGateway,
+      directIdempotencyKey: "announce-accepted-failure",
+    });
+
+    expect(result).toMatchObject({
+      delivered: false,
+      path: "direct",
+      disposition: "retryable",
+      error: "agent execution failed",
+    });
+    expect(result).not.toHaveProperty("agentRunRequestTimedOut");
+  });
+
+  it("keeps the idempotency key after a request timeout without observed acceptance", async () => {
+    const callGateway: typeof runtimeCallGateway = vi
+      .fn()
+      .mockImplementationOnce(async (options) => {
+        options.onAccepted?.({ status: "accepted", runId: "failed-first-attempt" });
+        throw new Error("gateway timeout");
+      })
+      .mockImplementationOnce(async () => {
+        throw new GatewayProtocolRequestTimeoutError(
+          { method: "agent", timeoutMs: 120_000, requestSent: true },
+          "gateway request timeout for agent",
+        );
+      }) as unknown as typeof runtimeCallGateway;
+
+    const result = await deliverSlackChannelAnnouncement({
+      callGateway,
+      directIdempotencyKey: "announce-attempt-scoped-acceptance",
+    });
+
+    expect(result).toMatchObject({
+      delivered: false,
+      path: "direct",
+      disposition: "ambiguous",
+      error: "gateway request timeout for agent",
+      agentRunRequestTimedOut: true,
+    });
+    expect(callGateway).toHaveBeenCalledTimes(2);
   });
 
   it("does not retry writer-claim rebound failures with send evidence", async () => {
