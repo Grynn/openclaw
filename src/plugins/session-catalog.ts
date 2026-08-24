@@ -174,6 +174,15 @@ export type SessionCatalogProvider = {
   label: string;
   /** Declares that every HOME-sensitive action honors the host isolation policy. */
   supportsProcessHomeIsolation?: true;
+  /**
+   * Loads the provider's in-process catalog runtime without enumerating sessions,
+   * contacting hosts, or performing any other provider I/O.
+   *
+   * The Gateway may call this optional hook while idle after readiness so a
+   * provider's lazy module evaluation cannot stall the first Control UI catalog
+   * refresh. Providers without a code-only warm path should omit it.
+   */
+  prewarm?: () => Promise<void>;
   /** Config-derived target; the Gateway memoizes it for one runtime-config object identity. */
   resolveCreateSession?: (
     params: SessionCatalogCreateParams,
