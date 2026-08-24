@@ -287,7 +287,7 @@ function buildContextEngineMaintenanceRuntimeContext(
         });
       const result = params.withSessionManagerRewriteLock
         ? await params.withSessionManagerRewriteLock(rewriteSessionManagerEntries)
-        : rewriteSessionManagerEntries();
+        : await rewriteSessionManagerEntries();
       if (result.changed && runtimeTarget) {
         await publishTranscriptUpdate(runtimeTarget);
       }

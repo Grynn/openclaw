@@ -14,6 +14,7 @@ import {
   readTranscriptStatsSync,
   readTranscriptEventAtSeqSync,
 } from "./session-accessor.sqlite-read.js";
+import { replayTranscriptBranch } from "./session-accessor.sqlite-transcript-branch-replay.js";
 import { rewriteTranscriptMessageAtAnchor } from "./session-accessor.sqlite-transcript-message-rewrite.js";
 import {
   appendTranscriptEvent,
@@ -55,6 +56,7 @@ export {
   readTranscriptEventAtSeqSync,
   readTranscriptRawDelta,
   readTranscriptStatsSync,
+  replayTranscriptBranch,
   replaceTranscriptEvents,
   replaceTranscriptEventsSync,
   rewriteTranscriptEventRowsExact,

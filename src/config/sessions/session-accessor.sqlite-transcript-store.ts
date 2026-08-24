@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { AgentMessage } from "../../agents/runtime/index.js";
 import { redactTranscriptMessage } from "../../agents/transcript-redact.js";
 import {
@@ -188,6 +189,76 @@ export function appendTranscriptEventsInTransaction(
     scheduleTranscriptProjectionReconcile(database, scope.sessionId, projectionNeedsRebuild, {});
   }
   return appended;
+}
+
+/** Appends one planned active-branch suffix and moves keyed identity ownership to it. */
+export function appendTranscriptBranchReplayInTransaction(
+  database: OpenClawAgentDatabase,
+  scope: ResolvedTranscriptScope,
+  events: readonly TranscriptEvent[],
+): void {
+  if (events.length === 0) {
+    return;
+  }
+  const replayKeyOwners = new Map<string, string>();
+  for (const rawEvent of events) {
+    const event = redactTranscriptBranchReplayMessage(rawEvent);
+    const identity = readTranscriptEventIdentity(event);
+    if (
+      !appendTranscriptEventInTransaction(database, scope, event, {
+        dedupeByMessageIdempotency: false,
+        scheduleProjectionReconcile: false,
+        touchMutation: false,
+      })
+    ) {
+      throw new Error(
+        `Transcript branch replay event was not appended: ${identity?.eventId ?? "unknown"}`,
+      );
+    }
+    if (identity?.messageIdempotencyKey) {
+      replayKeyOwners.set(identity.messageIdempotencyKey, identity.eventId);
+    }
+  }
+
+  const db = getSessionKysely(database.db);
+  for (const [idempotencyKey, eventId] of replayKeyOwners) {
+    executeSqliteQuerySync(
+      database.db,
+      db
+        .updateTable("transcript_event_identities")
+        .set({ message_idempotency_key: null })
+        .where("session_id", "=", scope.sessionId)
+        .where("message_idempotency_key", "=", idempotencyKey)
+        .where("event_id", "!=", eventId),
+    );
+    const assigned = executeSqliteQuerySync(
+      database.db,
+      db
+        .updateTable("transcript_event_identities")
+        .set({ message_idempotency_key: idempotencyKey })
+        .where("session_id", "=", scope.sessionId)
+        .where("event_id", "=", eventId),
+    );
+    if (assigned.numAffectedRows !== 1n) {
+      throw new Error(`Transcript branch replay identity was not assigned: ${eventId}`);
+    }
+  }
+
+  touchTranscriptMutationInTransaction(database, scope.sessionId);
+  reconcileSessionTranscriptIndexInTransaction(database.db, scope.sessionId);
+}
+
+function redactTranscriptBranchReplayMessage(event: TranscriptEvent): TranscriptEvent {
+  if (!isRecord(event)) {
+    return event;
+  }
+  if (event.type !== "message" || !Object.hasOwn(event, "message")) {
+    return event;
+  }
+  return {
+    ...event,
+    message: redactTranscriptMessageForStorage(event.message, {}),
+  };
 }
 
 function appendTranscriptEventRowInTransaction(

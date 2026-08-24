@@ -1,21 +1,30 @@
 // Transcript rewrite tests cover in-memory and persisted branch rewrites for
 // tool-result externalization, labels, and compaction markers.
-import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { formatSqliteSessionFileMarker } from "../../config/sessions/legacy-sqlite-marker.js";
 import {
+  appendTranscriptMessage,
   loadTranscriptEvents,
+  loadTranscriptEventsSync,
+  replayTranscriptBranch,
   replaceSessionEntry,
+  withTranscriptWriteLock,
 } from "../../config/sessions/session-accessor.js";
+import {
+  resolveSqliteTranscriptScope,
+  runExclusiveSqliteSessionWrite,
+} from "../../config/sessions/session-accessor.sqlite-scope.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 
 let rewriteTranscriptEntriesInSessionManager: typeof import("./transcript-rewrite.js").rewriteTranscriptEntriesInSessionManager;
 let installSessionToolResultGuard: typeof import("../session-tool-result-guard.js").installSessionToolResultGuard;
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 type AppendMessage = Parameters<SessionManager["appendMessage"]>[0];
 
@@ -137,17 +146,61 @@ function requireValue<T>(value: T | undefined, label: string): T {
   return value;
 }
 
+async function createPersistedKeyedRewriteSession() {
+  const dir = tempDirs.make("openclaw-transcript-rewrite-runtime-");
+  const storePath = path.join(dir, "sessions.json");
+  const sessionId = "runtime-sqlite-branch-rewrite";
+  const sessionKey = "agent:main:test";
+  const sessionFile = formatSqliteSessionFileMarker({
+    agentId: "main",
+    sessionId,
+    storePath,
+  });
+  const target = { agentId: "main", sessionId, sessionKey, storePath };
+  await replaceSessionEntry({ sessionKey, storePath }, {
+    sessionFile,
+    sessionId,
+    updatedAt: 10,
+  } as SessionEntry);
+  const sessionManager = SessionManager.open(target, dir);
+  const originalToolResult = {
+    ...createToolResultReplacement("exec", "before rewrite", 2),
+    idempotencyKey: "codex-app-server:test-turn:tool:exec:result",
+  } as AgentMessage;
+  const rewrittenToolResult = {
+    ...createToolResultReplacement("exec", "[runtime rewrite]", 2),
+    idempotencyKey: originalToolResult.idempotencyKey,
+  } as AgentMessage;
+  const [, toolResultEntryId] = appendSessionMessages(sessionManager, [
+    asAppendMessage({ role: "user", content: "run tool", timestamp: 1 }),
+    asAppendMessage(originalToolResult),
+    asAppendMessage({
+      role: "assistant",
+      content: createTextContent("summarized"),
+      timestamp: 3,
+    }),
+  ]);
+  return {
+    dir,
+    originalToolResult,
+    rewrittenToolResult,
+    sessionManager,
+    target,
+    toolResultEntryId: expectDefined(toolResultEntryId, "persisted tool result entry id"),
+  };
+}
+
 beforeAll(async () => {
   ({ installSessionToolResultGuard } = await import("../session-tool-result-guard.js"));
   ({ rewriteTranscriptEntriesInSessionManager } = await import("./transcript-rewrite.js"));
 });
 
 describe("rewriteTranscriptEntriesInSessionManager", () => {
-  it("branches from the first replaced message and re-appends the remaining suffix", () => {
+  it("branches from the first replaced message and re-appends the remaining suffix", async () => {
     const { sessionManager, toolResultEntryId } = createReadRewriteSession();
 
     const result = expectDefined(
-      rewriteTranscriptEntriesInSessionManager({
+      await rewriteTranscriptEntriesInSessionManager({
         sessionManager,
         replacements: [
           {
@@ -176,7 +229,7 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
     ]);
   });
 
-  it("preserves active-branch labels after rewritten entries are re-appended", () => {
+  it("preserves active-branch labels after rewritten entries are re-appended", async () => {
     const { sessionManager, toolResultEntryId } = createReadRewriteSession();
     const summaryEntry = requireValue(
       findAssistantEntryByText(sessionManager, "summarized"),
@@ -185,7 +238,7 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
     sessionManager.appendLabelChange(summaryEntry.id, "bookmark");
 
     const result = expectDefined(
-      rewriteTranscriptEntriesInSessionManager({
+      await rewriteTranscriptEntriesInSessionManager({
         sessionManager,
         replacements: [
           {
@@ -206,7 +259,7 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
     expect(sessionManager.getBranch().map((entry) => entry.type)).toContain("label");
   });
 
-  it("remaps compaction keep markers when rewritten entries change ids", () => {
+  it("remaps compaction keep markers when rewritten entries change ids", async () => {
     // Re-appending entries changes ids; compaction records must follow the new
     // first-kept entry or future branch reconstruction points at stale ids.
     const {
@@ -221,7 +274,7 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
     );
 
     const result = expectDefined(
-      rewriteTranscriptEntriesInSessionManager({
+      await rewriteTranscriptEntriesInSessionManager({
         sessionManager,
         replacements: [
           {
@@ -253,7 +306,7 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
     expect(compaction.firstKeptEntryId).not.toBe(keptAssistantEntryId);
   });
 
-  it("bypasses persistence hooks when replaying rewritten messages", () => {
+  it("bypasses persistence hooks when replaying rewritten messages", async () => {
     const { sessionManager, toolResultEntryId } = createExecRewriteSession();
     installSessionToolResultGuard(sessionManager, {
       transformToolResultForPersistence: (message) => ({
@@ -265,7 +318,7 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
     });
 
     const result = expectDefined(
-      rewriteTranscriptEntriesInSessionManager({
+      await rewriteTranscriptEntriesInSessionManager({
         sessionManager,
         replacements: [
           {
@@ -295,43 +348,21 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
   });
 
   it("preserves original SQLite rows on the abandoned branch", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-transcript-rewrite-runtime-"));
-    const storePath = path.join(dir, "sessions.json");
-    const sessionId = "runtime-sqlite-branch-rewrite";
-    const sessionKey = "agent:main:test";
-    const sessionFile = formatSqliteSessionFileMarker({
-      agentId: "main",
-      sessionId,
-      storePath,
-    });
-    const target = {
-      agentId: "main",
-      sessionId,
-      sessionKey,
-      storePath,
-    };
-    await replaceSessionEntry({ sessionKey, storePath }, {
-      sessionFile,
-      sessionId,
-      updatedAt: 10,
-    } as SessionEntry);
-    const sessionManager = SessionManager.open(target, dir);
-    const [, toolResultEntryId] = appendSessionMessages(sessionManager, [
-      asAppendMessage({ role: "user", content: "run tool", timestamp: 1 }),
-      asAppendMessage(createToolResultReplacement("exec", "before rewrite", 2)),
-      asAppendMessage({
-        role: "assistant",
-        content: createTextContent("summarized"),
-        timestamp: 3,
-      }),
-    ]);
+    const {
+      dir,
+      originalToolResult,
+      rewrittenToolResult,
+      sessionManager,
+      target,
+      toolResultEntryId,
+    } = await createPersistedKeyedRewriteSession();
 
-    const result = rewriteTranscriptEntriesInSessionManager({
+    const result = await rewriteTranscriptEntriesInSessionManager({
       sessionManager,
       replacements: [
         {
-          entryId: expectDefined(toolResultEntryId, "persisted tool result entry id"),
-          message: createToolResultReplacement("exec", "[runtime rewrite]", 2),
+          entryId: toolResultEntryId,
+          message: rewrittenToolResult,
         },
       ],
     });
@@ -345,7 +376,7 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
         "id" in entry &&
         entry.id === toolResultEntryId,
     ) as { message?: AgentMessage } | undefined;
-    expect(original?.message).toEqual(createToolResultReplacement("exec", "before rewrite", 2));
+    expect(original?.message).toEqual(originalToolResult);
 
     const activeMessages = getBranchMessages(SessionManager.open(target, dir));
     expect(activeMessages.map((message) => message.role)).toEqual([
@@ -356,5 +387,157 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
     expect((activeMessages[1] as Extract<AgentMessage, { role: "toolResult" }>).content).toEqual([
       { type: "text", text: "[runtime rewrite]" },
     ]);
+  });
+
+  it("keeps the active keyed replacement canonical after projection reconciliation", async () => {
+    const { rewrittenToolResult, sessionManager, target, toolResultEntryId } =
+      await createPersistedKeyedRewriteSession();
+    await rewriteTranscriptEntriesInSessionManager({
+      sessionManager,
+      replacements: [{ entryId: toolResultEntryId, message: rewrittenToolResult }],
+    });
+    const replacementEntry = expectDefined(
+      sessionManager
+        .getBranch()
+        .find(
+          (entry) =>
+            entry.type === "message" &&
+            entry.message.role === "toolResult" &&
+            entry.message.idempotencyKey === rewrittenToolResult.idempotencyKey,
+        ),
+      "active keyed replacement",
+    );
+
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    const facts = await withTranscriptWriteLock(
+      target,
+      async (transcript) =>
+        await transcript.readMessageFacts({
+          idempotencyKeys: [rewrittenToolResult.idempotencyKey!],
+        }),
+    );
+
+    expect(facts.messagesByIdempotencyKey.get(rewrittenToolResult.idempotencyKey!)).toEqual(
+      rewrittenToolResult,
+    );
+    expect(facts.anchorsByIdempotencyKey.get(rewrittenToolResult.idempotencyKey!)).toMatchObject({
+      entryId: replacementEntry.id,
+    });
+  });
+
+  it("resolves an exact keyed retry to the active replacement without appending", async () => {
+    const { rewrittenToolResult, sessionManager, target, toolResultEntryId } =
+      await createPersistedKeyedRewriteSession();
+    await rewriteTranscriptEntriesInSessionManager({
+      sessionManager,
+      replacements: [{ entryId: toolResultEntryId, message: rewrittenToolResult }],
+    });
+    const replacementEntry = expectDefined(
+      sessionManager
+        .getBranch()
+        .find(
+          (entry) =>
+            entry.type === "message" &&
+            entry.message.role === "toolResult" &&
+            entry.message.idempotencyKey === rewrittenToolResult.idempotencyKey,
+        ),
+      "active keyed replacement",
+    );
+    const eventCountBeforeRetry = loadTranscriptEventsSync(target).length;
+
+    const retry = expectDefined(
+      await appendTranscriptMessage(target, { message: rewrittenToolResult }),
+      "keyed retry result",
+    );
+
+    expect(retry).toMatchObject({
+      appended: false,
+      messageId: replacementEntry.id,
+      anchor: { entryId: replacementEntry.id },
+    });
+    expect(loadTranscriptEventsSync(target)).toHaveLength(eventCountBeforeRetry);
+  });
+
+  it("rejects a stale replay plan without abandoning concurrent ingress", async () => {
+    const { dir, rewrittenToolResult, sessionManager, target, toolResultEntryId } =
+      await createPersistedKeyedRewriteSession();
+    const resolved = resolveSqliteTranscriptScope(target);
+    let enterQueue!: () => void;
+    let releaseQueue!: () => void;
+    const queueEntered = new Promise<void>((resolve) => {
+      enterQueue = resolve;
+    });
+    const queueRelease = new Promise<void>((resolve) => {
+      releaseQueue = resolve;
+    });
+    const heldWriter = runExclusiveSqliteSessionWrite(resolved, async () => {
+      enterQueue();
+      await queueRelease;
+    });
+    await queueEntered;
+
+    const rewrite = rewriteTranscriptEntriesInSessionManager({
+      sessionManager,
+      replacements: [{ entryId: toolResultEntryId, message: rewrittenToolResult }],
+    });
+    const futureManager = SessionManager.open(target, dir);
+    const futureId = futureManager.appendMessage(
+      asAppendMessage({
+        role: "user",
+        content: "future ingress",
+        idempotencyKey: "future-ingress:user",
+        timestamp: 4,
+      }),
+    );
+    releaseQueue();
+    await heldWriter;
+
+    await expect(rewrite).resolves.toMatchObject({
+      changed: false,
+      reason: "transcript changed before rewrite",
+    });
+    expect(
+      SessionManager.open(target, dir)
+        .getBranch()
+        .map((entry) => entry.id),
+    ).toContain(futureId);
+  });
+
+  it("rolls back the entire suffix when a later replay append fails", async () => {
+    const { dir, sessionManager, target } = await createPersistedKeyedRewriteSession();
+    const expectedEvents = loadTranscriptEventsSync(target);
+    const originalLeafId = sessionManager.getLeafId();
+    const duplicateReplayEvent = {
+      type: "message",
+      id: "injected-replay-failure",
+      parentId: originalLeafId,
+      timestamp: new Date(5).toISOString(),
+      message: {
+        role: "assistant",
+        content: createTextContent("first replay row"),
+        timestamp: 5,
+      },
+    };
+
+    await expect(
+      replayTranscriptBranch(target, {
+        expectedEvents,
+        replayEvents: [
+          duplicateReplayEvent,
+          {
+            ...duplicateReplayEvent,
+            parentId: duplicateReplayEvent.id,
+            message: {
+              ...duplicateReplayEvent.message,
+              content: createTextContent("injected failure"),
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow("Transcript branch replay event was not appended");
+    expect(loadTranscriptEventsSync(target)).toEqual(expectedEvents);
+    expect(SessionManager.open(target, dir).getLeafId()).toBe(originalLeafId);
   });
 });

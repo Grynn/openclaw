@@ -1,5 +1,10 @@
 /** Rewrites transcript entries by branching and re-appending the active suffix. */
 import { stripCompactionReplayCheckpoint } from "@openclaw/ai/transports";
+import {
+  loadTranscriptEventsSync,
+  replayTranscriptBranch,
+  type TranscriptEvent,
+} from "../../config/sessions/session-accessor.js";
 import type {
   TranscriptRewriteReplacement,
   TranscriptRewriteResult,
@@ -123,7 +128,7 @@ function appendBranchEntry(params: {
  * Safely rewrites transcript message entries on the active branch by branching
  * from the first rewritten message's parent and re-appending the suffix.
  */
-export function rewriteTranscriptEntriesInSessionManager(params: {
+function rewriteTranscriptEntriesInPlace(params: {
   sessionManager: SessionManagerLike;
   replacements: TranscriptRewriteReplacement[];
   /** Preserve a checkpoint freshly captured on an explicit replacement. */
@@ -213,4 +218,69 @@ export function rewriteTranscriptEntriesInSessionManager(params: {
     bytesFreed,
     rewrittenEntries: matchedIndices.length,
   };
+}
+
+function assertUnchangedReplayPrefix(
+  expectedEvents: readonly TranscriptEvent[],
+  plannedEvents: readonly unknown[],
+): void {
+  const prefixMatches = expectedEvents.every(
+    (event, index) => JSON.stringify(plannedEvents[index]) === JSON.stringify(event),
+  );
+  if (!prefixMatches || plannedEvents.length <= expectedEvents.length) {
+    throw new Error("Transcript branch replay plan did not preserve its source prefix");
+  }
+}
+
+/**
+ * Safely rewrites transcript message entries on the active branch. Persisted
+ * managers plan on a clone and commit their complete suffix atomically.
+ */
+export async function rewriteTranscriptEntriesInSessionManager(params: {
+  sessionManager: SessionManagerLike;
+  replacements: TranscriptRewriteReplacement[];
+  /** Preserve a checkpoint freshly captured on an explicit replacement. */
+  preserveReplacementCompactionReplay?: boolean;
+}): Promise<TranscriptRewriteResult> {
+  const target = params.sessionManager.getSessionTarget();
+  if (!target) {
+    return rewriteTranscriptEntriesInPlace(params);
+  }
+
+  const expectedEvents = loadTranscriptEventsSync(target);
+  const plannedManager = SessionManager.fromEntries(expectedEvents, params.sessionManager.getCwd());
+  const plannedResult = rewriteTranscriptEntriesInPlace({
+    sessionManager: plannedManager,
+    replacements: params.replacements,
+    ...(params.preserveReplacementCompactionReplay
+      ? { preserveReplacementCompactionReplay: true }
+      : {}),
+  });
+  if (!plannedResult.changed) {
+    params.sessionManager.reloadPersistedTranscript();
+    return plannedResult;
+  }
+
+  const plannedEvents = plannedManager.getPersistedEntries();
+  assertUnchangedReplayPrefix(expectedEvents, plannedEvents);
+  try {
+    const committed = await replayTranscriptBranch(target, {
+      expectedEvents,
+      replayEvents: plannedEvents.slice(expectedEvents.length),
+    });
+    if (!committed.replayed) {
+      return {
+        bytesFreed: 0,
+        changed: false,
+        reason:
+          committed.reason === "transcript-changed"
+            ? "transcript changed before rewrite"
+            : "session changed before rewrite",
+        rewrittenEntries: 0,
+      };
+    }
+    return plannedResult;
+  } finally {
+    params.sessionManager.reloadPersistedTranscript();
+  }
 }

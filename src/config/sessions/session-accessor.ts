@@ -244,6 +244,7 @@ export {
   readTranscriptEventAtSeqSync,
   readTranscriptRawDelta,
   readTranscriptStatsSync,
+  replayTranscriptBranch,
   replaceTranscriptEvents,
   replaceTranscriptEventsSync,
   rewriteTranscriptEventRowsExact,

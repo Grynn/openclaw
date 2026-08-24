@@ -69,7 +69,7 @@ export async function attemptServerEndpointCompaction(params: {
       compacted.model,
       compacted.replayMetadata,
     );
-    const rewritten = rewriteTranscriptEntriesInSessionManager({
+    const rewritten = await rewriteTranscriptEntriesInSessionManager({
       sessionManager: params.sessionManager,
       replacements: [{ entryId: owner.id, message: replacement }],
       preserveReplacementCompactionReplay: true,

@@ -23,18 +23,18 @@ type ReplayRepairParams = {
 
 type ReplayRepairResult = { repaired: boolean; repairedCount: number; reason?: string };
 
-function rewriteRejectedReplayInSessionManager(
+async function rewriteRejectedReplayInSessionManager(
   params: ReplayRepairParams,
   repair: {
     replacements: Array<{ entryId: string; message: AgentMessage }>;
     emptyReason: string;
     logMessage: string;
   },
-): ReplayRepairResult {
+): Promise<ReplayRepairResult> {
   if (repair.replacements.length === 0) {
     return { repaired: false, repairedCount: 0, reason: repair.emptyReason };
   }
-  const rewriteResult = rewriteTranscriptEntriesInSessionManager({
+  const rewriteResult = await rewriteTranscriptEntriesInSessionManager({
     sessionManager: params.sessionManager,
     replacements: repair.replacements,
   });
@@ -59,9 +59,9 @@ function rewriteRejectedReplayInSessionManager(
   };
 }
 
-export function repairRejectedThinkingReplayInSessionManager(
+export async function repairRejectedThinkingReplayInSessionManager(
   params: ReplayRepairParams,
-): ReplayRepairResult {
+): Promise<ReplayRepairResult> {
   const replacements: Array<{ entryId: string; message: AgentMessage }> = [];
   for (const entry of params.sessionManager.getBranch()) {
     if (entry.type !== "message") {
@@ -74,16 +74,16 @@ export function repairRejectedThinkingReplayInSessionManager(
     replacements.push({ entryId: entry.id, message: replacement });
   }
 
-  return rewriteRejectedReplayInSessionManager(params, {
+  return await rewriteRejectedReplayInSessionManager(params, {
     replacements,
     emptyReason: "no thinking blocks on active branch",
     logMessage: "stripped thinking blocks after provider rejected replay",
   });
 }
 
-export function repairRejectedCompactionReplayInSessionManager(
+export async function repairRejectedCompactionReplayInSessionManager(
   params: ReplayRepairParams & { checkpoint: OpenAIResponsesCompactionRejection },
-): ReplayRepairResult {
+): Promise<ReplayRepairResult> {
   const owner = params.sessionManager
     .getBranch()
     .findLast(
@@ -105,7 +105,7 @@ export function repairRejectedCompactionReplayInSessionManager(
           },
         ]
       : [];
-  return rewriteRejectedReplayInSessionManager(params, {
+  return await rewriteRejectedReplayInSessionManager(params, {
     replacements,
     emptyReason: "no OpenAI Responses compaction checkpoint on active branch",
     logMessage: "stripped compaction checkpoint after provider rejected replay",

@@ -245,7 +245,7 @@ export async function handleEmbeddedAttemptPromptError(input: {
   activeSession: AgentSession;
   attempt: PromptErrorAttempt;
   error: unknown;
-  handleMidTurnPrecheckRequest: (request: MidTurnPrecheckRequest) => void;
+  handleMidTurnPrecheckRequest: (request: MidTurnPrecheckRequest) => Promise<void> | void;
   markYieldAborted: () => void;
   releaseLeasedSteering: (error?: unknown) => void;
   withOwnedTranscriptWrite: WithOwnedTranscriptWrite;
@@ -274,8 +274,8 @@ export async function handleEmbeddedAttemptPromptError(input: {
 
   if (isMidTurnPrecheckSignal(input.error)) {
     const request = input.error.request;
-    await input.withOwnedTranscriptWrite(() => {
-      input.handleMidTurnPrecheckRequest(request);
+    await input.withOwnedTranscriptWrite(async () => {
+      await input.handleMidTurnPrecheckRequest(request);
     });
     return {};
   }

@@ -2,6 +2,7 @@
  * Installs replay, tool-call, timeout, and diagnostic guards around an embedded stream.
  */
 import type { OpenAIResponsesCompactionRejection } from "@openclaw/ai/transports";
+import { runWithOwnedSessionTranscriptWrite } from "../../../config/sessions/transcript-write-context.js";
 import { resolveDiagnosticModelContentCapturePolicy } from "../../../infra/diagnostic-llm-content.js";
 import type { DiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
 import { DEFAULT_UNDICI_STREAM_TIMEOUT_MS } from "../../../infra/net/undici-global-dispatcher.js";
@@ -104,53 +105,64 @@ export function installEmbeddedAttemptStreamGuards(input: {
 }) {
   const attempt = input.attempt;
   const session = input.session;
-  const repairRejectedReplay = (
+  const repairRejectedReplay = async (
     kind: "compaction" | "thinking",
     checkpoint?: OpenAIResponsesCompactionRejection,
-  ) => {
-    try {
-      if (!input.sessionManager) {
-        log.warn(
-          `[session-recovery] unable to repair rejected ${kind} replay: ` +
-            `session manager unavailable sessionId=${session.sessionId}`,
-        );
-        return;
-      }
-      const repairParams = {
-        sessionManager: input.sessionManager,
+  ) =>
+    await runWithOwnedSessionTranscriptWrite(
+      {
         sessionFile: attempt.sessionFile,
-        sessionId: attempt.sessionId,
         sessionKey: attempt.sessionKey,
-        agentId: input.sessionAgentId,
-      };
-      let repair;
-      if (kind === "compaction") {
-        if (!checkpoint) {
+        sessionTarget: attempt.sessionTarget,
+      },
+      async () => {
+        try {
+          if (!input.sessionManager) {
+            log.warn(
+              `[session-recovery] unable to repair rejected ${kind} replay: ` +
+                `session manager unavailable sessionId=${session.sessionId}`,
+            );
+            return;
+          }
+          const repairParams = {
+            sessionManager: input.sessionManager,
+            sessionFile: attempt.sessionFile,
+            sessionId: attempt.sessionId,
+            sessionKey: attempt.sessionKey,
+            agentId: input.sessionAgentId,
+          };
+          let repair;
+          if (kind === "compaction") {
+            if (!checkpoint) {
+              log.warn(
+                `[session-recovery] unable to repair rejected compaction replay: ` +
+                  `checkpoint identity unavailable sessionId=${session.sessionId}`,
+              );
+              return;
+            }
+            repair = await repairRejectedCompactionReplayInSessionManager({
+              ...repairParams,
+              checkpoint,
+            });
+          } else {
+            repair = await repairRejectedThinkingReplayInSessionManager(repairParams);
+          }
+          if (repair.repaired) {
+            input.onRejectedProviderReplayRepaired();
+            return;
+          }
           log.warn(
-            `[session-recovery] unable to repair rejected compaction replay: ` +
-              `checkpoint identity unavailable sessionId=${session.sessionId}`,
+            `[session-recovery] provider rejected ${kind} replay but transcript repair made no changes: ` +
+              `sessionId=${session.sessionId} reason=${repair.reason ?? "unknown"}`,
           );
-          return;
+        } catch (error) {
+          log.warn(
+            `[session-recovery] unable to repair rejected ${kind} replay: ` +
+              `sessionId=${session.sessionId} error=${String(error)}`,
+          );
         }
-        repair = repairRejectedCompactionReplayInSessionManager({ ...repairParams, checkpoint });
-      } else {
-        repair = repairRejectedThinkingReplayInSessionManager(repairParams);
-      }
-      if (repair.repaired) {
-        input.onRejectedProviderReplayRepaired();
-        return;
-      }
-      log.warn(
-        `[session-recovery] provider rejected ${kind} replay but transcript repair made no changes: ` +
-          `sessionId=${session.sessionId} reason=${repair.reason ?? "unknown"}`,
-      );
-    } catch (error) {
-      log.warn(
-        `[session-recovery] unable to repair rejected ${kind} replay: ` +
-          `sessionId=${session.sessionId} error=${String(error)}`,
-      );
-    }
-  };
+      },
+    );
   const cacheObservabilityEnabled = Boolean(input.cacheTrace) || log.isEnabled("debug");
   const promptCacheTools = cacheObservabilityEnabled
     ? collectPromptCacheTools(input.allCustomTools)
@@ -191,7 +203,9 @@ export function installEmbeddedAttemptStreamGuards(input: {
   ) {
     session.agent.streamFn = wrapAnthropicStreamWithRecovery(session.agent.streamFn, {
       id: session.sessionId,
-      onRecoveredAnthropicThinking: () => repairRejectedReplay("thinking"),
+      onRecoveredAnthropicThinking: () => {
+        void repairRejectedReplay("thinking");
+      },
     });
   }
 
@@ -230,7 +244,9 @@ export function installEmbeddedAttemptStreamGuards(input: {
   if (input.isOpenAIResponsesApi) {
     session.agent.streamFn = wrapStreamFnWithCompactionReplayRepair(
       session.agent.streamFn,
-      (checkpoint) => repairRejectedReplay("compaction", checkpoint),
+      (checkpoint) => {
+        void repairRejectedReplay("compaction", checkpoint);
+      },
     );
     session.agent.streamFn = wrapStreamFnWithMessageTransform(session.agent.streamFn, (messages) =>
       sanitizeOpenAIResponsesReplayForStream(messages),

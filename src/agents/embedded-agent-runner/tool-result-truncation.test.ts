@@ -1595,13 +1595,22 @@ describe("truncateOversizedToolResultsInSession", () => {
     await appendTranscriptMessage(scope, { message: preBoundaryCheckpointOwner });
     const medium = "alpha beta gamma delta epsilon ".repeat(600);
     const firstToolResult = await appendTranscriptMessage(scope, {
-      message: makeToolResult(medium, "call_1"),
+      message: {
+        ...makeToolResult(medium, "call_1"),
+        idempotencyKey: "codex-app-server:test-turn:tool:call_1:result",
+      },
     });
     const secondToolResult = await appendTranscriptMessage(scope, {
-      message: makeToolResult(medium, "call_2"),
+      message: {
+        ...makeToolResult(medium, "call_2"),
+        idempotencyKey: "codex-app-server:test-turn:tool:call_2:result",
+      },
     });
     const thirdToolResult = await appendTranscriptMessage(scope, {
-      message: makeToolResult(medium, "call_3"),
+      message: {
+        ...makeToolResult(medium, "call_3"),
+        idempotencyKey: "codex-app-server:test-turn:tool:call_3:result",
+      },
     });
     const staleCheckpointOwner = makeAssistantMessage("stale checkpoint owner");
     staleCheckpointOwner.providerReplay = staleCheckpointReplay;

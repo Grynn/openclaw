@@ -1256,7 +1256,7 @@ export function estimateToolResultReductionPotential(params: {
   };
 }
 
-function truncateOversizedToolResultsInExistingSessionManager(params: {
+async function truncateOversizedToolResultsInExistingSessionManager(params: {
   sessionManager: SessionManager;
   contextWindowTokens: number;
   maxCharsOverride?: number;
@@ -1268,7 +1268,7 @@ function truncateOversizedToolResultsInExistingSessionManager(params: {
   sessionKey?: string;
   agentId?: string;
   storePath?: string;
-}): { truncated: boolean; truncatedCount: number; reason?: string } {
+}): Promise<{ truncated: boolean; truncatedCount: number; reason?: string }> {
   const { sessionManager, contextWindowTokens } = params;
   const branch = sessionManager.getBranch() as ToolResultBranchEntry[];
 
@@ -1291,7 +1291,7 @@ function truncateOversizedToolResultsInExistingSessionManager(params: {
       reason: "no oversized or aggregate tool results",
     };
   }
-  const rewriteResult = rewriteTranscriptEntriesInSessionManager({
+  const rewriteResult = await rewriteTranscriptEntriesInSessionManager({
     sessionManager,
     replacements: plan.replacements,
   });
@@ -1334,7 +1334,7 @@ function truncateOversizedToolResultsInExistingSessionManager(params: {
   };
 }
 
-export function truncateOversizedToolResultsInSessionManager(params: {
+export async function truncateOversizedToolResultsInSessionManager(params: {
   sessionManager: SessionManager;
   contextWindowTokens: number;
   maxCharsOverride?: number;
@@ -1345,9 +1345,9 @@ export function truncateOversizedToolResultsInSessionManager(params: {
   sessionId?: string;
   sessionKey?: string;
   agentId?: string;
-}): { truncated: boolean; truncatedCount: number; reason?: string } {
+}): Promise<{ truncated: boolean; truncatedCount: number; reason?: string }> {
   try {
-    return truncateOversizedToolResultsInExistingSessionManager(params);
+    return await truncateOversizedToolResultsInExistingSessionManager(params);
   } catch (err) {
     const errMsg = formatErrorMessage(err);
     log.warn(`[tool-result-truncation] Failed to truncate: ${errMsg}`);
@@ -1366,7 +1366,7 @@ export async function truncateOversizedToolResultsInActiveTarget(params: {
   try {
     const target = await resolveRuntimeTranscriptReadTarget(params.scope);
     const sessionManager = SessionManager.open(target);
-    return truncateOversizedToolResultsInExistingSessionManager({
+    return await truncateOversizedToolResultsInExistingSessionManager({
       sessionManager,
       contextWindowTokens: params.contextWindowTokens,
       maxCharsOverride: params.maxCharsOverride,
