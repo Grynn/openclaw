@@ -53,8 +53,13 @@ async function requireLocalResumableClaudeSession(
   throw new Error("Claude session cannot be resumed in a terminal");
 }
 
-export async function listClaudeSessions(paramsJSON?: string | null): Promise<string> {
-  return JSON.stringify(await listLocalClaudeSessionPage(parseNodeParams(paramsJSON)));
+export async function listClaudeSessions(
+  paramsJSON?: string | null,
+  signal?: AbortSignal,
+): Promise<string> {
+  return JSON.stringify(
+    await listLocalClaudeSessionPage(parseNodeParams(paramsJSON), undefined, undefined, signal),
+  );
 }
 
 export async function readClaudeSession(paramsJSON?: string | null): Promise<string> {

@@ -117,7 +117,7 @@ function createCodexCatalogRequestSnapshot(
 function createCodexSessionCatalogControlFromRequests(params: {
   clientId?: string;
   connectionFingerprint?: string;
-  createRequestSnapshot: () => CodexSessionCatalogRequestSnapshot;
+  createRequestSnapshot: (signal?: AbortSignal) => CodexSessionCatalogRequestSnapshot;
   localSessionsRoot?: string;
   now: () => number;
   withPinnedConnection: CodexSessionCatalogControl["withPinnedConnection"];
@@ -141,7 +141,7 @@ function createCodexSessionCatalogControlFromRequests(params: {
       let nextCursor: string | undefined;
       let backwardsCursor: string | undefined;
       const seenCursors = new Set(cursor ? [cursor] : []);
-      const requests = params.createRequestSnapshot();
+      const requests = params.createRequestSnapshot(pageParams.signal);
       const deadline = params.now() + requests.requestTimeoutMs;
 
       for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
@@ -285,6 +285,7 @@ export function createCodexSessionCatalogControl(params: {
   const createRequestSnapshot = (
     agentId: string,
     source?: CodexCatalogHome,
+    signal?: AbortSignal,
   ): CodexSessionCatalogRequestSnapshot => {
     const pluginConfig = getPluginConfig();
     const runtime =
@@ -296,6 +297,7 @@ export function createCodexSessionCatalogControl(params: {
         await codexControlRequest(pluginConfig, method, requestParams, {
           ...requestOptions,
           ...(timeoutMs === undefined ? {} : { timeoutMs }),
+          ...(signal ? { signal } : {}),
         }),
     );
   };
@@ -319,26 +321,27 @@ export function createCodexSessionCatalogControl(params: {
         timeoutMs: runtime.requestTimeoutMs,
       });
       try {
-        const requests = createCodexCatalogRequestSnapshot(
-          runtime.requestTimeoutMs,
-          async <M extends CodexCatalogRequestMethod>(
-            method: M,
-            requestParams: CodexAppServerRequestParams<M>,
-            timeoutMs?: number,
-          ): Promise<CodexAppServerRequestResult<M>> =>
-            await requestCodexAppServerClientJson<CodexAppServerRequestResult<M>>({
-              client,
-              method,
-              requestParams,
-              config: runtimeConfig,
-              timeoutMs: timeoutMs ?? runtime.requestTimeoutMs,
-            }),
-        );
         const pinnedControl: CodexSessionCatalogControl =
           createCodexSessionCatalogControlFromRequests({
             clientId: resolveCodexAppServerClientInstanceId(client),
             connectionFingerprint: buildCodexAppServerConnectionFingerprint(runtime, agentDir),
-            createRequestSnapshot: () => requests,
+            createRequestSnapshot: (signal) =>
+              createCodexCatalogRequestSnapshot(
+                runtime.requestTimeoutMs,
+                async <M extends CodexCatalogRequestMethod>(
+                  method: M,
+                  requestParams: CodexAppServerRequestParams<M>,
+                  timeoutMs?: number,
+                ): Promise<CodexAppServerRequestResult<M>> =>
+                  await requestCodexAppServerClientJson<CodexAppServerRequestResult<M>>({
+                    client,
+                    method,
+                    requestParams,
+                    config: runtimeConfig,
+                    timeoutMs: timeoutMs ?? runtime.requestTimeoutMs,
+                    ...(signal ? { signal } : {}),
+                  }),
+              ),
             ...(source?.localSessionsRoot ? { localSessionsRoot: source.localSessionsRoot } : {}),
             now,
             withPinnedConnection: async (nestedRun) => await nestedRun(pinnedControl),
@@ -349,7 +352,7 @@ export function createCodexSessionCatalogControl(params: {
       }
     };
     const control = createCodexSessionCatalogControlFromRequests({
-      createRequestSnapshot: () => createRequestSnapshot(agentId, source),
+      createRequestSnapshot: (signal) => createRequestSnapshot(agentId, source, signal),
       ...(source?.localSessionsRoot ? { localSessionsRoot: source.localSessionsRoot } : {}),
       now,
       withPinnedConnection,
@@ -372,14 +375,32 @@ export function createCodexSessionCatalogControl(params: {
           cache.delete(key);
           cache.set(key, cached);
           if (cached.expiresAt > now()) {
-            return cached.value ?? (await cached.page);
+            if (cached.value) {
+              return cached.value;
+            }
+            // A cancellable Gateway operation must not adopt a page promise owned by a different
+            // request lifetime. Identical Gateway callers already single-flight one layer above.
+            return pageParams.signal ? await control.listPage(pageParams) : await cached.page;
           }
         }
         if (cached) {
           cache.delete(key);
         }
-        const page = control.listPage(pageParams);
         const staleValue = cached?.value;
+        if (pageParams.signal && !staleValue) {
+          const value = await control.listPage(pageParams);
+          if (!pageParams.signal.aborted && !cache.has(key)) {
+            const settled = Promise.resolve(value);
+            cache.set(key, {
+              expiresAt: now() + CODEX_SESSION_CATALOG_LIST_TTL_MS,
+              page: settled,
+              value,
+            });
+            pruneMapToMaxSize(cache, CODEX_SESSION_CATALOG_LIST_CACHE_MAX_ENTRIES);
+          }
+          return value;
+        }
+        const page = control.listPage(pageParams);
         const entry: CodexCatalogPageCacheEntry = {
           expiresAt: Number.POSITIVE_INFINITY,
           page,

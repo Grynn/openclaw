@@ -229,6 +229,54 @@ describe("Codex supervision catalog", () => {
     expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledTimes(2);
   });
 
+  it("isolates cancellable cold fills and only publishes a settled page", async () => {
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    let resolveSecond!: (value: unknown) => void;
+    commandRpcMocks.codexControlRequest.mockImplementation(
+      async (
+        _pluginConfig: unknown,
+        _method: string,
+        _request: unknown,
+        options?: { signal?: AbortSignal },
+      ) =>
+        await new Promise((resolve, reject) => {
+          if (options?.signal === secondController.signal) {
+            resolveSecond = resolve;
+          }
+          options?.signal?.addEventListener(
+            "abort",
+            () =>
+              reject(
+                options.signal?.reason instanceof Error
+                  ? options.signal.reason
+                  : new Error("catalog aborted"),
+              ),
+            { once: true },
+          );
+        }),
+    );
+    const control = createCodexSessionCatalogControl({
+      getPluginConfig: () => ({ supervision: { enabled: true } }),
+      getRuntimeConfig: () => config,
+    });
+
+    const first = control.listPage({ limit: 25, signal: firstController.signal });
+    const second = control.listPage({ limit: 25, signal: secondController.signal });
+    await vi.waitFor(() => expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledTimes(2));
+
+    firstController.abort(new Error("first catalog disconnected"));
+    await expect(first).rejects.toThrow("first catalog disconnected");
+    resolveSecond({ data: [idleThread({ id: "thread-kept", source: "cli" })] });
+    await expect(second).resolves.toMatchObject({
+      sessions: [expect.objectContaining({ threadId: "thread-kept" })],
+    });
+    await expect(control.listPage({ limit: 25 })).resolves.toMatchObject({
+      sessions: [expect.objectContaining({ threadId: "thread-kept" })],
+    });
+    expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledTimes(2);
+  });
+
   it("propagates a forced refresh failure while preserving the stale retry state", async () => {
     let now = 1_000;
     commandRpcMocks.codexControlRequest.mockResolvedValue({

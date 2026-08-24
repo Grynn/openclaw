@@ -253,7 +253,11 @@ function scanGroupRecords(raw: Uint8Array, parsed: ParsedGroups): void {
  * Claude Desktop stores Code custom groups in Chromium Local Storage, not beside the session JSON.
  * This reads only labels and local-session assignments; it never mutates Desktop account state.
  */
-export async function readClaudeDesktopCustomGroups(homeDir: string): Promise<Map<string, string>> {
+export async function readClaudeDesktopCustomGroups(
+  homeDir: string,
+  signal?: AbortSignal,
+): Promise<Map<string, string>> {
+  signal?.throwIfAborted();
   const root = path.join(
     homeDir,
     "Library",
@@ -263,12 +267,15 @@ export async function readClaudeDesktopCustomGroups(homeDir: string): Promise<Ma
     "leveldb",
   );
   const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+  signal?.throwIfAborted();
   const files = await Promise.all(
     entries
       .filter((entry) => entry.isFile() && /\.(ldb|log)$/.test(entry.name))
       .map(async (entry) => {
+        signal?.throwIfAborted();
         const filePath = path.join(root, entry.name);
         const stat = await fs.stat(filePath).catch(() => undefined);
+        signal?.throwIfAborted();
         return stat && stat.size <= MAX_LEVELDB_FILE_BYTES
           ? { filePath, mtimeMs: stat.mtimeMs, size: stat.size }
           : undefined;
@@ -286,11 +293,13 @@ export async function readClaudeDesktopCustomGroups(homeDir: string): Promise<Ma
       (left, right) => right.mtimeMs - left.mtimeMs || right.filePath.localeCompare(left.filePath),
     )
     .slice(0, MAX_LEVELDB_FILES)) {
+    signal?.throwIfAborted();
     if (file.size > remainingBytes) {
       continue;
     }
     remainingBytes -= file.size;
-    const raw = await fs.readFile(file.filePath).catch(() => undefined);
+    const raw = await fs.readFile(file.filePath, { signal }).catch(() => undefined);
+    signal?.throwIfAborted();
     if (!raw) {
       continue;
     }
@@ -300,9 +309,11 @@ export async function readClaudeDesktopCustomGroups(homeDir: string): Promise<Ma
     }
     try {
       for (const block of levelDbDataBlocks(raw)) {
+        signal?.throwIfAborted();
         collectLevelDbValues(block, levelDbValues);
       }
     } catch {
+      signal?.throwIfAborted();
       // Chromium can compact while discovery is reading its local store.
     }
   }
@@ -314,10 +325,12 @@ export async function readClaudeDesktopCustomGroups(homeDir: string): Promise<Ma
     assignments: new Map(logRecords.assignments),
   };
   for (const { value } of levelDbValues.values()) {
+    signal?.throwIfAborted();
     scanGroupRecords(value, parsed);
   }
   const assignments = new Map<string, string>();
   for (const [sessionId, groupId] of parsed.assignments) {
+    signal?.throwIfAborted();
     const group = parsed.groups.get(groupId);
     if (group) {
       assignments.set(sessionId, group);

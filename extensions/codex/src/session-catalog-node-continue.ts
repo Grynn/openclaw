@@ -94,6 +94,7 @@ export async function listPairedNode(params: {
   query: CodexSessionCatalogParams;
   adoptedSessions: ReadonlyMap<string, AdoptedSessionEntry>;
   onHost?: (host: CodexSessionCatalogHost) => void;
+  signal?: AbortSignal;
 }): Promise<CodexSessionCatalogHost> {
   const hostId = `node:${params.node.nodeId}`;
   const common = {
@@ -125,6 +126,7 @@ export async function listPairedNode(params: {
           searchTerm: params.query.search,
         },
         timeoutMs: NODE_INVOKE_TIMEOUT_MS,
+        ...(params.signal ? { signal: params.signal } : {}),
         scopes: ["operator.write"],
       });
       const page = filterCatalogPageByTitle(
@@ -143,12 +145,15 @@ export async function listPairedNode(params: {
         }),
       };
     })
-    .catch((error: unknown) => ({
-      ...common,
-      connected: true,
-      sessions: [],
-      error: catalogError("NODE_INVOKE_FAILED", error),
-    }));
+    .catch((error: unknown) => {
+      params.signal?.throwIfAborted();
+      return {
+        ...common,
+        connected: true,
+        sessions: [],
+        error: catalogError("NODE_INVOKE_FAILED", error),
+      };
+    });
   if (params.onHost) {
     // Keep the 8s aggregate response while allowing cold app-server discovery
     // to replace that fail-soft page as soon as the node invoke really settles.
@@ -161,6 +166,7 @@ export async function listPairedNode(params: {
       "paired node Codex session catalog timed out",
     );
   } catch (error) {
+    params.signal?.throwIfAborted();
     return {
       ...common,
       connected: true,

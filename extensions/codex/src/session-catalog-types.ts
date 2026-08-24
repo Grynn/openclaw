@@ -59,6 +59,8 @@ export type CodexSessionCatalogPageParams = {
   cwd?: string;
   /** Bypasses the brief list memo after a specific thread lookup misses. */
   forceRefresh?: boolean;
+  /** Cancels request-owned passive catalog work. Excluded from the page cache key. */
+  signal?: AbortSignal;
 };
 
 export type CodexSessionCatalogControl = {

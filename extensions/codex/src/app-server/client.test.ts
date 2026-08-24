@@ -346,6 +346,40 @@ describe("CodexAppServerClient", () => {
     expect(harness.writes).toHaveLength(1);
   });
 
+  it("locally abandons thread/list without claiming native dependency cancellation", async () => {
+    const harness = createClientHarness();
+    clients.push(harness.client);
+    const controller = new AbortController();
+
+    const listing = harness.client.request(
+      "thread/list",
+      { limit: 10 },
+      {
+        signal: controller.signal,
+      },
+    );
+    const listRequest = JSON.parse(harness.writes[0] ?? "{}") as {
+      id?: number;
+      method?: string;
+    };
+    controller.abort();
+    await expect(listing).rejects.toThrow("thread/list aborted");
+
+    // The pinned app-server protocol has no cancellation frame for thread/list. Keep the shared
+    // connection usable while the dependency finishes that native request in the background.
+    expect(harness.writes).toHaveLength(1);
+    const followUp = harness.client.request("model/list", {});
+    const followUpRequest = JSON.parse(harness.writes[1] ?? "{}") as {
+      id?: number;
+      method?: string;
+    };
+    harness.send({ id: listRequest.id, result: { data: [] } });
+    harness.send({ id: followUpRequest.id, result: { models: [] } });
+
+    await expect(followUp).resolves.toEqual({ models: [] });
+    expect([listRequest.method, followUpRequest.method]).toEqual(["thread/list", "model/list"]);
+  });
+
   it("initializes with the required client version", async () => {
     const { harness, initializing, outbound } = startInitialize();
     harness.send({

@@ -62,4 +62,52 @@ describe("SessionCatalogListAdmission", () => {
     active.resolve();
     await Promise.all([first, queued]);
   });
+
+  it("removes an aborted queued list without consuming the next slot", async () => {
+    const admission = new SessionCatalogListAdmission(1, 3);
+    const active = deferred<void>();
+    const first = admission.run(() => active.promise);
+    const controller = new AbortController();
+    const abandonedTask = vi.fn(async () => "abandoned");
+    const abandoned = admission.run(abandonedTask, controller.signal);
+    const keptTask = vi.fn(async () => "kept");
+    const kept = admission.run(keptTask);
+
+    controller.abort(new Error("requester disconnected"));
+    await expect(abandoned).rejects.toThrow("requester disconnected");
+    expect(abandonedTask).not.toHaveBeenCalled();
+
+    active.resolve();
+    await expect(first).resolves.toBeUndefined();
+    await expect(kept).resolves.toBe("kept");
+    expect(keptTask).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a list whose signal was already aborted", async () => {
+    const admission = new SessionCatalogListAdmission(1, 1);
+    const controller = new AbortController();
+    const task = vi.fn(async () => undefined);
+    controller.abort(new Error("already gone"));
+
+    await expect(admission.run(task, controller.signal)).rejects.toThrow("already gone");
+    expect(task).not.toHaveBeenCalled();
+  });
+
+  it("does not release an active slot until an abort-ignoring provider settles", async () => {
+    const admission = new SessionCatalogListAdmission(1, 1);
+    const active = deferred<void>();
+    const controller = new AbortController();
+    const first = admission.run(() => active.promise, controller.signal);
+    const keptTask = vi.fn(async () => "kept");
+    const kept = admission.run(keptTask);
+
+    controller.abort(new Error("requester disconnected"));
+    await Promise.resolve();
+    expect(keptTask).not.toHaveBeenCalled();
+
+    active.resolve();
+    await expect(first).resolves.toBeUndefined();
+    await expect(kept).resolves.toBe("kept");
+    expect(keptTask).toHaveBeenCalledOnce();
+  });
 });

@@ -540,6 +540,84 @@ describe("OpenCode session catalog", () => {
     },
   );
 
+  it("keeps a shared OpenCode subprocess alive when only one query follower disconnects", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ownerSignal: AbortSignal | undefined;
+    processRuntimeMocks.runCommandBuffered.mockImplementationOnce(async (_argv, options) => {
+      if (!options?.signal) {
+        throw new Error("OpenCode query did not receive an owner signal");
+      }
+      ownerSignal = options.signal;
+      await gate;
+      return {
+        stdout: Buffer.from("[]"),
+        stderr: Buffer.alloc(0),
+        code: 0,
+        signal: null,
+        killed: false,
+        termination: "exit",
+      };
+    });
+    const configIdentity = {};
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const first = listLocalOpenCodeSessionPage(
+      { limit: 20 },
+      { configIdentity, signal: firstController.signal },
+    );
+    await vi.waitFor(() => expect(ownerSignal).toBeInstanceOf(AbortSignal));
+    const second = listLocalOpenCodeSessionPage(
+      { limit: 20 },
+      { configIdentity, signal: secondController.signal },
+    );
+
+    firstController.abort(new Error("first OpenCode requester disconnected"));
+    await expect(first).rejects.toThrow("first OpenCode requester disconnected");
+    expect(ownerSignal?.aborted).toBe(false);
+    expect(processRuntimeMocks.runCommandBuffered).toHaveBeenCalledOnce();
+
+    release();
+    await expect(second).resolves.toEqual({ sessions: [] });
+  });
+
+  it("forwards node cancellation to the final OpenCode subprocess owner", async () => {
+    let ownerSignal: AbortSignal | undefined;
+    processRuntimeMocks.runCommandBuffered.mockImplementationOnce(async (_argv, options) => {
+      const signal = options?.signal;
+      if (!signal) {
+        throw new Error("OpenCode query did not receive an owner signal");
+      }
+      ownerSignal = signal;
+      return await new Promise<never>((_resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => reject(signal.reason ?? new Error("OpenCode subprocess aborted")),
+          { once: true },
+        );
+      });
+    });
+    const command = captureOpenCodeSessionRegistrations().commands.find(
+      (candidate) => candidate.command === OPENCODE_SESSIONS_LIST_COMMAND,
+    );
+    const controller = new AbortController();
+    const pending = command!.handle(JSON.stringify({ limit: 20 }), undefined, {
+      signal: controller.signal,
+    } as never);
+    await vi.waitFor(() => expect(ownerSignal).toBeInstanceOf(AbortSignal));
+
+    controller.abort(new Error("OpenCode node invocation disconnected"));
+
+    await expect(pending).rejects.toThrow("OpenCode node invocation disconnected");
+    expect(ownerSignal?.aborted).toBe(true);
+    expect(processRuntimeMocks.runCommandBuffered).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ signal: ownerSignal }),
+    );
+  });
+
   itWithCli("hides and rejects Continue when ACP cannot resume OpenCode", async () => {
     await installFakeOpenCode();
     acpRuntimeMocks.resolveAcpSessionAvailability.mockReturnValue({

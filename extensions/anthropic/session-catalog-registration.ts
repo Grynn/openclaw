@@ -96,8 +96,14 @@ function createClaudeSessionNodeHostCommands(): OpenClawPluginNodeHostCommand[] 
       cap: CLAUDE_SESSIONS_CAPABILITY,
       dangerous: false,
       isAvailable: ({ env }) => claudeProjectsAvailable(env),
-      handle: async (paramsJSON) =>
-        await (await loadClaudeSessionNodeCommands()).listClaudeSessions(paramsJSON),
+      handle: async (paramsJSON, _io, context) => {
+        context?.signal?.throwIfAborted();
+        const result = await (
+          await loadClaudeSessionNodeCommands()
+        ).listClaudeSessions(paramsJSON, context?.signal);
+        context?.signal?.throwIfAborted();
+        return result;
+      },
     },
     {
       command: CLAUDE_SESSION_READ_COMMAND,

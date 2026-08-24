@@ -194,6 +194,7 @@ function registerCodexSessionCatalog(params: {
         listNodes,
         onHost,
         sessionEntries,
+        signal,
         ...gatewayQuery
       } = query;
       const agentId = resolveRequestAgentId(requestedAgentId);
@@ -211,6 +212,7 @@ function registerCodexSessionCatalog(params: {
           listNodes,
           sessionEntries,
           localHomes,
+          ...(signal ? { signal } : {}),
           ...(onHost ? { onHost: (host) => onHost(mapHost(host)) } : {}),
         })
       ).hosts.map(mapHost);

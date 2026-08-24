@@ -56,7 +56,11 @@ const PI_PARAMETER_MESSAGES = {
   invalidThreadId: "threadId is invalid",
 };
 
-export async function listLocalPiSessionPage(value?: unknown): Promise<PiSessionPage> {
+export async function listLocalPiSessionPage(
+  value?: unknown,
+  signal?: AbortSignal,
+): Promise<PiSessionPage> {
+  signal?.throwIfAborted();
   const params = sessionCatalogPaging.parseListParams(value, {
     searchMaxLength: MAX_SEARCH_LENGTH,
     messages: PI_PARAMETER_MESSAGES,
@@ -66,7 +70,9 @@ export async function listLocalPiSessionPage(value?: unknown): Promise<PiSession
     offset,
     limit: params.limit,
     ...(params.searchTerm ? { searchTerm: params.searchTerm } : {}),
+    ...(signal ? { signal } : {}),
   });
+  signal?.throwIfAborted();
   const page = summaries.map(({ file: _file, version: _version, ...session }) => session);
   return {
     sessions: page,

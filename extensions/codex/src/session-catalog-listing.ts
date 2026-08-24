@@ -67,6 +67,7 @@ async function listVisiblePage(params: {
   limit: number;
   onExcludedThread?: (thread: { threadId: string; rolloutPath?: string }) => Promise<void>;
   searchTerm?: string;
+  signal?: AbortSignal;
 }): Promise<CodexSessionCatalogPage> {
   const excluded = params.excludedThreadIds;
   const sessions: ReturnType<typeof parseCatalogPage>["sessions"] = [];
@@ -75,12 +76,14 @@ async function listVisiblePage(params: {
   let backwardsCursor: string | undefined;
   const seenCursors = new Set<string>();
   for (let pageIndex = 0; pageIndex < MAX_TITLE_SEARCH_CATALOG_PAGES; pageIndex += 1) {
+    params.signal?.throwIfAborted();
     let excludedFromPage = false;
     const rawPage = await params.control.listPage({
       limit: params.limit - sessions.length,
       ...(cursor ? { cursor } : {}),
       ...(params.searchTerm ? { searchTerm: params.searchTerm } : {}),
       ...(params.cwd ? { cwd: params.cwd } : {}),
+      ...(params.signal ? { signal: params.signal } : {}),
     });
     const page = filterCatalogPageByTitle(parseCatalogPage(rawPage), params.searchTerm);
     if (pageIndex === 0) {
@@ -126,6 +129,7 @@ async function listGatewayHost(params: {
   source?: CodexCatalogHome;
   excludedThreadIds?: ReadonlySet<string>;
   onExcludedThread?: (thread: { threadId: string; rolloutPath?: string }) => Promise<void>;
+  signal?: AbortSignal;
 }): Promise<CodexSessionCatalogHost> {
   const hostId = params.source?.hostId ?? CODEX_LOCAL_SESSION_HOST_ID;
   const label = params.source?.label ?? "Local Codex";
@@ -138,6 +142,7 @@ async function listGatewayHost(params: {
       limit: params.query.limitPerHost,
       onExcludedThread: params.onExcludedThread,
       searchTerm: params.query.search,
+      ...(params.signal ? { signal: params.signal } : {}),
     });
     const adoptedSessions = await listAdoptedSessionEntries({
       agentId: params.agentId,
@@ -146,6 +151,7 @@ async function listGatewayHost(params: {
       runtime: params.runtime,
       sessionEntries: params.sessionEntries,
     });
+    params.signal?.throwIfAborted();
     return {
       hostId,
       label,
@@ -167,6 +173,7 @@ async function listGatewayHost(params: {
       }),
     };
   } catch (error) {
+    params.signal?.throwIfAborted();
     return {
       hostId,
       label,
@@ -191,7 +198,9 @@ export async function listCodexSessionCatalog(params: {
   sessionEntries?: SessionCatalogEntrySnapshot;
   includeLocal?: boolean;
   localHomes?: CodexCatalogHome[];
+  signal?: AbortSignal;
 }): Promise<CodexSessionCatalogResult> {
+  params.signal?.throwIfAborted();
   const agentId = resolveSessionAgentIds({
     config: params.config ?? {},
     agentId: params.agentId,
@@ -208,6 +217,7 @@ export async function listCodexSessionCatalog(params: {
       ? [undefined]
       : []);
   const managedThreads = await params.bindingStore.managedThreads?.snapshot();
+  params.signal?.throwIfAborted();
   const fallbackSource = params.control.homesForAgent(agentId)[0];
   const localHosts = localSources.map((source) =>
     (() => {
@@ -238,6 +248,7 @@ export async function listCodexSessionCatalog(params: {
             }
           : {}),
         ...(source ? { source } : {}),
+        ...(params.signal ? { signal: params.signal } : {}),
       });
     })(),
   );
@@ -261,7 +272,9 @@ export async function listCodexSessionCatalog(params: {
           (!requestedHostIds || requestedHostIds.has(`node:${node.nodeId}`)),
       )
       .slice(0, MAX_HOST_COUNT - localHosts.length);
+    params.signal?.throwIfAborted();
   } catch (error) {
+    params.signal?.throwIfAborted();
     const registryHost: CodexSessionCatalogHost = {
       hostId: "node:registry",
       label: "Paired nodes",
@@ -288,6 +301,7 @@ export async function listCodexSessionCatalog(params: {
       node,
       query,
       adoptedSessions: adoptedNodeSessions,
+      ...(params.signal ? { signal: params.signal } : {}),
       ...(params.onHost ? { onHost: params.onHost } : {}),
     });
     return Object.assign(host, codexNodeTerminalCapability(node));
@@ -330,7 +344,7 @@ export function createCodexSessionCatalogNodeHostCommands(
       command: CODEX_APP_SERVER_THREADS_LIST_COMMAND,
       cap: CODEX_APP_SERVER_THREADS_CAPABILITY,
       dangerous: false,
-      handle: async (paramsJSON) => {
+      handle: async (paramsJSON, _io, context) => {
         const request = bindRequest(paramsJSON);
         const pageParams = readPageParams(request.params);
         try {
@@ -357,6 +371,7 @@ export function createCodexSessionCatalogNodeHostCommands(
                 }
               : {}),
             searchTerm: pageParams.searchTerm,
+            ...(context?.signal ? { signal: context.signal } : {}),
           });
           return JSON.stringify(page);
         } catch {

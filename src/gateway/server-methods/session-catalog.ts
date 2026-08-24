@@ -15,7 +15,6 @@ import {
   validateSessionsCatalogReadParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import type { PluginRegistry } from "../../plugins/registry-types.js";
 import type {
   SessionCatalogCreateTarget,
@@ -26,10 +25,13 @@ import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { recordSessionStateEvent } from "../../sessions/session-state-events.js";
 import { upsertSessionUpstreamLink } from "../../sessions/session-upstream-links.js";
 import { authorizeGatewaySessionCreation } from "../operator-role-policy.js";
-import type { GatewayBroadcastToConnIdsFn } from "../server-broadcast-types.js";
 import { resolveAgentIdOrRespondError } from "./agent-id-shared.js";
 import { authorizeSessionCatalogThread } from "./session-catalog-authorization.js";
 import { createSessionCatalogRequestEntrySnapshot } from "./session-catalog-entry-snapshot.js";
+import {
+  resolveSharedCatalogList,
+  SESSION_CATALOG_LIST_WAITER_ABORTED,
+} from "./session-catalog-list-cache.js";
 import {
   allowProcessHomeFallback,
   createSessionCatalogRequestNodeSnapshot,
@@ -50,8 +52,6 @@ import type {
 import { assertValidParams } from "./validation.js";
 
 const SESSION_CATALOG_SEARCH_MAX_UTF16_UNITS = 500;
-const SESSION_CATALOG_SHARE_WINDOW_MS = 3_000;
-const SESSION_CATALOG_LIST_CACHE_MAX_ENTRIES = 128;
 
 function normalizeSessionCatalogSearch(search: string | undefined): string | undefined {
   const normalized = normalizeOptionalString(search);
@@ -130,27 +130,6 @@ const providerCreateTargetsByConfig = new WeakMap<
   OpenClawConfig,
   WeakMap<SessionCatalogProvider, Map<string, ProviderCreateTargetResolution>>
 >();
-
-type CatalogListResult = { catalogs: SessionCatalog[] };
-
-type CatalogListProgressSubscriber = {
-  broadcastToConnIds: GatewayBroadcastToConnIdsFn;
-  connId: string;
-  progressId: string;
-};
-
-type CatalogListCacheEntry = {
-  expiresAt?: number;
-  progressSubscribers: Map<string, CatalogListProgressSubscriber>;
-  result: Promise<CatalogListResult>;
-};
-
-type CatalogListCacheState = {
-  registrations: CatalogRegistrationSnapshot;
-  entries: Map<string, CatalogListCacheEntry>;
-};
-
-const catalogListsByConfig = new WeakMap<OpenClawConfig, CatalogListCacheState>();
 
 function providerCreateTargetCache(
   config: OpenClawConfig,
@@ -243,18 +222,6 @@ function sessionCatalogListKey(params: {
   ]);
 }
 
-function catalogListCache(
-  config: OpenClawConfig,
-  registrationSnapshot: CatalogRegistrationSnapshot,
-): Map<string, CatalogListCacheEntry> {
-  let state = catalogListsByConfig.get(config);
-  if (!state || state.registrations !== registrationSnapshot) {
-    state = { registrations: registrationSnapshot, entries: new Map() };
-    catalogListsByConfig.set(config, state);
-  }
-  return state.entries;
-}
-
 function providerOrRespond(
   catalogId: string,
   respond: RespondFn,
@@ -335,7 +302,7 @@ function catalogResult(
 }
 
 export const sessionCatalogHandlers: GatewayRequestHandlers = {
-  "sessions.catalog.list": async ({ params, respond, context, client }) => {
+  "sessions.catalog.list": async ({ params, respond, context, client, signal }) => {
     if (
       !assertValidParams(
         params,
@@ -395,129 +362,97 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
       allowProcessHomeFallback: allowHomeFallback,
       visibilityKey: visibility.cacheKey,
     });
-    const cache = catalogListCache(config, catalogRegistrations);
-    const cached = cache.get(listKey);
-    if (cached && (cached.expiresAt === undefined || cached.expiresAt > Date.now())) {
-      // progressId is connection-owned and excluded from the work key. Active followers register
-      // for the remaining host frames; settled followers receive only the authoritative result.
-      if (cached.expiresAt === undefined && progressConnId && progressId) {
-        cached.progressSubscribers.set(`${progressConnId}\0${progressId}`, {
-          broadcastToConnIds: context.broadcastToConnIds,
-          connId: progressConnId,
-          progressId,
-        });
-      }
-      cache.delete(listKey);
-      cache.set(listKey, cached);
-      respond(true, await cached.result);
-      return;
-    }
-    if (cached) {
-      cache.delete(listKey);
-    }
-    const progressSubscribers = new Map<string, CatalogListProgressSubscriber>();
-    if (progressConnId && progressId) {
-      progressSubscribers.set(`${progressConnId}\0${progressId}`, {
-        broadcastToConnIds: context.broadcastToConnIds,
-        connId: progressConnId,
-        progressId,
-      });
-    }
-    const operation = (async () => {
-      const requestEntries = createSessionCatalogRequestEntrySnapshot({
-        cfg: config,
-        fallbackAgentId: resolvedAgent.agentId,
-      });
-      const listNodes = createSessionCatalogRequestNodeSnapshot();
-      const catalogList = await Promise.all(
-        selected.map(async (provider): Promise<SessionCatalog> => {
-          const createTarget = resolveProviderCreateTarget(provider, resolvedAgent.agentId, config);
-          const createSession = createTarget.ok
-            ? {
-                model: createTarget.target.model,
-                ...(provider.startTerminalSession ? { startTerminal: true as const } : {}),
-              }
-            : undefined;
-          const onHost = (host: SessionCatalog["hosts"][number]) => {
-            const visibleHost = filterSessionCatalogHost(
-              requestEntries.projectHostCreatedActors(host),
-              visibility,
-              {
-                config,
-                fallbackAgentId: resolvedAgent.agentId,
-                sessionEntries: requestEntries.sessionEntries,
-              },
+    // progressId is connection-owned and excluded from the work key. Active followers register
+    // for the remaining host frames; settled followers receive only the authoritative result.
+    const progressSubscriber =
+      progressConnId && progressId
+        ? (catalog: SessionCatalog) => {
+            context.broadcastToConnIds(
+              "sessions.catalog.host",
+              { progressId, agentId: resolvedAgent.agentId, catalog },
+              new Set([progressConnId]),
+              { dropIfSlow: true },
             );
-            const catalog = catalogResult(provider, [visibleHost], undefined, createSession);
-            // Progressive frames are an optimization. The final RPC response remains
-            // authoritative when a slow client drops an intermediate host update.
-            for (const subscriber of progressSubscribers.values()) {
-              subscriber.broadcastToConnIds(
-                "sessions.catalog.host",
-                {
-                  progressId: subscriber.progressId,
-                  agentId: resolvedAgent.agentId,
-                  catalog,
-                },
-                new Set([subscriber.connId]),
-                { dropIfSlow: true },
-              );
-            }
-          };
-          try {
-            const hosts = await listSessionCatalogProvider(provider, {
-              agentId: resolvedAgent.agentId,
-              allowProcessHomeFallback: allowHomeFallback,
-              search,
-              limitPerHost: request.limitPerHost,
-              hostIds: request.hostIds,
-              ...(request.cursors !== undefined ? { cursors: request.cursors } : {}),
-              sessionEntries: requestEntries.sessionEntries,
-              listNodes,
-              onHost,
-            });
-            return catalogResult(
-              provider,
-              hosts.map((host) =>
-                filterSessionCatalogHost(
-                  requestEntries.projectHostCreatedActors(host),
-                  visibility,
-                  {
-                    config,
-                    fallbackAgentId: resolvedAgent.agentId,
-                    sessionEntries: requestEntries.sessionEntries,
-                  },
-                ),
-              ),
-              undefined,
-              createSession,
-            );
-          } catch (error) {
-            return catalogResult(provider, [], catalogError(error), createSession);
           }
-        }),
-      );
-      return { catalogs: catalogList };
-    })();
-    const entry: CatalogListCacheEntry = { progressSubscribers, result: operation };
-    // Exact request/config/registration results remain shareable for 3s after settling. This catches
-    // out-of-phase clients but expires before the UI's 5s fast follow, so changed rows surface there.
-    // Expired and rejected work is removed; retaining it would mask provider recovery or new sessions.
-    cache.set(listKey, entry);
-    pruneMapToMaxSize(cache, SESSION_CATALOG_LIST_CACHE_MAX_ENTRIES);
-    try {
-      const result = await operation;
-      if (cache.get(listKey) === entry) {
-        entry.expiresAt = Date.now() + SESSION_CATALOG_SHARE_WINDOW_MS;
-      }
+        : undefined;
+    const result = await resolveSharedCatalogList({
+      config,
+      listKey,
+      registrationIdentity: catalogRegistrations,
+      load: async ({ publish, signal: providerSignal }) => {
+        const requestEntries = createSessionCatalogRequestEntrySnapshot({
+          cfg: config,
+          fallbackAgentId: resolvedAgent.agentId,
+        });
+        const listNodes = createSessionCatalogRequestNodeSnapshot();
+        const catalogList = await Promise.all(
+          selected.map(async (provider): Promise<SessionCatalog> => {
+            const createTarget = resolveProviderCreateTarget(
+              provider,
+              resolvedAgent.agentId,
+              config,
+            );
+            const createSession = createTarget.ok
+              ? {
+                  model: createTarget.target.model,
+                  ...(provider.startTerminalSession ? { startTerminal: true as const } : {}),
+                }
+              : undefined;
+            const onHost = (host: SessionCatalog["hosts"][number]) => {
+              const visibleHost = filterSessionCatalogHost(
+                requestEntries.projectHostCreatedActors(host),
+                visibility,
+                {
+                  config,
+                  fallbackAgentId: resolvedAgent.agentId,
+                  sessionEntries: requestEntries.sessionEntries,
+                },
+              );
+              // Progressive frames are an optimization. The final RPC response remains
+              // authoritative when a slow client drops an intermediate host update.
+              publish(catalogResult(provider, [visibleHost], undefined, createSession));
+            };
+            try {
+              const hosts = await listSessionCatalogProvider(provider, {
+                agentId: resolvedAgent.agentId,
+                allowProcessHomeFallback: allowHomeFallback,
+                search,
+                limitPerHost: request.limitPerHost,
+                hostIds: request.hostIds,
+                ...(request.cursors !== undefined ? { cursors: request.cursors } : {}),
+                sessionEntries: requestEntries.sessionEntries,
+                listNodes,
+                onHost,
+                signal: providerSignal,
+              });
+              return catalogResult(
+                provider,
+                hosts.map((host) =>
+                  filterSessionCatalogHost(
+                    requestEntries.projectHostCreatedActors(host),
+                    visibility,
+                    {
+                      config,
+                      fallbackAgentId: resolvedAgent.agentId,
+                      sessionEntries: requestEntries.sessionEntries,
+                    },
+                  ),
+                ),
+                undefined,
+                createSession,
+              );
+            } catch (error) {
+              return catalogResult(provider, [], catalogError(error), createSession);
+            }
+          }),
+        );
+        return { catalogs: catalogList };
+      },
+      ...(progressSubscriber ? { progressSubscriber } : {}),
+      ...(signal ? { signal } : {}),
+    });
+    if (result !== SESSION_CATALOG_LIST_WAITER_ABORTED && !signal?.aborted) {
       respond(true, result);
-    } catch (error) {
-      if (cache.get(listKey) === entry) {
-        cache.delete(listKey);
-      }
-      throw error;
-    } finally {
-      progressSubscribers.clear();
     }
   },
 

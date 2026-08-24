@@ -27,6 +27,8 @@ export type SessionCatalogListProviderParams = {
   listNodes?: () => ReturnType<PluginRuntime["nodes"]["list"]>;
   /** Publishes completed hosts without waiting for slower machines in the same list. */
   onHost?: (host: SessionCatalogHost) => void;
+  /** Shared request lifetime. Providers should stop read-only work promptly when aborted. */
+  signal?: AbortSignal;
 };
 export type SessionCatalogReadProviderParams = Omit<SessionsCatalogReadParams, "catalogId"> & {
   /** Gateway always supplies this; optional only for pre-existing external provider types. */

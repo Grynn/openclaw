@@ -2,6 +2,12 @@ type QueuedProviderList = {
   start: () => void;
 };
 
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error("session catalog list aborted", { cause: signal.reason });
+}
+
 class SessionCatalogListBusyError extends Error {
   readonly code = "catalog_busy";
 
@@ -27,7 +33,10 @@ export class SessionCatalogListAdmission {
     }
   }
 
-  run<T>(task: () => Promise<T>): Promise<T> {
+  run<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) {
+      return Promise.reject(abortReason(signal));
+    }
     if (this.active < this.maxConcurrent) {
       return this.start(task);
     }
@@ -35,11 +44,33 @@ export class SessionCatalogListAdmission {
       return Promise.reject(new SessionCatalogListBusyError(this.maxConcurrent, this.maxQueued));
     }
     return new Promise<T>((resolve, reject) => {
-      this.queue.push({
+      const cleanup = () => signal?.removeEventListener("abort", onAbort);
+      const onAbort = () => {
+        const index = this.queue.indexOf(queued);
+        if (index < 0) {
+          return;
+        }
+        this.queue.splice(index, 1);
+        cleanup();
+        if (signal) {
+          reject(abortReason(signal));
+        }
+      };
+      const queued: QueuedProviderList = {
         start: () => {
+          cleanup();
+          if (signal?.aborted) {
+            reject(abortReason(signal));
+            return;
+          }
           void this.start(task).then(resolve, reject);
         },
-      });
+      };
+      this.queue.push(queued);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+      }
     });
   }
 

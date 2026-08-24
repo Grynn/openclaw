@@ -219,6 +219,38 @@ describe("authenticated WebSocket request cancellation", () => {
     expect(socket.listenerCount("close")).toBe(0);
   });
 
+  it("cancels a session catalog list when its authenticated socket closes", async () => {
+    const socket = new EventEmitter();
+    const { client, dispatcher } = createDispatcher(socket, {
+      id: GATEWAY_CLIENT_IDS.CONTROL_UI,
+      mode: GATEWAY_CLIENT_MODES.UI,
+    });
+    let observedSignal: AbortSignal | undefined;
+    handleGatewayRequest.mockImplementation(async (options: GatewayRequestOptions) => {
+      observedSignal = options.signal;
+      await new Promise<void>((resolve) => {
+        options.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+    });
+
+    const request = dispatcher.dispatch(
+      {
+        type: "req",
+        id: "session-catalog",
+        method: "sessions.catalog.list",
+        params: { agentId: "main" },
+      },
+      client,
+    );
+    await vi.waitFor(() => expect(socket.listenerCount("close")).toBe(1));
+
+    socket.emit("close", 1000, Buffer.alloc(0));
+
+    await request;
+    expect(observedSignal?.aborted).toBe(true);
+    expect(socket.listenerCount("close")).toBe(0);
+  });
+
   it.each([
     {
       label: "control UI",

@@ -94,4 +94,20 @@ describe("Codex command RPC helpers", () => {
       expect.objectContaining({ timeoutMs: 321 }),
     );
   });
+
+  it("forwards an explicit request lifetime signal", async () => {
+    requestCodexAppServerJsonMock.mockResolvedValue({ data: [] });
+    const controller = new AbortController();
+
+    await codexControlRequest(
+      {},
+      "thread/list",
+      { archived: false },
+      { signal: controller.signal },
+    );
+
+    expect(requestCodexAppServerJsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
 });

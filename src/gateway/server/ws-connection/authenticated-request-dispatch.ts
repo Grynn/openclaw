@@ -198,6 +198,7 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
       // without their requester there is no safe recipient for a late answer.
       const cancelOnDisconnect =
         req.method === "sessions.companion.ask" ||
+        req.method === "sessions.catalog.list" ||
         (req.method === "node.invoke" &&
           client.connect.client.id === GATEWAY_CLIENT_IDS.CLI &&
           client.connect.client.mode === GATEWAY_CLIENT_MODES.CLI);

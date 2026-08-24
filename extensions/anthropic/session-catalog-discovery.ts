@@ -11,15 +11,11 @@ import { readClaudeDesktopCustomGroups } from "./claude-desktop-groups.js";
 import {
   CLAUDE_CATALOG_IO_CONCURRENCY,
   childDirectories,
-  currentHomeDir,
-  desktopSessionStoreAvailable,
   desktopSessionsDir,
   type ClaudeProjectsTreeSnapshot,
   type ClaudeSessionScanContext,
   mapConcurrent,
-  projectsDir,
   readJsonFile,
-  readProjectsTreeSnapshot,
   safeSessionFileForScan,
   setBoundedCache,
 } from "./session-catalog-scan.js";
@@ -30,10 +26,6 @@ export const MAX_STRING_LENGTH = 4096;
 const MAX_SESSION_PULL_REQUESTS = 20;
 const MAX_CATALOG_DISCOVERY_FILES = 10_000;
 const MAX_CATALOG_DISCOVERY_CACHE_ENTRIES = 20_000;
-const MAX_CLAUDE_SESSION_SCAN_CACHE_ENTRIES = 8;
-const CLAUDE_SESSION_SCAN_HARD_TTL_MS = 5 * 60_000;
-const CLAUDE_PARTIAL_SCAN_TTL_MS = 15_000;
-const CLAUDE_DESKTOP_SCAN_TTL_MS = 60_000;
 const CLAUDE_METADATA_PREFIX_BYTES = 1024 * 1024;
 const CLAUDE_METADATA_READ_CHUNK_BYTES = 16 * 1024;
 const MAX_CATALOG_METADATA_SCAN_BYTES = 64 * 1024 * 1024;
@@ -59,20 +51,9 @@ type CatalogDiscoveryCacheEntry = {
   sidechain: boolean;
 };
 
-type ClaudeSessionScanCacheEntry = {
-  treeStamp: string;
-  hardExpiresAt: number;
-  desktopStoreAvailable: boolean;
-  desktopExpiresAt: number;
-  records: Promise<CatalogRecord[]>;
-};
-
 // Transcript discoveries stay valid only for the same root/id/inode/mtime/size and are LRU-bounded;
 // a false hit would corrupt pagination, so warm scans re-charge the original deterministic byte cost.
 const catalogDiscoveryCache = new Map<string, CatalogDiscoveryCacheEntry>();
-// Whole scans are root-scoped and bounded; tree/Desktop/hard expiries below own invalidation, avoiding
-// an unbounded home map while preserving the exact resolved records promise for concurrent callers.
-const claudeSessionScanCache = new Map<string, ClaudeSessionScanCacheEntry>();
 
 function cacheCatalogDiscovery(filePath: string, entry: CatalogDiscoveryCacheEntry): void {
   setBoundedCache(catalogDiscoveryCache, filePath, entry, MAX_CATALOG_DISCOVERY_CACHE_ENTRIES);
@@ -215,26 +196,36 @@ function parseClaudeCatalogTimestampMs(value: unknown): number | undefined {
   return parseDateFirstTimestampMs(value);
 }
 
-async function readDesktopMetadata(homeDir: string): Promise<{
+async function readDesktopMetadata(
+  homeDir: string,
+  signal?: AbortSignal,
+): Promise<{
   active: Map<string, DesktopSessionMetadata>;
   archived: Set<string>;
 }> {
+  signal?.throwIfAborted();
   const active = new Map<string, DesktopSessionMetadata>();
   const archived = new Set<string>();
-  const customGroups = await readClaudeDesktopCustomGroups(homeDir);
-  for (const accountDir of await childDirectories(desktopSessionsDir(homeDir))) {
-    for (const workspaceDir of await childDirectories(accountDir)) {
+  const customGroups = await readClaudeDesktopCustomGroups(homeDir, signal);
+  signal?.throwIfAborted();
+  for (const accountDir of await childDirectories(desktopSessionsDir(homeDir), signal)) {
+    signal?.throwIfAborted();
+    for (const workspaceDir of await childDirectories(accountDir, signal)) {
+      signal?.throwIfAborted();
       let entries: string[];
       try {
         entries = await fs.readdir(workspaceDir);
       } catch {
+        signal?.throwIfAborted();
         continue;
       }
+      signal?.throwIfAborted();
       for (const name of entries) {
+        signal?.throwIfAborted();
         if (!name.startsWith("local_") || !name.endsWith(".json")) {
           continue;
         }
-        const raw = await readJsonFile(path.join(workspaceDir, name));
+        const raw = await readJsonFile(path.join(workspaceDir, name), { signal });
         if (!isRecord(raw)) {
           continue;
         }
@@ -263,6 +254,7 @@ async function readIndexRecords(context: ClaudeSessionScanContext): Promise<{
   records: Map<string, CatalogRecord>;
   sidechainIds: Set<string>;
 }> {
+  context.signal?.throwIfAborted();
   const records = new Map<string, CatalogRecord>();
   const sidechainIds = new Set<string>();
   if (!context.resolvedRoot) {
@@ -275,12 +267,14 @@ async function readIndexRecords(context: ClaudeSessionScanContext): Promise<{
       directory,
       raw: childNames.includes("sessions-index.json")
         ? await readJsonFile(path.join(directory, "sessions-index.json"), {
+            signal: context.signal,
             onIoFailure: () => {
               context.complete = false;
             },
           })
         : undefined,
     }),
+    context.signal,
   );
   const candidates: Array<{
     directory: string;
@@ -288,6 +282,7 @@ async function readIndexRecords(context: ClaudeSessionScanContext): Promise<{
     sessionId: string;
   }> = [];
   for (const { directory, raw } of indexes) {
+    context.signal?.throwIfAborted();
     if (!isRecord(raw) || !Array.isArray(raw.entries)) {
       continue;
     }
@@ -317,8 +312,10 @@ async function readIndexRecords(context: ClaudeSessionScanContext): Promise<{
         sessionId,
       );
     },
+    context.signal,
   );
   for (const [index, candidate] of candidates.entries()) {
+    context.signal?.throwIfAborted();
     const { entry, sessionId } = candidate;
     if (entry.isSidechain === true) {
       sidechainIds.add(sessionId);
@@ -358,8 +355,10 @@ async function locateSessionFile(
   context: ClaudeSessionScanContext,
   sessionId: string,
 ): Promise<string | undefined> {
+  context.signal?.throwIfAborted();
   const fileName = `${sessionId}.jsonl`;
   for (const { directory, childNames } of context.projectDirectories) {
+    context.signal?.throwIfAborted();
     if (!childNames.includes(fileName)) {
       continue;
     }
@@ -377,11 +376,13 @@ async function discoverCliRecords(
   records: Map<string, CatalogRecord>,
   sidechainIds: Set<string>,
 ): Promise<void> {
+  context.signal?.throwIfAborted();
   const { root } = context;
   if (!context.resolvedRoot) {
     // The root (or a parent) is gone. Entries are tagged with the logical root, so evict by that
     // rather than a lexical containment test the canonical cache keys would never satisfy.
     for (const [cachedPath, entry] of catalogDiscoveryCache) {
+      context.signal?.throwIfAborted();
       if (entry.root === root) {
         catalogDiscoveryCache.delete(cachedPath);
       }
@@ -394,7 +395,9 @@ async function discoverCliRecords(
   const seenFilePaths = new Set<string>();
   const candidates: Array<{ directory: string; name: string; sessionId: string }> = [];
   collect: for (const { directory, childNames } of context.projectDirectories) {
+    context.signal?.throwIfAborted();
     for (const name of childNames) {
+      context.signal?.throwIfAborted();
       if (!name.endsWith(".jsonl")) {
         continue;
       }
@@ -416,8 +419,10 @@ async function discoverCliRecords(
       records.has(sessionId) || sidechainIds.has(sessionId)
         ? undefined
         : await safeSessionFileForScan(context, path.join(directory, name), sessionId),
+    context.signal,
   );
   for (const [candidateIndex, candidate] of candidates.entries()) {
+    context.signal?.throwIfAborted();
     const { sessionId } = candidate;
     // Resolve metadata concurrently, but make every semantic decision in the original directory
     // order. In particular, duplicates and the global byte frontier must match a serial cold scan.
@@ -466,6 +471,7 @@ async function discoverCliRecords(
       continue;
     }
     const handle = await fs.open(filePath, "r").catch(() => {
+      context.signal?.throwIfAborted();
       context.complete = false;
       return undefined;
     });
@@ -476,6 +482,7 @@ async function discoverCliRecords(
     let fileScannedBytes = 0;
     try {
       const stat = await handle.stat();
+      context.signal?.throwIfAborted();
       let aiTitle: string | undefined;
       let pending = Buffer.alloc(0);
       let fileOffset = 0;
@@ -548,6 +555,7 @@ async function discoverCliRecords(
         );
         const chunk = Buffer.allocUnsafe(size);
         const { bytesRead } = await handle.read(chunk, 0, size, fileOffset);
+        context.signal?.throwIfAborted();
         if (bytesRead === 0) {
           break;
         }
@@ -577,6 +585,7 @@ async function discoverCliRecords(
     } finally {
       await handle.close();
     }
+    context.signal?.throwIfAborted();
     // Negative and sidechain-only results are cached too; unchanged files should not be reparsed.
     if (cacheable) {
       cacheCatalogDiscovery(filePath, {
@@ -598,6 +607,7 @@ async function discoverCliRecords(
   if (!truncated) {
     // A complete scan is authoritative for this root: drop any of its entries not seen this pass.
     for (const [cachedPath, entry] of catalogDiscoveryCache) {
+      context.signal?.throwIfAborted();
       if (entry.root === root && !seenFilePaths.has(cachedPath)) {
         catalogDiscoveryCache.delete(cachedPath);
       }
@@ -605,24 +615,35 @@ async function discoverCliRecords(
   }
 }
 
-async function scanClaudeSessions(
+export async function scanClaudeSessions(
   homeDir: string,
   snapshot: ClaudeProjectsTreeSnapshot,
   includeDesktop: boolean,
+  signal?: AbortSignal,
 ): Promise<{ records: CatalogRecord[]; complete: boolean }> {
-  const context: ClaudeSessionScanContext = { ...snapshot, complete: true, safeFiles: new Map() };
+  signal?.throwIfAborted();
+  const context: ClaudeSessionScanContext = {
+    ...snapshot,
+    complete: true,
+    safeFiles: new Map(),
+    ...(signal ? { signal } : {}),
+  };
   const [indexed, desktop] = await Promise.all([
     readIndexRecords(context),
     includeDesktop
-      ? readDesktopMetadata(homeDir)
+      ? readDesktopMetadata(homeDir, signal)
       : Promise.resolve({ active: new Map(), archived: new Set<string>() }),
   ]);
+  signal?.throwIfAborted();
   const records = indexed.records;
   await discoverCliRecords(context, records, indexed.sidechainIds);
+  signal?.throwIfAborted();
   for (const sessionId of desktop.archived) {
+    signal?.throwIfAborted();
     records.delete(sessionId);
   }
   for (const [sessionId, metadata] of desktop.active) {
+    signal?.throwIfAborted();
     if (indexed.sidechainIds.has(sessionId)) {
       continue;
     }
@@ -663,66 +684,4 @@ async function scanClaudeSessions(
     }),
     complete: context.complete,
   };
-}
-
-export async function listClaudeSessions(
-  homeDir = currentHomeDir(),
-  options: { forceRefresh?: boolean; configDir?: string; includeDesktop?: boolean } = {},
-): Promise<CatalogRecord[]> {
-  const root = projectsDir(homeDir, options.configDir);
-  const includeDesktop = options.includeDesktop !== false;
-  const cacheKey = `${root}\0${includeDesktop ? "desktop" : "cli"}`;
-  const [treeSnapshot, desktopStoreAvailable] = await Promise.all([
-    readProjectsTreeSnapshot(root),
-    includeDesktop ? desktopSessionStoreAvailable(homeDir) : Promise.resolve(false),
-  ]);
-  const now = Date.now();
-  const cached = claudeSessionScanCache.get(cacheKey);
-  // Child membership + file mtime/size signatures invalidate CLI rows on the next poll; five minutes
-  // backstops metadata anomalies. Desktop has a 60s bound when its macOS store exists; Linux skips it.
-  // Specific-thread force refresh bypasses both, or a stale page could hide a just-created session.
-  if (
-    options.forceRefresh !== true &&
-    cached &&
-    cached.treeStamp === treeSnapshot.treeStamp &&
-    cached.hardExpiresAt > now &&
-    cached.desktopStoreAvailable === desktopStoreAvailable &&
-    (!desktopStoreAvailable || cached.desktopExpiresAt > now)
-  ) {
-    setBoundedCache(
-      claudeSessionScanCache,
-      cacheKey,
-      cached,
-      MAX_CLAUDE_SESSION_SCAN_CACHE_ENTRIES,
-    );
-    return await cached.records;
-  }
-  const scan = scanClaudeSessions(homeDir, treeSnapshot, includeDesktop);
-  let scanComplete = true;
-  const records = scan.then((result) => {
-    scanComplete = result.complete;
-    return result.records;
-  });
-  const entry = {
-    treeStamp: treeSnapshot.treeStamp,
-    hardExpiresAt: now + CLAUDE_SESSION_SCAN_HARD_TTL_MS,
-    desktopStoreAvailable,
-    desktopExpiresAt: now + CLAUDE_DESKTOP_SCAN_TTL_MS,
-    records,
-  };
-  setBoundedCache(claudeSessionScanCache, cacheKey, entry, MAX_CLAUDE_SESSION_SCAN_CACHE_ENTRIES);
-  try {
-    const result = await records;
-    if (!scanComplete && claudeSessionScanCache.get(cacheKey) === entry) {
-      // Partial results still serve this caller, but retry within 15s so transient per-file I/O
-      // cannot hide recovered sessions behind the five-minute unchanged-tree backstop.
-      entry.hardExpiresAt = Date.now() + CLAUDE_PARTIAL_SCAN_TTL_MS;
-    }
-    return result;
-  } catch (error) {
-    if (claudeSessionScanCache.get(cacheKey) === entry) {
-      claudeSessionScanCache.delete(cacheKey);
-    }
-    throw error;
-  }
 }

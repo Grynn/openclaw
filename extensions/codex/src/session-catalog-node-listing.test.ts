@@ -7,6 +7,7 @@ import {
   tempDirs,
   listCodexSessionCatalog,
   registerCodexSessionCatalog,
+  createCodexSessionCatalogControl,
   createCodexSessionCatalogNodeHostCommands,
   config,
   createControl,
@@ -171,6 +172,35 @@ describe("Codex supervision catalog", () => {
     expect(bindingStore.managedThreads.snapshot).toHaveBeenCalledTimes(1);
     expect(listPage).toHaveBeenNthCalledWith(1, { limit: 2 });
     expect(listPage).toHaveBeenNthCalledWith(2, { cursor: "page-2", limit: 1 });
+  });
+
+  it("forwards node-host cancellation to the Codex app-server list request", async () => {
+    const controller = new AbortController();
+    commandRpcMocks.codexControlRequest.mockResolvedValue({ data: [] });
+    const control = createCodexSessionCatalogControl({
+      getPluginConfig: () => ({ supervision: { enabled: true } }),
+      getRuntimeConfig: () => config,
+    });
+    const command = createCodexSessionCatalogNodeHostCommands(control).find(
+      (candidate) => candidate.command === CODEX_APP_SERVER_THREADS_LIST_COMMAND,
+    );
+    if (!command) {
+      throw new Error("Codex session catalog node command was not registered");
+    }
+
+    await expect(
+      command.handle(JSON.stringify({ limit: 25 }), undefined, {
+        sendNodeEvent: async () => undefined,
+        signal: controller.signal,
+      }),
+    ).resolves.toBe(JSON.stringify({ sessions: [] }));
+
+    expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledWith(
+      expect.anything(),
+      "thread/list",
+      expect.objectContaining({ limit: 25 }),
+      expect.objectContaining({ signal: controller.signal }),
+    );
   });
 
   it("keeps paired-node catalogs non-archived and metadata-only", async () => {
@@ -886,5 +916,28 @@ describe("Codex supervision catalog", () => {
 
     await expect(provider?.list({ hostIds: ["node:missing"] })).resolves.toEqual([]);
     expect(runtime.nodes.list).toHaveBeenCalledOnce();
+  });
+
+  it("accepts a provider lifetime signal without exposing it to strict catalog parsing", async () => {
+    const control = createControl();
+    const { runtime } = createRuntime();
+    const { api, getProvider } = createGatewayApi(runtime);
+    registerCodexSessionCatalog({
+      api,
+      bindingStore: createCodexTestBindingStore(),
+      control,
+      getRuntimeConfig: () => config,
+    });
+    const requestListNodes = vi.fn(async () => ({ nodes: [] }));
+
+    await expect(
+      getProvider()?.list({
+        hostIds: ["node:missing"],
+        listNodes: requestListNodes,
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toEqual([]);
+    expect(requestListNodes).toHaveBeenCalledOnce();
+    expect(control.listPage).not.toHaveBeenCalled();
   });
 });

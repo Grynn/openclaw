@@ -147,8 +147,8 @@ function assertPiLocalAccess(hostId: string, allowProcessHomeFallback?: boolean)
   }
 }
 
-export async function listPiSessions(params: unknown) {
-  return await listLocalPiSessionPage(params);
+export async function listPiSessions(params: unknown, signal?: AbortSignal) {
+  return await listLocalPiSessionPage(params, signal);
 }
 
 export async function readPiSession(params: unknown) {
@@ -170,11 +170,14 @@ export function createPiSessionCatalogRuntime(api: OpenClawPluginApi) {
           );
         },
         list: async (query) =>
-          await listLocalPiSessionPage({
-            limit: query.limitPerHost,
-            ...(query.search ? { searchTerm: query.search } : {}),
-            cursor: query.cursors?.[PI_LOCAL_SESSION_HOST_ID],
-          }),
+          await listLocalPiSessionPage(
+            {
+              limit: query.limitPerHost,
+              ...(query.search ? { searchTerm: query.search } : {}),
+              cursor: query.cursors?.[PI_LOCAL_SESSION_HOST_ID],
+            },
+            query.signal,
+          ),
         read: async (request) =>
           await readLocalPiTranscriptPage({
             threadId: request.threadId,

@@ -89,6 +89,28 @@ function usePiCandidateCacheClock(): () => void {
   };
 }
 
+function gatePiDirectoryRead(directory: string) {
+  let release!: () => void;
+  let reportEntered!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const entered = new Promise<void>((resolve) => {
+    reportEntered = resolve;
+  });
+  const originalReaddir = fs.readdir.bind(fs);
+  let blocked = false;
+  const spy = vi.spyOn(fs, "readdir").mockImplementation((async (...args: unknown[]) => {
+    if (!blocked && path.resolve(String(args[0])) === path.resolve(directory)) {
+      blocked = true;
+      reportEntered();
+      await gate;
+    }
+    return await (originalReaddir as (...readdirArgs: unknown[]) => Promise<unknown>)(...args);
+  }) as typeof fs.readdir);
+  return { entered, release, spy };
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   acpRuntimeMocks.resolveAcpSessionAvailability.mockReset().mockReturnValue({ available: true });
@@ -308,6 +330,71 @@ describe("Pi session catalog", () => {
       readdirSpy.mockRestore();
       statSpy.mockRestore();
     }
+  });
+
+  it("keeps one Pi discovery owner alive when only a follower disconnects", async () => {
+    const sessionDirectory = await createPiStore();
+    const resolvedDirectory = await fs.realpath(sessionDirectory);
+    const gated = gatePiDirectoryRead(resolvedDirectory);
+    const baseEnv = {
+      ...process.env,
+      PI_CODING_AGENT_SESSION_DIR: sessionDirectory,
+      PI_CODING_AGENT_DIR: path.dirname(path.dirname(sessionDirectory)),
+    };
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const first = listPiSummaryPage(baseEnv, {
+      offset: 0,
+      limit: 20,
+      signal: firstController.signal,
+    });
+    await gated.entered;
+    const second = listPiSummaryPage(baseEnv, {
+      offset: 0,
+      limit: 20,
+      signal: secondController.signal,
+    });
+
+    firstController.abort(new Error("first Pi requester disconnected"));
+    await expect(first).rejects.toThrow("first Pi requester disconnected");
+    expect(secondController.signal.aborted).toBe(false);
+    expect(
+      gated.spy.mock.calls.filter(
+        ([target]) => path.resolve(String(target)) === path.resolve(resolvedDirectory),
+      ),
+    ).toHaveLength(1);
+
+    gated.release();
+    await expect(second).resolves.toMatchObject({
+      summaries: [expect.objectContaining({ threadId: "pi-session" })],
+    });
+  });
+
+  it("promptly abandons Pi node discovery and stops after the in-flight directory read", async () => {
+    const sessionDirectory = await createPiStore();
+    const resolvedDirectory = await fs.realpath(sessionDirectory);
+    const gated = gatePiDirectoryRead(resolvedDirectory);
+    const command = registerPiNodeHostCommands().find(
+      (candidate) => candidate.command === PI_SESSIONS_LIST_COMMAND,
+    );
+    const controller = new AbortController();
+    const pending = command!.handle(JSON.stringify({ limit: 20 }), undefined, {
+      signal: controller.signal,
+    } as never);
+    await gated.entered;
+
+    controller.abort(new Error("Pi node invocation disconnected"));
+    await expect(pending).rejects.toThrow("Pi node invocation disconnected");
+    gated.release();
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+
+    expect(
+      gated.spy.mock.calls.filter(
+        ([target]) => path.resolve(String(target)) === path.resolve(resolvedDirectory),
+      ),
+    ).toHaveLength(1);
   });
 
   it("summarizes and pages a large session within transport limits", async () => {

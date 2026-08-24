@@ -24,6 +24,9 @@ vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => (
   ...(await importOriginal<typeof import("../../config/sessions/session-accessor.js")>()),
   listSessionEntriesReadOnly: hoisted.listSessionEntriesReadOnly,
 }));
+vi.mock("../../state/user-profiles.js", () => ({
+  hasMultipleSessionSharingIdentities: () => false,
+}));
 
 const { sessionCatalogHandlers } = await import("./session-catalog.js");
 const { listActiveSessionCatalogs } = await import("../../plugins/session-catalog-active.js");

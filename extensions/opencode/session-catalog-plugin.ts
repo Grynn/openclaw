@@ -215,9 +215,10 @@ function createOpenCodeNodeHostBindings(api: OpenClawPluginApi) {
     listAvailable: available,
     terminalAvailable: available,
     parseParams: parseNodeParams,
-    list: async (params) =>
+    list: async (params, signal) =>
       await listLocalOpenCodeSessionPage(params, {
         configIdentity: currentOpenCodeCatalogConfig(api),
+        ...(signal ? { signal } : {}),
       }),
     read: readLocalOpenCodeTranscriptPage,
     requireSession: requireLocalOpenCodeSession,
@@ -252,7 +253,10 @@ export function registerOpenCodeSessionCatalog(api: OpenClawPluginApi): void {
               ...(query.search ? { searchTerm: query.search } : {}),
               cursor: query.cursors?.[LOCAL_HOST_ID],
             },
-            { configIdentity: currentOpenCodeCatalogConfig(api) },
+            {
+              configIdentity: currentOpenCodeCatalogConfig(api),
+              ...(query.signal ? { signal: query.signal } : {}),
+            },
           ),
         read: async (request) =>
           await readLocalOpenCodeTranscriptPage({

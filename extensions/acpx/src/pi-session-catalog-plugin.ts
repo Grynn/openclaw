@@ -72,7 +72,8 @@ function createPiSessionNodeHostBindings() {
         throw new Error("Pi session parameters must be valid JSON", { cause: error });
       }
     },
-    list: async (params) => await (await loadPiSessionCatalogModule()).listPiSessions(params),
+    list: async (params, signal) =>
+      await (await loadPiSessionCatalogModule()).listPiSessions(params, signal),
     read: async (params) => await (await loadPiSessionCatalogModule()).readPiSession(params),
     requireSession: async (threadId) =>
       await (await loadPiSessionCatalogModule()).requireLocalPiSession(threadId),

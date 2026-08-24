@@ -7,7 +7,8 @@ import {
   adoptedSourceKey,
   CLAUDE_LOCAL_SESSION_HOST_ID,
 } from "./session-catalog-adoption.js";
-import { type CatalogRecord, listClaudeSessions } from "./session-catalog-discovery.js";
+import { listClaudeSessions } from "./session-catalog-discovery-cache.js";
+import type { CatalogRecord } from "./session-catalog-discovery.js";
 import { importClaudeHistory } from "./session-catalog-history.js";
 import {
   readBoundedClaudeHistory,

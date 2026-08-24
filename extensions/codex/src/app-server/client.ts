@@ -608,6 +608,10 @@ export class CodexAppServerClient {
         timeout.unref?.();
       }
       if (options.signal) {
+        // Codex app-server 0.148.0 exposes no request-cancellation method for an already-written
+        // unscoped `thread/list`. Abort therefore releases only this local waiter; native listing
+        // may finish in the dependency, its late response is ignored, and the shared client stays
+        // usable because app-server dispatches unscoped requests concurrently.
         const abortListener = () =>
           rejectPending(
             new CodexAppServerLocalRequestCancellationError(method, "aborted", mayHaveWritten),

@@ -4,6 +4,10 @@ import path from "node:path";
 import { isPathStrictlyInside } from "openclaw/plugin-sdk/file-access-runtime";
 import type { SessionCatalogSession } from "openclaw/plugin-sdk/session-catalog";
 import {
+  resolveSessionCatalogOwnerTask,
+  type SessionCatalogOwnerTask,
+} from "openclaw/plugin-sdk/session-catalog-runtime";
+import {
   isRecord,
   normalizeBoundedOptionalString as readBoundedString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -49,7 +53,7 @@ type CachedSummary = PiFileCandidate & {
 
 type PiFileCandidateCacheEntry = {
   expiresAt: number;
-  candidates: Promise<PiFileCandidate[]>;
+  candidates: PiFileCandidate[];
 };
 
 // Pi owns session-file mutation. The bounded cache resumes append-only metadata
@@ -60,6 +64,7 @@ const threadFileCache = new Map<string, string>();
 // polling. Root changes or expiry re-walk; rejected scans are removed so transient I/O recovers.
 // Keeping this bounded avoids rescanning every file each poll without retaining obsolete stores.
 const piFileCandidateCache = new Map<string, PiFileCandidateCacheEntry>();
+const activePiFileCandidateScans = new Map<string, SessionCatalogOwnerTask<PiFileCandidate[]>>();
 
 function threadCacheKey(storeRoot: string, threadId: string): string {
   return `${storeRoot}\0${threadId}`;
@@ -91,15 +96,19 @@ function cacheSummary(file: string, value: CachedSummary): void {
 
 async function discoverPiSessionFiles(
   env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<{ root: string; files: string[] }> {
+  signal?.throwIfAborted();
   const store = piSessionStore(env);
-  const resolvedRoot = await realpathOrResolve(store.root);
+  const resolvedRoot = await realpathOrResolve(store.root, signal);
   let entries: Array<import("node:fs").Dirent>;
   try {
     entries = await fs.readdir(resolvedRoot, { withFileTypes: true });
   } catch {
+    signal?.throwIfAborted();
     return { root: store.root, files: [] };
   }
+  signal?.throwIfAborted();
   if (store.flat) {
     return {
       root: store.root,
@@ -111,6 +120,7 @@ async function discoverPiSessionFiles(
   }
   const files: string[] = [];
   for (const entry of entries) {
+    signal?.throwIfAborted();
     if (!entry.isDirectory() || files.length >= MAX_DISCOVERY_FILES) {
       continue;
     }
@@ -119,9 +129,12 @@ async function discoverPiSessionFiles(
     try {
       children = await fs.readdir(directory, { withFileTypes: true });
     } catch {
+      signal?.throwIfAborted();
       continue;
     }
+    signal?.throwIfAborted();
     for (const child of children) {
+      signal?.throwIfAborted();
       if (child.isFile() && child.name.endsWith(".jsonl")) {
         files.push(path.join(directory, child.name));
         if (files.length >= MAX_DISCOVERY_FILES) {
@@ -133,10 +146,14 @@ async function discoverPiSessionFiles(
   return { root: store.root, files };
 }
 
-async function realpathOrResolve(value: string): Promise<string> {
+async function realpathOrResolve(value: string, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   try {
-    return await fs.realpath(value);
+    const resolved = await fs.realpath(value);
+    signal?.throwIfAborted();
+    return resolved;
   } catch {
+    signal?.throwIfAborted();
     return path.resolve(value);
   }
 }
@@ -145,76 +162,102 @@ async function mapConcurrent<T, R>(
   values: T[],
   limit: number,
   mapper: (value: T) => Promise<R>,
+  signal?: AbortSignal,
 ): Promise<R[]> {
   const results: R[] = [];
   results.length = values.length;
   let nextIndex = 0;
   const workers = Array.from({ length: Math.min(limit, values.length) }, async () => {
     while (nextIndex < values.length) {
+      signal?.throwIfAborted();
       const index = nextIndex++;
       results[index] = await mapper(values[index]!);
+      signal?.throwIfAborted();
     }
   });
   await Promise.all(workers);
   return results;
 }
 
-async function scanPiFileCandidates(env: NodeJS.ProcessEnv): Promise<PiFileCandidate[]> {
-  const { root, files } = await discoverPiSessionFiles(env);
+async function scanPiFileCandidates(
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<PiFileCandidate[]> {
+  signal?.throwIfAborted();
+  const { root, files } = await discoverPiSessionFiles(env, signal);
   const configuredAcpRoot = piAcpSessionStoreRoot(env);
-  const acpRoot = configuredAcpRoot ? await realpathOrResolve(configuredAcpRoot) : undefined;
-  const candidates = await mapConcurrent(files, IO_CONCURRENCY, async (file) => {
-    try {
-      const stats = await fs.stat(file);
-      return stats.isFile()
-        ? {
-            file,
-            storeRoot: root,
-            identity: `${String(stats.dev)}:${String(stats.ino)}:${String(stats.birthtimeMs)}`,
-            mtimeMs: stats.mtimeMs,
-            size: stats.size,
-            resumable: acpRoot ? isPathStrictlyInside(acpRoot, file) : false,
-          }
-        : undefined;
-    } catch {
-      return undefined;
-    }
-  });
+  const acpRoot = configuredAcpRoot
+    ? await realpathOrResolve(configuredAcpRoot, signal)
+    : undefined;
+  const candidates = await mapConcurrent(
+    files,
+    IO_CONCURRENCY,
+    async (file) => {
+      signal?.throwIfAborted();
+      try {
+        const stats = await fs.stat(file);
+        signal?.throwIfAborted();
+        return stats.isFile()
+          ? {
+              file,
+              storeRoot: root,
+              identity: `${String(stats.dev)}:${String(stats.ino)}:${String(stats.birthtimeMs)}`,
+              mtimeMs: stats.mtimeMs,
+              size: stats.size,
+              resumable: acpRoot ? isPathStrictlyInside(acpRoot, file) : false,
+            }
+          : undefined;
+      } catch {
+        signal?.throwIfAborted();
+        return undefined;
+      }
+    },
+    signal,
+  );
   return candidates
     .filter((candidate): candidate is PiFileCandidate => candidate !== undefined)
     .toSorted((left, right) => right.mtimeMs - left.mtimeMs);
 }
 
-async function piFileCandidates(env: NodeJS.ProcessEnv): Promise<PiFileCandidate[]> {
+async function piFileCandidates(
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<PiFileCandidate[]> {
+  signal?.throwIfAborted();
   const store = piSessionStore(env);
   const key = `${store.root}\0${store.flat}\0${piAcpSessionStoreRoot(env) ?? ""}`;
   const cached = piFileCandidateCache.get(key);
   if (cached && cached.expiresAt > Date.now()) {
     piFileCandidateCache.delete(key);
     piFileCandidateCache.set(key, cached);
-    return await cached.candidates;
+    return cached.candidates;
   }
   if (cached) {
     piFileCandidateCache.delete(key);
   }
-  const candidates = scanPiFileCandidates(env);
-  const entry = { expiresAt: Date.now() + PI_FILE_CANDIDATE_CACHE_TTL_MS, candidates };
-  piFileCandidateCache.set(key, entry);
-  while (piFileCandidateCache.size > PI_FILE_CANDIDATE_CACHE_MAX_ENTRIES) {
-    const oldest = piFileCandidateCache.keys().next();
-    if (oldest.done) {
-      break;
-    }
-    piFileCandidateCache.delete(oldest.value);
-  }
-  try {
-    return await candidates;
-  } catch (error) {
-    if (piFileCandidateCache.get(key) === entry) {
-      piFileCandidateCache.delete(key);
-    }
-    throw error;
-  }
+  return await resolveSessionCatalogOwnerTask({
+    activeTasks: activePiFileCandidateScans,
+    key,
+    load: async (ownerSignal) => await scanPiFileCandidates(env, ownerSignal),
+    onResolved: (candidates, task) => {
+      if (task.abortController.signal.aborted) {
+        return;
+      }
+      piFileCandidateCache.set(key, {
+        expiresAt: Date.now() + PI_FILE_CANDIDATE_CACHE_TTL_MS,
+        candidates,
+      });
+      while (piFileCandidateCache.size > PI_FILE_CANDIDATE_CACHE_MAX_ENTRIES) {
+        const oldest = piFileCandidateCache.keys().next();
+        if (oldest.done) {
+          break;
+        }
+        piFileCandidateCache.delete(oldest.value);
+      }
+    },
+    ...(signal ? { signal } : {}),
+    orphanedMessage: "Pi session discovery has no active requesters",
+  });
 }
 
 function parsePiJsonLines(content: string): Record<string, unknown>[] {
@@ -289,15 +332,23 @@ async function scanSummaryAppend(
   candidate: PiFileCandidate,
   start: number,
   state: PiSummaryScanState,
+  signal?: AbortSignal,
 ): Promise<void> {
+  signal?.throwIfAborted();
   if (start >= candidate.size || state.invalid) {
     return;
   }
-  const stream = createReadStream(candidate.file, { start, end: candidate.size - 1 });
+  const stream = createReadStream(candidate.file, {
+    start,
+    end: candidate.size - 1,
+    ...(signal ? { signal } : {}),
+  });
   for await (const value of stream) {
+    signal?.throwIfAborted();
     const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
     let offset = 0;
     while (offset < chunk.length) {
+      signal?.throwIfAborted();
       const newline = chunk.indexOf(0x0a, offset);
       const end = newline < 0 ? chunk.length : newline;
       appendSummaryBytes(state, chunk.subarray(offset, end));
@@ -320,19 +371,23 @@ async function scanSummaryAppend(
 async function readAppendProof(
   file: string,
   size: number,
+  signal?: AbortSignal,
 ): Promise<{ head: Buffer; tail: Buffer }> {
+  signal?.throwIfAborted();
   const length = Math.min(size, APPEND_PROOF_EDGE_BYTES);
   if (length === 0) {
     return { head: Buffer.alloc(0), tail: Buffer.alloc(0) };
   }
   const handle = await fs.open(file, "r");
   try {
+    signal?.throwIfAborted();
     const head = Buffer.alloc(length);
     const tail = Buffer.alloc(length);
     const [headRead, tailRead] = await Promise.all([
       handle.read(head, 0, length, 0),
       handle.read(tail, 0, length, size - length),
     ]);
+    signal?.throwIfAborted();
     return {
       head: head.subarray(0, headRead.bytesRead),
       tail: tail.subarray(0, tailRead.bytesRead),
@@ -342,14 +397,18 @@ async function readAppendProof(
   }
 }
 
-async function cachedPrefixIsUnchanged(candidate: PiFileCandidate, cached: CachedSummary) {
+async function cachedPrefixIsUnchanged(
+  candidate: PiFileCandidate,
+  cached: CachedSummary,
+  signal?: AbortSignal,
+) {
   if (cached.identity !== candidate.identity || cached.size >= candidate.size) {
     return false;
   }
   // Pi persists established sessions with appendFileSync. Its in-place rewrite
   // paths (notably version migration) rewrite the header, so the head proof
   // rejects them; the tail proof rejects truncation before later growth.
-  const current = await readAppendProof(candidate.file, cached.size);
+  const current = await readAppendProof(candidate.file, cached.size, signal);
   return (
     current.head.equals(cached.appendProof.head) && current.tail.equals(cached.appendProof.tail)
   );
@@ -357,7 +416,9 @@ async function cachedPrefixIsUnchanged(candidate: PiFileCandidate, cached: Cache
 
 async function readPiSessionSummary(
   candidate: PiFileCandidate,
+  signal?: AbortSignal,
 ): Promise<PiSessionSummary | undefined> {
+  signal?.throwIfAborted();
   const cached = summaryCache.get(candidate.file);
   if (cached?.mtimeMs === candidate.mtimeMs && cached.size === candidate.size) {
     summaryCache.delete(candidate.file);
@@ -373,7 +434,7 @@ async function readPiSessionSummary(
     // Pi normally appends JSONL. Resume only when bounded edge proofs show the
     // previously indexed prefix survived; rewrites rebuild from byte zero.
     const resumable =
-      cached && (await cachedPrefixIsUnchanged(candidate, cached)) ? cached : undefined;
+      cached && (await cachedPrefixIsUnchanged(candidate, cached, signal)) ? cached : undefined;
     scanState = resumable
       ? {
           ...resumable.scanState,
@@ -384,8 +445,9 @@ async function readPiSessionSummary(
           discarding: false,
           invalid: false,
         };
-    await scanSummaryAppend(candidate, resumable?.size ?? 0, scanState);
-    appendProof = await readAppendProof(candidate.file, candidate.size);
+    await scanSummaryAppend(candidate, resumable?.size ?? 0, scanState, signal);
+    appendProof = await readAppendProof(candidate.file, candidate.size, signal);
+    signal?.throwIfAborted();
     // A complete final record is valid without a newline. Project it from a
     // clone so later appends can still finish the cached pending line once.
     const projectedState = { ...scanState, pending: Buffer.from(scanState.pending) };
@@ -417,10 +479,12 @@ async function readPiSessionSummary(
       };
     }
   } catch {
+    signal?.throwIfAborted();
     // Permissions and concurrent file replacement are retryable. Preserve the
     // last good index instead of poisoning future append scans.
     return cached?.summary;
   }
+  signal?.throwIfAborted();
   if (cached?.summary?.threadId && cached.summary.threadId !== summary?.threadId) {
     threadFileCache.delete(threadCacheKey(cached.storeRoot, cached.summary.threadId));
   }
@@ -442,11 +506,14 @@ function summaryMatches(summary: PiSessionSummary, needle?: string): boolean {
 
 export async function listPiSummaryPage(
   env: NodeJS.ProcessEnv,
-  params: { offset: number; limit: number; searchTerm?: string },
+  params: { offset: number; limit: number; searchTerm?: string; signal?: AbortSignal },
 ): Promise<{ summaries: PiSessionSummary[]; hasMore: boolean }> {
-  const candidates = await piFileCandidates(env);
+  params.signal?.throwIfAborted();
+  const candidates = await piFileCandidates(env, params.signal);
+  params.signal?.throwIfAborted();
   const activeFiles = new Set(candidates.map((candidate) => candidate.file));
   for (const file of summaryCache.keys()) {
+    params.signal?.throwIfAborted();
     if (!activeFiles.has(file)) {
       forgetCachedSummary(file);
     }
@@ -459,9 +526,16 @@ export async function listPiSummaryPage(
     index < candidates.length && matches.length < target;
     index += SUMMARY_SCAN_BATCH_SIZE
   ) {
+    params.signal?.throwIfAborted();
     const batch = candidates.slice(index, index + SUMMARY_SCAN_BATCH_SIZE);
-    const summaries = await mapConcurrent(batch, IO_CONCURRENCY, readPiSessionSummary);
+    const summaries = await mapConcurrent(
+      batch,
+      IO_CONCURRENCY,
+      async (candidate) => await readPiSessionSummary(candidate, params.signal),
+      params.signal,
+    );
     for (const summary of summaries) {
+      params.signal?.throwIfAborted();
       if (summary && summaryMatches(summary, needle)) {
         matches.push(summary);
         if (matches.length >= target) {
@@ -470,6 +544,7 @@ export async function listPiSummaryPage(
       }
     }
   }
+  params.signal?.throwIfAborted();
   return {
     summaries: matches.slice(params.offset, params.offset + params.limit),
     hasMore: matches.length > params.offset + params.limit,

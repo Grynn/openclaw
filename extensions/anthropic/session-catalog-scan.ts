@@ -32,6 +32,7 @@ export type ClaudeProjectsTreeSnapshot = {
 export type ClaudeSessionScanContext = ClaudeProjectsTreeSnapshot & {
   complete: boolean;
   safeFiles: Map<string, Promise<SafeSessionFile>>;
+  signal?: AbortSignal;
 };
 
 // Parsed index/Desktop JSON stays valid for one path+mtime+size and is LRU-bounded; read failures are
@@ -42,14 +43,17 @@ export async function mapConcurrent<T, R>(
   values: T[],
   limit: number,
   mapper: (value: T) => Promise<R>,
+  signal?: AbortSignal,
 ): Promise<R[]> {
   const results: R[] = [];
   results.length = values.length;
   let nextIndex = 0;
   const workers = Array.from({ length: Math.min(limit, values.length) }, async () => {
     while (nextIndex < values.length) {
+      signal?.throwIfAborted();
       const index = nextIndex++;
       results[index] = await mapper(values[index]!);
+      signal?.throwIfAborted();
     }
   });
   await Promise.all(workers);
@@ -78,18 +82,23 @@ async function safeSessionFile(
   resolvedRoot: string,
   candidate: string,
   sessionId: string,
+  signal?: AbortSignal,
 ): Promise<SafeSessionFile> {
+  signal?.throwIfAborted();
   if (!isPathInside(root, candidate) || path.basename(candidate) !== `${sessionId}.jsonl`) {
     return undefined;
   }
   try {
     const resolvedCandidate = await fs.realpath(candidate);
+    signal?.throwIfAborted();
     if (!isPathInside(resolvedRoot, resolvedCandidate)) {
       return undefined;
     }
     const stat = await fs.stat(resolvedCandidate);
+    signal?.throwIfAborted();
     return stat.isFile() ? { filePath: resolvedCandidate, stat } : undefined;
   } catch (error) {
+    signal?.throwIfAborted();
     const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
     if (code === "ENOENT" || code === "ENOTDIR") {
       return undefined;
@@ -111,8 +120,15 @@ export function safeSessionFileForScan(
   if (!pending) {
     // Canonical path + stat are valid only for this assembled scan. Sharing the promise prevents
     // index fallback and discovery from serially resolving the same file twice.
-    const request = safeSessionFile(context.root, context.resolvedRoot, candidate, sessionId);
+    const request = safeSessionFile(
+      context.root,
+      context.resolvedRoot,
+      candidate,
+      sessionId,
+      context.signal,
+    );
     pending = request.catch(() => {
+      context.signal?.throwIfAborted();
       context.complete = false;
       if (context.safeFiles.get(key) === pending) {
         context.safeFiles.delete(key);
@@ -126,12 +142,14 @@ export function safeSessionFileForScan(
 
 export async function readJsonFile(
   filePath: string,
-  options: { onIoFailure?: () => void } = {},
+  options: { onIoFailure?: () => void; signal?: AbortSignal } = {},
 ): Promise<unknown> {
+  options.signal?.throwIfAborted();
   const stat = await fs.stat(filePath).catch(() => {
     options.onIoFailure?.();
     return undefined;
   });
+  options.signal?.throwIfAborted();
   if (!stat?.isFile()) {
     catalogJsonCache.delete(filePath);
     return undefined;
@@ -143,11 +161,13 @@ export async function readJsonFile(
   }
   let content: string;
   try {
-    content = await fs.readFile(filePath, "utf8");
+    content = await fs.readFile(filePath, { encoding: "utf8", signal: options.signal });
   } catch {
+    options.signal?.throwIfAborted();
     options.onIoFailure?.();
     return undefined;
   }
+  options.signal?.throwIfAborted();
   try {
     const value = JSON.parse(content) as unknown;
     setBoundedCache(
@@ -162,12 +182,16 @@ export async function readJsonFile(
   }
 }
 
-export async function childDirectories(root: string): Promise<string[]> {
+export async function childDirectories(root: string, signal?: AbortSignal): Promise<string[]> {
+  signal?.throwIfAborted();
   try {
-    return (await fs.readdir(root, { withFileTypes: true }))
+    const entries = await fs.readdir(root, { withFileTypes: true });
+    signal?.throwIfAborted();
+    return entries
       .filter((entry) => entry.isDirectory())
       .map((entry) => path.join(root, entry.name));
   } catch {
+    signal?.throwIfAborted();
     return [];
   }
 }
@@ -176,25 +200,39 @@ export function projectsDir(homeDir: string, configDir?: string): string {
   return path.join(configDir ?? path.join(homeDir, ".claude"), "projects");
 }
 
-export async function readProjectsTreeSnapshot(root: string): Promise<ClaudeProjectsTreeSnapshot> {
+export async function readProjectsTreeSnapshot(
+  root: string,
+  signal?: AbortSignal,
+): Promise<ClaudeProjectsTreeSnapshot> {
+  signal?.throwIfAborted();
   let entries: Dirent[];
   try {
     entries = await fs.readdir(root, { withFileTypes: true });
   } catch {
+    signal?.throwIfAborted();
     return { root, projectDirectories: [], treeStamp: "unavailable" };
   }
+  signal?.throwIfAborted();
   const directoryEntries = entries.filter((entry) => entry.isDirectory());
   const [resolvedRoot, directories] = await Promise.all([
     fs.realpath(root).catch(() => undefined),
-    mapConcurrent(directoryEntries, CLAUDE_CATALOG_IO_CONCURRENCY, async (entry) => {
-      const directory = path.join(root, entry.name);
-      const [stat, children] = await Promise.all([
-        fs.stat(directory).catch(() => undefined),
-        fs.readdir(directory, { withFileTypes: true }).catch(() => undefined),
-      ]);
-      return { entry, directory, stat, children };
-    }),
+    mapConcurrent(
+      directoryEntries,
+      CLAUDE_CATALOG_IO_CONCURRENCY,
+      async (entry) => {
+        signal?.throwIfAborted();
+        const directory = path.join(root, entry.name);
+        const [stat, children] = await Promise.all([
+          fs.stat(directory).catch(() => undefined),
+          fs.readdir(directory, { withFileTypes: true }).catch(() => undefined),
+        ]);
+        signal?.throwIfAborted();
+        return { entry, directory, stat, children };
+      },
+      signal,
+    ),
   ]);
+  signal?.throwIfAborted();
   const childTargets = directories.flatMap(({ directory, children }, directoryIndex) =>
     (children ?? []).map((child) => ({ directoryIndex, directory, child })),
   );
@@ -202,12 +240,15 @@ export async function readProjectsTreeSnapshot(root: string): Promise<ClaudeProj
     childTargets,
     CLAUDE_CATALOG_IO_CONCURRENCY,
     async ({ directoryIndex, directory, child }) => {
+      signal?.throwIfAborted();
       const childStat = await fs.stat(path.join(directory, child.name)).catch(() => undefined);
+      signal?.throwIfAborted();
       const signature = childStat?.isFile()
         ? ([child.name, childStat.mtimeMs, childStat.size, childStat.ino] as const)
         : undefined;
       return { directoryIndex, signature };
     },
+    signal,
   );
   const signaturesByDirectory = Array.from(
     { length: directories.length },
@@ -247,8 +288,13 @@ export async function readProjectsTreeSnapshot(root: string): Promise<ClaudeProj
   };
 }
 
-export async function desktopSessionStoreAvailable(homeDir: string): Promise<boolean> {
+export async function desktopSessionStoreAvailable(
+  homeDir: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  signal?.throwIfAborted();
   const stat = await fs.stat(desktopSessionsDir(homeDir)).catch(() => undefined);
+  signal?.throwIfAborted();
   return stat?.isDirectory() === true;
 }
 

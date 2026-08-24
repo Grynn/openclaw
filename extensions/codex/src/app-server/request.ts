@@ -29,6 +29,7 @@ type CodexAppServerClientRequestParams = {
   config?: Parameters<typeof resolveCodexAppServerAuthProfileIdForAgent>[0]["config"];
   sessionKey?: string;
   sessionId?: string;
+  signal?: AbortSignal;
 };
 
 /** Sends one guarded request over a client lease owned by the caller. */
@@ -47,7 +48,10 @@ export async function requestCodexAppServerClientJson<T = JsonValue | undefined>
   }
   const timeoutMs = params.timeoutMs ?? 60_000;
   return await withTimeout(
-    params.client.request<T>(params.method, params.requestParams, { timeoutMs }),
+    params.client.request<T>(params.method, params.requestParams, {
+      timeoutMs,
+      ...(params.signal ? { signal: params.signal } : {}),
+    }),
     timeoutMs,
     `codex app-server ${params.method} timed out`,
   );
@@ -66,6 +70,7 @@ export async function requestCodexAppServerJson<M extends CodexAppServerRequestM
   sessionKey?: string;
   sessionId?: string;
   isolated?: boolean;
+  signal?: AbortSignal;
 }): Promise<CodexAppServerRequestResult<M>>;
 export async function requestCodexAppServerJson<T = JsonValue | undefined>(params: {
   method: string;
@@ -79,6 +84,7 @@ export async function requestCodexAppServerJson<T = JsonValue | undefined>(param
   sessionKey?: string;
   sessionId?: string;
   isolated?: boolean;
+  signal?: AbortSignal;
 }): Promise<T>;
 export async function requestCodexAppServerJson<T = JsonValue | undefined>(params: {
   method: string;
@@ -92,6 +98,7 @@ export async function requestCodexAppServerJson<T = JsonValue | undefined>(param
   sessionKey?: string;
   sessionId?: string;
   isolated?: boolean;
+  signal?: AbortSignal;
 }): Promise<T> {
   // Fail closed before spawning or leasing a client for a guard-blocked method.
   const sandboxBlock = resolveCodexAppServerDirectSandboxBypassBlock({
@@ -216,15 +223,26 @@ export async function withCodexAppServerJsonClient<T>(
     // pass a small budget so cleanup cannot breach the outer timeout; defaults
     // to the conservative graceful/force-kill window used elsewhere.
     isolatedShutdown?: { exitTimeoutMs?: number; forceKillDelayMs?: number };
+    signal?: AbortSignal;
   },
   run: (request: CodexAppServerScopedRequest, client: CodexAppServerClient) => Promise<T>,
 ): Promise<T> {
   const timeoutMs = params.timeoutMs ?? 60_000;
   const timeoutMessage = params.timeoutMessage ?? "codex app-server request timed out";
   const timeoutController = new AbortController();
+  const operationSignal = params.signal
+    ? AbortSignal.any([timeoutController.signal, params.signal])
+    : timeoutController.signal;
   const deadline = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Date.now() + timeoutMs : undefined;
   const isPastDeadline = () => deadline !== undefined && Date.now() >= deadline;
+  const externalAbortError = () => {
+    const reason = params.signal?.reason;
+    return reason instanceof Error ? reason : new Error("codex app-server request aborted");
+  };
   const throwIfAbandoned = () => {
+    if (params.signal?.aborted) {
+      throw externalAbortError();
+    }
     if (timeoutController.signal.aborted || isPastDeadline()) {
       throw new Error(timeoutMessage);
     }
@@ -249,7 +267,7 @@ export async function withCodexAppServerJsonClient<T>(
             authProfileId: params.authProfileId,
             agentDir: params.agentDir,
             config: params.config,
-            abandonSignal: timeoutController.signal,
+            abandonSignal: operationSignal,
           });
           try {
             throwIfAbandoned();
@@ -270,7 +288,7 @@ export async function withCodexAppServerJsonClient<T>(
               throwIfAbandoned();
               return await client.request<R>(request.method, request.requestParams, {
                 timeoutMs: remainingTimeoutMs(),
-                signal: timeoutController.signal,
+                signal: operationSignal,
               });
             };
             return await run(scopedRequest, client);
@@ -304,6 +322,9 @@ export async function withCodexAppServerJsonClient<T>(
       timeoutMessage,
     );
   } catch (error) {
+    if (params.signal?.aborted) {
+      throw externalAbortError();
+    }
     if (isPastDeadline()) {
       throw new Error(timeoutMessage, { cause: error });
     }

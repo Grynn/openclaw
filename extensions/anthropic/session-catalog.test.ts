@@ -10,7 +10,7 @@ import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { SessionCatalogProvider as RegisteredSessionCatalogProvider } from "openclaw/plugin-sdk/session-catalog";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { adoptedSourceKey } from "./session-catalog-adoption.js";
+import { adoptedSourceKey, CLAUDE_LOCAL_SESSION_HOST_ID } from "./session-catalog-adoption.js";
 import {
   createClaudeSessionNodeInvokePolicies,
   registerClaudeSessionDiscovery,
@@ -172,6 +172,28 @@ async function createHome(): Promise<string> {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-claude-catalog-"));
   homes.push(home);
   return home;
+}
+
+function gateDirectoryRead(directory: string) {
+  let release!: () => void;
+  let reportEntered!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const entered = new Promise<void>((resolve) => {
+    reportEntered = resolve;
+  });
+  const originalReaddir = fs.readdir.bind(fs);
+  let blocked = false;
+  const spy = vi.spyOn(fs, "readdir").mockImplementation((async (...args: unknown[]) => {
+    if (!blocked && path.resolve(String(args[0])) === path.resolve(directory)) {
+      blocked = true;
+      reportEntered();
+      await gate;
+    }
+    return await (originalReaddir as (...readdirArgs: unknown[]) => Promise<unknown>)(...args);
+  }) as typeof fs.readdir);
+  return { entered, release, spy };
 }
 
 async function writeProject(params: {
@@ -2922,6 +2944,109 @@ describe("Claude session catalog", () => {
     await expect(provider.list({ hostIds: ["node:missing"] })).resolves.toEqual([]);
 
     expect(runtimeListNodes).toHaveBeenCalledOnce();
+  });
+
+  it("accepts a provider lifetime signal without exposing it to strict catalog parsing", async () => {
+    const runtimeListNodes = vi.fn(async () => ({ nodes: [] }));
+    const requestListNodes = vi.fn(async () => ({ nodes: [] }));
+    const provider = captureCatalogProvider({
+      nodes: { list: runtimeListNodes },
+    } as unknown as PluginRuntime);
+
+    await expect(
+      provider.list({
+        hostIds: ["node:missing"],
+        listNodes: requestListNodes,
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toEqual([]);
+
+    expect(requestListNodes).toHaveBeenCalledOnce();
+    expect(runtimeListNodes).not.toHaveBeenCalled();
+  });
+
+  it("keeps one Claude filesystem owner alive when only a follower disconnects", async () => {
+    const home = await createHome();
+    process.env.HOME = home;
+    await writeProject({
+      home,
+      entries: [],
+      transcripts: { shared: [sdkCliMessage("shared", "Shared owner")] },
+    });
+    const projectsRoot = path.join(home, ".claude", "projects");
+    const gated = gateDirectoryRead(projectsRoot);
+    const provider = captureCatalogProvider({
+      nodes: { list: vi.fn().mockResolvedValue({ nodes: [] }) },
+    } as unknown as PluginRuntime);
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const first = provider.list({
+      hostIds: [CLAUDE_LOCAL_SESSION_HOST_ID],
+      signal: firstController.signal,
+    });
+    await gated.entered;
+    const second = provider.list({
+      hostIds: [CLAUDE_LOCAL_SESSION_HOST_ID],
+      signal: secondController.signal,
+    });
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+
+    firstController.abort(new Error("first Claude requester disconnected"));
+    await expect(first).rejects.toThrow("first Claude requester disconnected");
+    expect(secondController.signal.aborted).toBe(false);
+    expect(
+      gated.spy.mock.calls.filter(
+        ([target]) => path.resolve(String(target)) === path.resolve(projectsRoot),
+      ),
+    ).toHaveLength(1);
+
+    gated.release();
+    await expect(second).resolves.toEqual([
+      expect.objectContaining({
+        hostId: CLAUDE_LOCAL_SESSION_HOST_ID,
+        sessions: [expect.objectContaining({ threadId: "shared" })],
+      }),
+    ]);
+  });
+
+  it("promptly abandons Claude node discovery and stops after the in-flight traversal unit", async () => {
+    const home = await createHome();
+    process.env.HOME = home;
+    await writeProject({
+      home,
+      entries: [],
+      transcripts: { abandoned: [sdkCliMessage("abandoned", "Abandoned owner")] },
+    });
+    const projectsRoot = path.join(home, ".claude", "projects");
+    const gated = gateDirectoryRead(projectsRoot);
+    const command = createClaudeSessionNodeHostCommands().find(
+      (candidate) => candidate.command === CLAUDE_SESSIONS_LIST_COMMAND,
+    );
+    const controller = new AbortController();
+    const pending = command!.handle(JSON.stringify({ limit: 20 }), undefined, {
+      signal: controller.signal,
+    } as never);
+    await gated.entered;
+
+    controller.abort(new Error("Claude node invocation disconnected"));
+    await expect(pending).rejects.toThrow("Claude node invocation disconnected");
+    gated.release();
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+
+    expect(
+      gated.spy.mock.calls.filter(
+        ([target]) => path.resolve(String(target)) === path.resolve(projectsRoot),
+      ),
+    ).toHaveLength(1);
+    expect(
+      gated.spy.mock.calls.some(
+        ([target]) => path.dirname(path.resolve(String(target))) === path.resolve(projectsRoot),
+      ),
+    ).toBe(false);
   });
 
   it("keeps the underlying paired-node list failure", async () => {

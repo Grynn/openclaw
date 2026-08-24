@@ -274,6 +274,7 @@ async function listNodeHost(
     };
   }
   try {
+    query.signal?.throwIfAborted();
     const cursor = query.cursors?.[hostId];
     if (cursor !== undefined && !isExactCursor(cursor)) {
       throw new Error("cursor is invalid");
@@ -287,6 +288,7 @@ async function listNodeHost(
         ...(cursor !== undefined ? { cursor } : {}),
       },
       timeoutMs: options.node.timeoutMs,
+      ...(query.signal ? { signal: query.signal } : {}),
       scopes: ["operator.write"],
     });
     const page = parseNodeSessionPage(unwrapNodePayload(raw), options, isExactCursor);
@@ -299,6 +301,7 @@ async function listNodeHost(
       ),
     };
   } catch {
+    query.signal?.throwIfAborted();
     return {
       ...common,
       sessions: [],
@@ -312,6 +315,7 @@ async function listHosts(
   query: SessionCatalogListProviderParams,
   isExactCursor: (value: unknown) => value is string,
 ): Promise<SessionCatalogHost[]> {
+  query.signal?.throwIfAborted();
   const requested = query.hostIds ? new Set(query.hostIds) : undefined;
   const hosts: SessionCatalogHost[] = [];
   if (
@@ -319,10 +323,13 @@ async function listHosts(
     (await options.local.available(query))
   ) {
     try {
+      query.signal?.throwIfAborted();
       const capabilities = await options.capabilities.local();
+      query.signal?.throwIfAborted();
       const adopted = query.sessionEntries
         ? await options.continuation.listAdopted(query.agentId, query.sessionEntries)
         : new Map<string, string>();
+      query.signal?.throwIfAborted();
       const page = projectAdoptedSessions(
         projectPageCapabilities(
           await options.local.list(query),
@@ -332,6 +339,7 @@ async function listHosts(
         adopted,
         options.local.hostId,
       );
+      query.signal?.throwIfAborted();
       const host: SessionCatalogHost = {
         hostId: options.local.hostId,
         label: options.local.label,
@@ -342,6 +350,7 @@ async function listHosts(
       hosts.push(host);
       query.onHost?.(host);
     } catch {
+      query.signal?.throwIfAborted();
       const host: SessionCatalogHost = {
         hostId: options.local.hostId,
         label: options.local.label,
@@ -354,10 +363,13 @@ async function listHosts(
       query.onHost?.(host);
     }
   }
+  query.signal?.throwIfAborted();
   let nodes: CatalogNode[];
   try {
     nodes = (await (query.listNodes?.() ?? options.runtime.nodes.list())).nodes;
+    query.signal?.throwIfAborted();
   } catch {
+    query.signal?.throwIfAborted();
     return hosts;
   }
   const eligible = nodes
@@ -549,7 +561,7 @@ export type SessionCatalogNodeHostBindingsOptions = {
   listAvailable: (context: OpenClawPluginNodeHostCommandAvailabilityContext) => boolean;
   terminalAvailable: (context: OpenClawPluginNodeHostCommandAvailabilityContext) => boolean;
   parseParams: (paramsJSON?: string | null) => unknown;
-  list: (params: unknown) => Promise<SessionCatalogPage>;
+  list: (params: unknown, signal?: AbortSignal) => Promise<SessionCatalogPage>;
   read: (params: unknown) => Promise<SessionsCatalogReadResult>;
   requireSession: (threadId: string) => Promise<SessionCatalogSession>;
   terminalIoRequiredMessage: string;
@@ -610,8 +622,12 @@ export function createSessionCatalogNodeHostBindings(
         cap: options.capability,
         dangerous: false,
         isAvailable: options.listAvailable,
-        handle: async (paramsJSON) =>
-          JSON.stringify(await options.list(options.parseParams(paramsJSON))),
+        handle: async (paramsJSON, _io, context) => {
+          context?.signal?.throwIfAborted();
+          const page = await options.list(options.parseParams(paramsJSON), context?.signal);
+          context?.signal?.throwIfAborted();
+          return JSON.stringify(page);
+        },
       },
       {
         command: options.readCommand,

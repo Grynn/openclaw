@@ -7,7 +7,7 @@ import type {
 } from "openclaw/plugin-sdk/session-catalog";
 import { adoptedSourceKey, CLAUDE_LOCAL_SESSION_HOST_ID } from "./session-catalog-adoption.js";
 import { continueClaudeSession } from "./session-catalog-continue.js";
-import { listClaudeSessions } from "./session-catalog-discovery.js";
+import { listClaudeSessions } from "./session-catalog-discovery-cache.js";
 import {
   assertClaudeLocalAccess,
   listClaudeSessionCatalog,
@@ -128,6 +128,7 @@ export function createClaudeSessionCatalogRuntime(
         listNodes,
         onHost,
         sessionEntries: _sessionEntries,
+        signal,
         ...gatewayQuery
       } = query;
       const mapHost = (host: ClaudeSessionCatalogHost) =>
@@ -137,6 +138,7 @@ export function createClaudeSessionCatalogRuntime(
         query: gatewayQuery,
         allowProcessHomeFallback,
         listNodes,
+        ...(signal ? { signal } : {}),
         ...(onHost ? { onHost: (host) => onHost(mapHost(host)) } : {}),
       });
       return result.hosts.map(mapHost);

@@ -4,3 +4,7 @@ export {
   listActiveSessionCatalogs,
   type ActiveSessionCatalog,
 } from "../plugins/session-catalog-active.js";
+export {
+  resolveSessionCatalogOwnerTask,
+  type SessionCatalogOwnerTask,
+} from "../plugins/session-catalog-owner.js";

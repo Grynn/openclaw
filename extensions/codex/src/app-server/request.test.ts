@@ -429,6 +429,61 @@ describe("requestCodexAppServerJson sandbox guard", () => {
     expect(secondRequest).not.toHaveBeenCalled();
   });
 
+  it("propagates an external abort through acquisition and the active request", async () => {
+    const controller = new AbortController();
+    const request = vi.fn(
+      (_method: string, _params: unknown, options?: { signal?: AbortSignal; timeoutMs?: number }) =>
+        new Promise<never>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () =>
+              reject(
+                options.signal?.reason instanceof Error
+                  ? options.signal.reason
+                  : new Error("request aborted"),
+              ),
+            { once: true },
+          );
+        }),
+    );
+    const client = { request };
+    sharedClientMocks.getSharedCodexAppServerClient.mockResolvedValue(client);
+    const result = requestCodexAppServerJson({
+      method: "thread/list",
+      requestParams: { limit: 10 },
+      timeoutMs: 60_000,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    const acquireSignal = sharedClientMocks.getSharedCodexAppServerClient.mock.calls[0]?.[0]
+      ?.abandonSignal as AbortSignal | undefined;
+    const requestSignal = request.mock.calls[0]?.[2]?.signal;
+
+    controller.abort(new Error("catalog requester disconnected"));
+
+    await expect(result).rejects.toThrow("catalog requester disconnected");
+    expect(acquireSignal?.aborted).toBe(true);
+    expect(requestSignal).toBe(acquireSignal);
+    expect(sharedClientMocks.releaseLeasedSharedCodexAppServerClient).toHaveBeenCalledWith(client);
+  });
+
+  it("does not acquire a client for an already-aborted request", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("catalog requester already disconnected"));
+
+    await expect(
+      requestCodexAppServerJson({
+        method: "thread/list",
+        requestParams: { limit: 10 },
+        timeoutMs: 60_000,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("catalog requester already disconnected");
+
+    expect(sharedClientMocks.getSharedCodexAppServerClient).not.toHaveBeenCalled();
+    expect(sharedClientMocks.createIsolatedCodexAppServerClient).not.toHaveBeenCalled();
+  });
+
   it("blocks thread starts with sandbox environments when exec host=node is active", async () => {
     const params = {
       cwd: "/workspace",

@@ -35,6 +35,7 @@ export type CodexControlRequestOptions = {
   isolated?: boolean;
   startOptions?: CodexAppServerStartOptions;
   timeoutMs?: number;
+  signal?: AbortSignal;
   onResponse?: (response: unknown, client: CodexAppServerClient) => Promise<void>;
 };
 
@@ -87,6 +88,7 @@ export async function codexControlRequest(
     authProfileId: options.authProfileId,
     agentDir: options.agentDir,
     isolated: options.isolated,
+    ...(options.signal ? { signal: options.signal } : {}),
   };
   if (options.onResponse) {
     return await withCodexAppServerJsonClient(controlRequestOptions, async (request, client) => {
