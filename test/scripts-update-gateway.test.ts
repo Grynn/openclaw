@@ -27,15 +27,22 @@ function writeShim(name: string, body: string): void {
 }
 
 function runUpdater(env: Record<string, string> = {}) {
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...env,
+    PATH: `${shimDir}:${process.env.PATH ?? ""}`,
+    UPDATE_TEST_LOG: invocationLog,
+  };
+  if (!Object.hasOwn(env, "OPENCLAW_UPDATE_RESTART_CMD")) {
+    delete childEnv.OPENCLAW_UPDATE_RESTART_CMD;
+  }
+  if (!Object.hasOwn(env, "OPENCLAW_UPDATE_STOP_CMD")) {
+    delete childEnv.OPENCLAW_UPDATE_STOP_CMD;
+  }
   return spawnSync("bash", [path.join(workdir, "scripts", "update-gateway.sh")], {
     cwd: workdir,
     encoding: "utf8",
-    env: {
-      ...process.env,
-      ...env,
-      PATH: `${shimDir}:${process.env.PATH ?? ""}`,
-      UPDATE_TEST_LOG: invocationLog,
-    },
+    env: childEnv,
   });
 }
 
@@ -65,6 +72,12 @@ describe("scripts/update-gateway.sh", () => {
     git(scratch, "clone", "-q", "--bare", seed, origin);
     git(scratch, "clone", "-q", origin, workdir);
 
+    // The git shim makes it possible to prove invalid lifecycle configuration
+    // exits before even a local Git probe, while delegating valid runs to Git.
+    writeShim(
+      "git",
+      ['echo "git $*" >> "$UPDATE_TEST_LOG"', 'PATH="${PATH#*:}" exec git "$@"'].join("\n"),
+    );
     // The gateway CLI shim records exactly how the script invokes it.
     writeShim("openclaw", 'echo "openclaw $*" >> "$UPDATE_TEST_LOG"');
     // pnpm shim: `install` always succeeds; `build` obeys UPDATE_TEST_FAIL_BUILD
@@ -86,7 +99,7 @@ describe("scripts/update-gateway.sh", () => {
     fs.rmSync(scratch, { recursive: true, force: true });
   });
 
-  it("stops the gateway non-interactively (--force) before touching build output, then restarts", () => {
+  it("accepts the paired built-in defaults, stops non-interactively, and restarts", () => {
     const result = runUpdater();
     expect(result.status).toBe(0);
     const calls = loggedInvocations();
@@ -101,6 +114,58 @@ describe("scripts/update-gateway.sh", () => {
     expect(calls).toContain("openclaw gateway restart");
     expect(fs.readFileSync(path.join(workdir, "dist", "marker"), "utf8")).toBe("new\n");
   });
+
+  it("accepts paired custom commands after trimming surrounding whitespace", () => {
+    const result = runUpdater({
+      OPENCLAW_UPDATE_RESTART_CMD: "  openclaw custom-restart\t",
+      OPENCLAW_UPDATE_STOP_CMD: "\n openclaw custom-stop  ",
+    });
+
+    expect(result.status).toBe(0);
+    const calls = loggedInvocations();
+    expect(calls).toContain("openclaw custom-stop");
+    expect(calls).toContain("openclaw custom-restart");
+  });
+
+  it.each([
+    ["stop only", { OPENCLAW_UPDATE_STOP_CMD: "openclaw custom-stop" }],
+    ["restart only", { OPENCLAW_UPDATE_RESTART_CMD: "openclaw custom-restart" }],
+  ] satisfies Array<[string, Record<string, string>]>)(
+    "rejects a %s override before touching git",
+    (_name, overrides) => {
+      const result = runUpdater(overrides);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("must be set together");
+      expect(loggedInvocations()).toEqual([]);
+    },
+  );
+
+  it.each([
+    [
+      "stop",
+      {
+        OPENCLAW_UPDATE_RESTART_CMD: "openclaw custom-restart",
+        OPENCLAW_UPDATE_STOP_CMD: " \t\n",
+      },
+    ],
+    [
+      "restart",
+      {
+        OPENCLAW_UPDATE_RESTART_CMD: "\n\t ",
+        OPENCLAW_UPDATE_STOP_CMD: "openclaw custom-stop",
+      },
+    ],
+  ] satisfies Array<[string, Record<string, string>]>)(
+    "rejects a whitespace-only %s command before touching git",
+    (command, overrides) => {
+      const result = runUpdater(overrides);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`OPENCLAW_UPDATE_${command.toUpperCase()}_CMD is blank`);
+      expect(loggedInvocations()).toEqual([]);
+    },
+  );
 
   it("restores the previous build output and restarts the gateway when the build fails", () => {
     fs.mkdirSync(path.join(workdir, "dist"), { recursive: true });
@@ -117,10 +182,5 @@ describe("scripts/update-gateway.sh", () => {
       .readdirSync(workdir)
       .filter((name) => name.startsWith(".update-build-backup."));
     expect(leftovers).toEqual([]);
-  });
-
-  it("refuses empty stop and restart overrides", () => {
-    expect(runUpdater({ OPENCLAW_UPDATE_STOP_CMD: "" }).status).not.toBe(0);
-    expect(runUpdater({ OPENCLAW_UPDATE_RESTART_CMD: "" }).status).not.toBe(0);
   });
 });

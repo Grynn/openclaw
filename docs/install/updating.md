@@ -143,8 +143,10 @@ OPENCLAW_UPDATE_RESTART_CMD='systemctl --user restart openclaw-gateway.service' 
   scripts/update-gateway.sh
 ```
 
-The source-server updater refuses an empty restart command because replacing a
-live checkout without a restart recreates the stale hashed-chunk failure it is
+Custom stop and restart commands must be provided together. The updater trims
+surrounding whitespace and refuses either command when it is blank, before it
+touches Git or the live checkout. Replacing a live checkout without both sides
+of the service lifecycle recreates the stale hashed-chunk failure this flow is
 designed to prevent.
 
 For a plain single-user source install, prefer `openclaw update --channel dev`

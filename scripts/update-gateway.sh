@@ -13,16 +13,47 @@
 #   OPENCLAW_UPDATE_RESTART_CMD  restart command (default: openclaw gateway restart)
 #   OPENCLAW_UPDATE_STOP_CMD     stop command run before replacing live build output
 #                                (default: openclaw gateway stop --force)
+#                                custom stop/restart commands must be set together
 #   OPENCLAW_UPDATE_REMOTE       git remote to update from (default: origin)
 set -euo pipefail
 
 log() { echo "[update-gateway] $*"; }
+
+trim_command() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+restart_override_set=0
+stop_override_set=0
+[[ -v OPENCLAW_UPDATE_RESTART_CMD ]] && restart_override_set=1
+[[ -v OPENCLAW_UPDATE_STOP_CMD ]] && stop_override_set=1
+if [ "$restart_override_set" -ne "$stop_override_set" ]; then
+  echo "[update-gateway] OPENCLAW_UPDATE_STOP_CMD and OPENCLAW_UPDATE_RESTART_CMD must be set together" >&2
+  exit 1
+fi
+if [ "$restart_override_set" -eq 1 ]; then
+  restart_cmd="$(trim_command "$OPENCLAW_UPDATE_RESTART_CMD")"
+  stop_cmd="$(trim_command "$OPENCLAW_UPDATE_STOP_CMD")"
+else
+  restart_cmd="openclaw gateway restart"
+  # --force: gateway stop refuses non-interactive runs without it, and this
+  # script's documented entry point is non-interactive (ssh ... update-gateway.sh).
+  stop_cmd="openclaw gateway stop --force"
+fi
+if [ -z "$restart_cmd" ]; then
+  echo "[update-gateway] OPENCLAW_UPDATE_RESTART_CMD is blank; refusing to replace live build output without a restart path" >&2
+  exit 1
+fi
+if [ -z "$stop_cmd" ]; then
+  echo "[update-gateway] OPENCLAW_UPDATE_STOP_CMD is blank; refusing to replace live build output without stopping the gateway" >&2
+  exit 1
+fi
+
 gateway_stopped=0
 build_backup=""
-restart_cmd="${OPENCLAW_UPDATE_RESTART_CMD-openclaw gateway restart}"
-# --force: gateway stop refuses non-interactive runs without it, and this
-# script's documented entry point is non-interactive (ssh ... update-gateway.sh).
-stop_cmd="${OPENCLAW_UPDATE_STOP_CMD-openclaw gateway stop --force}"
 on_exit() {
   local code=$?
   if [ "$code" -ne 0 ]; then
@@ -43,15 +74,6 @@ on_exit() {
   fi
 }
 trap on_exit EXIT
-
-if [ -z "$restart_cmd" ]; then
-  log "OPENCLAW_UPDATE_RESTART_CMD is empty; refusing to replace live build output without a restart path"
-  exit 1
-fi
-if [ -z "$stop_cmd" ]; then
-  log "OPENCLAW_UPDATE_STOP_CMD is empty; refusing to replace live build output without stopping the gateway"
-  exit 1
-fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
