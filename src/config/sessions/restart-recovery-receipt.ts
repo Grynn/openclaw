@@ -38,6 +38,7 @@ function hasClaimlessLiveDeliveryState(
     entry.sessionId === scope.sessionId &&
     normalizeOptionalString(entry.restartRecoveryDeliveryRunId) === undefined &&
     normalizeOptionalString(entry.restartRecoveryDeliverySourceRunId) === undefined &&
+    entry.restartRecoveryDeliveryConstituentSourceTurnIds === undefined &&
     entry.restartRecoveryDeliveryReceiptState === undefined &&
     normalizeOptionalString(entry.restartRecoveryDeliveryToolCallId) === undefined
   );

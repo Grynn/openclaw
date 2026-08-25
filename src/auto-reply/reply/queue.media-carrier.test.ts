@@ -295,6 +295,12 @@ describe("followup prompt metadata carrier", () => {
       channelId: "test",
       participantId: "person-1",
     });
+    const recorder = { resolveMessage: async () => undefined } as never;
+    source.userTurnTranscriptRecorder = recorder;
+    source.restartRecovery = {
+      sourceTurnId: "followup-overflow:aggregate-1",
+      constituentSourceTurnIds: ["channel-user:v1:first", "channel-user:v1:second"],
+    };
 
     const retry = createOverflowSummaryRetrySource(source);
 
@@ -304,6 +310,8 @@ describe("followup prompt metadata carrier", () => {
     expect(retry.media).toEqual(source.media);
     expect(retry.explicitSkillSelections).toEqual(source.explicitSkillSelections);
     expect(retry.channelAdmissionEvidence).toBe(source.channelAdmissionEvidence);
+    expect(retry.userTurnTranscriptRecorder).toBe(recorder);
+    expect(retry.restartRecovery).toBe(source.restartRecovery);
     expectCombinedCarrierFacts(retry);
   });
 });

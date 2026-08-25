@@ -1,4 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
+import {
+  mergeRestartRecoveryTerminalRunIdDelta,
+  mergeRestartRecoveryTerminalSourceTurnIdGroupDelta,
+} from "./restart-recovery-state.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 type SessionEntryRecord = Partial<Record<keyof SessionEntry, unknown>>;
@@ -235,6 +239,36 @@ export function projectSessionSnapshotChanges(params: {
   }
 
   for (const field of fields) {
+    if (field === "restartRecoveryTerminalRunIds") {
+      if (params.next.sessionId !== params.initial.sessionId) {
+        patch.restartRecoveryTerminalRunIds = params.next.restartRecoveryTerminalRunIds;
+        continue;
+      }
+      if (!isDeepStrictEqual(initial[field], next[field])) {
+        patch.restartRecoveryTerminalRunIds = mergeRestartRecoveryTerminalRunIdDelta({
+          current: current[field],
+          initial: initial[field],
+          next: next[field],
+        });
+      }
+      continue;
+    }
+    if (field === "restartRecoveryTerminalSourceTurnIdGroups") {
+      if (params.next.sessionId !== params.initial.sessionId) {
+        patch.restartRecoveryTerminalSourceTurnIdGroups =
+          params.next.restartRecoveryTerminalSourceTurnIdGroups;
+        continue;
+      }
+      if (!isDeepStrictEqual(initial[field], next[field])) {
+        patch.restartRecoveryTerminalSourceTurnIdGroups =
+          mergeRestartRecoveryTerminalSourceTurnIdGroupDelta({
+            current: current[field],
+            initial: initial[field],
+            next: next[field],
+          });
+      }
+      continue;
+    }
     if (
       field === "model" ||
       field === "modelProvider" ||

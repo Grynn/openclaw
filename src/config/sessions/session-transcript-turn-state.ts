@@ -1,5 +1,8 @@
 import {
   mergeRestartRecoveryTerminalRunIds,
+  mergeRestartRecoveryTerminalSourceTurnIdGroups,
+  sameRestartRecoveryDeliveryConstituentSourceTurnIds,
+  sameRestartRecoveryTerminalSourceTurnIdGroups,
   sameRestartRecoveryTerminalRunIds,
 } from "./restart-recovery-state.js";
 import type {
@@ -42,6 +45,10 @@ export function sessionMatchesExpectedTranscriptTurn<T extends { entry: SessionE
           expectedState.restartRecoveryDeliveryRunId &&
         selected.entry.restartRecoveryDeliverySourceRunId ===
           expectedState.restartRecoveryDeliverySourceRunId &&
+        sameRestartRecoveryDeliveryConstituentSourceTurnIds(
+          selected.entry.restartRecoveryDeliveryConstituentSourceTurnIds,
+          expectedState.restartRecoveryDeliveryConstituentSourceTurnIds,
+        ) &&
         selected.entry.restartRecoveryRequesterAccountId ===
           expectedState.restartRecoveryRequesterAccountId &&
         selected.entry.restartRecoveryRequesterSenderId ===
@@ -55,6 +62,10 @@ export function sessionMatchesExpectedTranscriptTurn<T extends { entry: SessionE
         sameRestartRecoveryTerminalRunIds(
           selected.entry.restartRecoveryTerminalRunIds,
           expectedState.restartRecoveryTerminalRunIds,
+        ) &&
+        sameRestartRecoveryTerminalSourceTurnIdGroups(
+          selected.entry.restartRecoveryTerminalSourceTurnIdGroups,
+          expectedState.restartRecoveryTerminalSourceTurnIdGroups,
         ) &&
         selected.entry.status === expectedState.status)),
   );
@@ -80,9 +91,19 @@ export function buildExpectedTranscriptTurnSessionPatch(params: {
         params.sessionLifecyclePatch.restartRecoveryTerminalRunIds,
       )
     : undefined;
+  const restartRecoveryTerminalSourceTurnIdGroups = params.sessionLifecyclePatch
+    ?.restartRecoveryTerminalSourceTurnIdGroups
+    ? mergeRestartRecoveryTerminalSourceTurnIdGroups(
+        params.currentEntry.restartRecoveryTerminalSourceTurnIdGroups,
+        params.sessionLifecyclePatch.restartRecoveryTerminalSourceTurnIdGroups,
+      )
+    : undefined;
   return {
     ...(acceptedMessage ? params.sessionLifecyclePatch : undefined),
     ...(acceptedMessage && restartRecoveryTerminalRunIds ? { restartRecoveryTerminalRunIds } : {}),
+    ...(acceptedMessage && restartRecoveryTerminalSourceTurnIdGroups
+      ? { restartRecoveryTerminalSourceTurnIdGroups }
+      : {}),
     ...(touchUpdatedAt > 0
       ? {
           updatedAt: Math.max(

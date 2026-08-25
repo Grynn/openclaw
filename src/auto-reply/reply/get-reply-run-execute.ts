@@ -374,6 +374,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
         }
       : {}),
     messageId: sessionCtx.MessageSidFull ?? sessionCtx.MessageSid,
+    ...(sourceTurnId ? { restartRecovery: { sourceTurnId } } : {}),
     summaryLine: baseBodyTrimmedRaw,
     ...(queuedToolsAllow !== undefined ? { toolsAllow: queuedToolsAllow } : {}),
     ...(opts?.disableTools !== undefined ? { disableTools: opts.disableTools } : {}),

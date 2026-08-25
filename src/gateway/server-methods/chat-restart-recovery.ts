@@ -343,6 +343,8 @@ export function resolveRestartSafeChatAdmission(params: {
               entry.restartRecoveryDeliveryRequestFingerprint,
             restartRecoveryDeliveryRunId: entry.restartRecoveryDeliveryRunId,
             restartRecoveryDeliverySourceRunId: entry.restartRecoveryDeliverySourceRunId,
+            restartRecoveryDeliveryConstituentSourceTurnIds:
+              entry.restartRecoveryDeliveryConstituentSourceTurnIds,
             restartRecoveryRequesterAccountId: entry.restartRecoveryRequesterAccountId,
             restartRecoveryRequesterSenderId: entry.restartRecoveryRequesterSenderId,
             restartRecoverySameChannelThreadRequired:
@@ -350,6 +352,8 @@ export function resolveRestartSafeChatAdmission(params: {
             restartRecoverySourceIngress: entry.restartRecoverySourceIngress,
             restartRecoverySourceReplyDeliveryMode: entry.restartRecoverySourceReplyDeliveryMode,
             restartRecoveryTerminalRunIds: entry.restartRecoveryTerminalRunIds,
+            restartRecoveryTerminalSourceTurnIdGroups:
+              entry.restartRecoveryTerminalSourceTurnIdGroups,
             status: entry.status,
           },
         }

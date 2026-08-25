@@ -5,6 +5,11 @@ import type { FollowupRun } from "./queue.js";
 const state = vi.hoisted(() => ({
   admitLifecycle: vi.fn(),
   admitReply: vi.fn(),
+  claimAdmit: vi.fn(),
+  claimClear: vi.fn(),
+  claimDefer: vi.fn(),
+  claimIsArmed: vi.fn(),
+  claimIsTracked: vi.fn(),
   buildPreflightFailureText: vi.fn(),
   loadEntry: vi.fn(),
   preflight: vi.fn(),
@@ -19,6 +24,18 @@ const state = vi.hoisted(() => ({
 vi.mock("./agent-runner-auto-fallback.js", () => ({
   resolveRunAfterAutoFallbackPrimaryProbeRecheck: (...args: unknown[]) =>
     state.recheckFallbackProbe(...args),
+}));
+
+vi.mock("./agent-restart-recovery-controller.js", () => ({
+  createReplyAgentRestartRecoveryController: () => ({
+    admitUserTurn: (...args: unknown[]) => state.claimAdmit(...args),
+    beginBeforeAgentReply: vi.fn(),
+    checkpointBeforeAgentReply: vi.fn(),
+    clear: (...args: unknown[]) => state.claimClear(...args),
+    deferToRecovery: (...args: unknown[]) => state.claimDefer(...args),
+    isArmed: (...args: unknown[]) => state.claimIsArmed(...args),
+    isTracked: (...args: unknown[]) => state.claimIsTracked(...args),
+  }),
 }));
 
 vi.mock("./agent-runner-memory.js", () => ({
@@ -114,6 +131,11 @@ beforeEach(() => {
   state.resolveSendPolicy.mockImplementation(() => state.sendPolicy);
   state.resolveConfig.mockImplementation(async (config) => config);
   state.buildPreflightFailureText.mockReturnValue("preflight failed");
+  state.claimAdmit.mockResolvedValue("admitted");
+  state.claimClear.mockResolvedValue(undefined);
+  state.claimDefer.mockResolvedValue(true);
+  state.claimIsArmed.mockReturnValue(false);
+  state.claimIsTracked.mockReturnValue(false);
   state.preflight.mockImplementation(async ({ sessionEntry }) => sessionEntry);
   state.recheckFallbackProbe.mockImplementation(({ run }) => run);
   state.admitLifecycle.mockResolvedValue(undefined);
@@ -143,6 +165,109 @@ describe("admitFollowupTurn", () => {
       }),
     ).resolves.toMatchObject({ kind: "skipped", reason: "aborted", operation });
     expect(state.preflight).not.toHaveBeenCalled();
+  });
+
+  it("persists queued recovery custody before adopting the source", async () => {
+    const order: string[] = [];
+    const operation = createOperation();
+    const recorder = { hasPersisted: () => false } as never;
+    state.admitReply.mockResolvedValue({ status: "owned", operation });
+    state.preflight.mockImplementation(async ({ sessionEntry }) => {
+      order.push("preflight");
+      return sessionEntry;
+    });
+    state.claimAdmit.mockImplementation(async () => {
+      order.push("claim");
+      return "admitted";
+    });
+    state.admitLifecycle.mockImplementation(async () => {
+      order.push("source-adopted");
+    });
+
+    const result = await admitFollowupTurn({
+      queued: createRun({
+        restartRecovery: { sourceTurnId: "channel-user:v1:stable" },
+        userTurnTranscriptRecorder: recorder,
+      }),
+      defaults: createDefaults({
+        opts: { onQueuedFollowupAdmitted: () => order.push("presentation-admitted") },
+      }),
+    });
+
+    expect(result.kind).toBe("admitted");
+    expect(state.claimAdmit).toHaveBeenCalledWith(recorder);
+    expect(order).toEqual(["preflight", "claim", "source-adopted", "presentation-admitted"]);
+  });
+
+  it("defers a partially overlapping aggregate before adopting any source", async () => {
+    const operation = createOperation();
+    state.admitReply.mockResolvedValue({ status: "owned", operation });
+    state.claimAdmit.mockResolvedValue("source-overlap");
+
+    await expect(
+      admitFollowupTurn({
+        queued: createRun({
+          restartRecovery: {
+            sourceTurnId: "followup-collect:aggregate",
+            constituentSourceTurnIds: ["channel-user:v1:old", "channel-user:v1:fresh"],
+          },
+          userTurnTranscriptRecorder: { hasPersisted: () => false } as never,
+        }),
+        defaults: createDefaults(),
+      }),
+    ).resolves.toEqual({ kind: "deferred", reason: "source-overlap" });
+
+    expect(state.admitLifecycle).not.toHaveBeenCalled();
+    expect(state.claimClear).not.toHaveBeenCalled();
+    expect(operation.complete).toHaveBeenCalledOnce();
+  });
+
+  it("does not adopt a queued source when durable claim persistence fails", async () => {
+    const operation = createOperation();
+    const failure = new Error("claim persistence failed");
+    state.admitReply.mockResolvedValue({ status: "owned", operation });
+    state.claimAdmit.mockRejectedValue(failure);
+
+    await expect(
+      admitFollowupTurn({
+        queued: createRun({
+          restartRecovery: { sourceTurnId: "channel-user:v1:stable" },
+          userTurnTranscriptRecorder: { hasPersisted: () => false } as never,
+        }),
+        defaults: createDefaults(),
+      }),
+    ).rejects.toBe(failure);
+
+    expect(state.admitLifecycle).not.toHaveBeenCalled();
+    expect(state.claimClear).toHaveBeenCalledOnce();
+    expect(operation.complete).toHaveBeenCalledOnce();
+  });
+
+  it("hands an admitted durable source to recovery when source adoption fails", async () => {
+    const operation = createOperation();
+    const failure = new Error("source adoption failed");
+    state.admitReply.mockResolvedValue({ status: "owned", operation });
+    state.claimIsTracked.mockReturnValue(true);
+    state.admitLifecycle.mockRejectedValue(failure);
+
+    await expect(
+      admitFollowupTurn({
+        queued: createRun({
+          restartRecovery: { sourceTurnId: "channel-user:v1:stable" },
+          userTurnTranscriptRecorder: { hasPersisted: () => false } as never,
+        }),
+        defaults: createDefaults(),
+      }),
+    ).resolves.toMatchObject({
+      kind: "skipped",
+      reason: "recovery-scheduled",
+      operation,
+    });
+
+    expect(state.claimDefer).toHaveBeenCalledOnce();
+    expect(state.claimClear).not.toHaveBeenCalled();
+    expect(operation.fail).toHaveBeenCalledWith("run_failed", failure);
+    expect(operation.complete).toHaveBeenCalledOnce();
   });
 
   it("uses admission-time session generation, model lock, policy, and goal context", async () => {
@@ -1024,3 +1149,5 @@ describe("admitFollowupTurn", () => {
     });
   });
 });
+
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

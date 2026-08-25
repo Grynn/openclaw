@@ -3227,6 +3227,163 @@ describe("followup queue collect routing", () => {
     expect(secondComplete).toHaveBeenCalledTimes(1);
   });
 
+  it("derives stable recovery custody for a collected source batch", async () => {
+    const drain = async (params: {
+      enqueuedAt: number;
+      sessionId: string;
+      sourceTurnIds: string[];
+    }) => {
+      const key = `test-collect-recovery-custody-${params.enqueuedAt}-${params.sessionId}-${Date.now()}`;
+      const { calls, done, runFollowup } = createDrainRecorder();
+      const settings = createQueueSettings();
+      for (const [index, sourceTurnId] of params.sourceTurnIds.entries()) {
+        const run = createRun({ prompt: `prompt ${index}` });
+        run.run.sessionId = params.sessionId;
+        run.enqueuedAt = params.enqueuedAt + index;
+        run.transcriptPrompt = `transcript ${index}`;
+        run.restartRecovery = { sourceTurnId };
+        run.userTurnTranscriptRecorder = createUserTurnTranscriptRecorder({
+          input: { text: `transcript ${index}`, idempotencyKey: sourceTurnId },
+          target: createTestUserTurnTranscriptTarget(),
+          updateMode: "none",
+        });
+        enqueueFollowupRun(key, run, settings);
+      }
+
+      await drainRecordedQueue(key, runFollowup, done);
+      const collected = calls[0];
+      const message = await collected?.userTurnTranscriptRecorder?.resolveMessage();
+      const transcriptId = message ? Reflect.get(message, "idempotencyKey") : undefined;
+      return {
+        sourceTurnId: collected?.restartRecovery?.sourceTurnId,
+        constituentSourceTurnIds: collected?.restartRecovery?.constituentSourceTurnIds,
+        transcriptId: typeof transcriptId === "string" ? transcriptId : undefined,
+      };
+    };
+
+    const first = await drain({
+      enqueuedAt: 1_000,
+      sessionId: "session-before-rotation",
+      sourceTurnIds: ["channel-user:v1:first", "channel-user:v1:second"],
+    });
+    const redelivered = await drain({
+      enqueuedAt: 9_000,
+      sessionId: "session-after-rotation",
+      sourceTurnIds: ["channel-user:v1:second", "channel-user:v1:first"],
+    });
+
+    expect(first.sourceTurnId).toMatch(/^followup-collect:[a-f0-9]{64}$/);
+    expect(first.constituentSourceTurnIds).toEqual([
+      "channel-user:v1:first",
+      "channel-user:v1:second",
+    ]);
+    expect(first.transcriptId).toBe(first.sourceTurnId);
+    expect(redelivered).toEqual(first);
+  });
+
+  it("filters a terminal aggregate constituent without dropping a fresh collected source", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-collect-duplicate-"));
+    const storePath = path.join(tempDir, "sessions.json");
+    const sessionKey = "agent:agent:main";
+    const sessionId = "session-current";
+    const duplicateSourceTurnId = "channel-user:v1:duplicate";
+    const freshSourceTurnId = "channel-user:v1:fresh";
+    const key = `test-collect-terminal-constituent-${Date.now()}`;
+    const { calls, done, runFollowup } = createDrainRecorder();
+
+    try {
+      await replaceSessionEntry(
+        { storePath, sessionKey },
+        {
+          sessionId,
+          updatedAt: Date.now(),
+          restartRecoveryTerminalSourceTurnIdGroups: [[duplicateSourceTurnId]],
+        },
+      );
+      for (const [prompt, sourceTurnId] of [
+        ["already delivered", duplicateSourceTurnId],
+        ["new work", freshSourceTurnId],
+      ] as const) {
+        const run = createRun({ prompt });
+        run.run = {
+          ...run.run,
+          config: { session: { store: storePath } },
+          sessionId,
+          sessionKey,
+        };
+        run.restartRecovery = { sourceTurnId };
+        enqueueFollowupRun(key, run, createQueueSettings());
+      }
+
+      await drainRecordedQueue(key, runFollowup, done);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.prompt).not.toContain("already delivered");
+      expect(calls[0]?.prompt).toContain("new work");
+      expect(calls[0]?.restartRecovery?.sourceTurnId).toBe(freshSourceTurnId);
+    } finally {
+      clearFollowupQueue(key);
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("repartitions survivors when aggregate custody overlaps during admission", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-collect-overlap-race-"));
+    const storePath = path.join(tempDir, "sessions.json");
+    const sessionKey = "agent:agent:main";
+    const sessionId = "session-current";
+    const oldSourceTurnId = "channel-user:v1:old";
+    const freshSourceTurnId = "channel-user:v1:fresh";
+    const key = `test-collect-overlap-race-${Date.now()}`;
+    const calls: FollowupRun[] = [];
+    const done = createDeferred();
+
+    try {
+      await replaceSessionEntry({ storePath, sessionKey }, { sessionId, updatedAt: Date.now() });
+      for (const [prompt, sourceTurnId] of [
+        ["old work", oldSourceTurnId],
+        ["fresh work", freshSourceTurnId],
+      ] as const) {
+        const run = createRun({ prompt });
+        run.run = {
+          ...run.run,
+          config: { session: { store: storePath } },
+          sessionId,
+          sessionKey,
+        };
+        run.restartRecovery = { sourceTurnId };
+        enqueueFollowupRun(key, run, createQueueSettings());
+      }
+
+      scheduleFollowupDrain(key, async (run) => {
+        calls.push(run);
+        if (calls.length === 1) {
+          await replaceSessionEntry(
+            { storePath, sessionKey },
+            {
+              sessionId,
+              updatedAt: Date.now(),
+              restartRecoveryTerminalSourceTurnIdGroups: [[oldSourceTurnId]],
+            },
+          );
+          throw new FollowupRunDeferredError("aggregate source overlap");
+        }
+        done.resolve();
+      });
+      await done.promise;
+
+      expect(calls).toHaveLength(2);
+      expect(calls[0]?.prompt).toContain("old work");
+      expect(calls[0]?.prompt).toContain("fresh work");
+      expect(calls[1]?.prompt).not.toContain("old work");
+      expect(calls[1]?.prompt).toContain("fresh work");
+      expect(calls[1]?.restartRecovery?.sourceTurnId).toBe(freshSourceTurnId);
+    } finally {
+      clearFollowupQueue(key);
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("pairs differing inbound runtime contexts inside one collected turn", async () => {
     const key = `test-collect-runtime-context-split-${Date.now()}`;
     const { calls, done, runFollowup } = createDrainRecorder();

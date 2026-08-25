@@ -120,6 +120,12 @@ export type FollowupRun = {
   queuedFollowupReplyDisposition?: QueuedFollowupReplyDisposition;
   /** Provider message ID, when available (for deduplication). */
   messageId?: string;
+  /** Stable source identity used to bind restart recovery to this queued channel turn. */
+  restartRecovery?: {
+    sourceTurnId: string;
+    /** Provider source turns atomically represented by this synthetic aggregate. */
+    constituentSourceTurnIds?: string[];
+  };
   summaryLine?: string;
   /** Turn-owned tool authority captured before queue ownership transfers. */
   toolsAllow?: string[];

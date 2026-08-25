@@ -11,6 +11,7 @@ import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.shared.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
+import { createReplyAgentRestartRecoveryController } from "./agent-restart-recovery-controller.js";
 import { resolveRunAfterAutoFallbackPrimaryProbeRecheck } from "./agent-runner-auto-fallback.js";
 import { resolveAdmittedRunSessionFile } from "./agent-runner-core.js";
 import { buildPreflightCompactionFailureText } from "./agent-runner-failure-reply.js";
@@ -24,6 +25,7 @@ import {
   shouldNotifyUserAboutCompaction,
   type CompactionNoticePhase,
 } from "./compaction-notice.js";
+import { buildFollowupTemplateContext } from "./followup-template-context.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import { refreshActiveGoalContext } from "./inbound-meta.js";
 import {
@@ -80,16 +82,17 @@ export type AdmittedFollowupTurn = {
   currentInboundContext?: CurrentInboundPromptContext;
   sendPolicy: "allow" | "deny";
   preflightCompactionApplied: boolean;
+  restartRecoveryClaim?: ReturnType<typeof createReplyAgentRestartRecoveryController>;
   preflightFailurePayload?: ReplyPayload;
   preflightError?: unknown;
 };
 
 type FollowupAdmissionResult =
   | { kind: "admitted"; turn: AdmittedFollowupTurn }
-  | { kind: "deferred"; reason: "active-run" }
+  | { kind: "deferred"; reason: "active-run" | "source-overlap" }
   | {
       kind: "skipped";
-      reason: "aborted" | "lifecycle-invalidated";
+      reason: "aborted" | "lifecycle-invalidated" | "recovery-scheduled";
       operation?: ReplyOperation;
     };
 
@@ -158,17 +161,25 @@ export async function admitFollowupTurn(params: {
   }
   const operation = admission.operation;
   operation.retainFailureUntilComplete();
+  const requiresDurableSourceAdmission = Boolean(
+    params.queued.userTurnTranscriptRecorder || params.queued.restartRecovery,
+  );
   let queuedFollowupAdmitted = false;
+  let restartRecoveryClaim:
+    | ReturnType<typeof createReplyAgentRestartRecoveryController>
+    | undefined;
   try {
-    await admitFollowupRunLifecycle(params.queued);
     if (isFollowupRunAborted(params.queued)) {
       return { kind: "skipped", reason: "aborted", operation };
     }
-
-    // Queue drains retain the latest live runner closure per key. Keep local dispatcher
-    // callbacks in that closure so retried non-routable items use the newest transport owner.
-    queuedFollowupAdmitted = true;
-    await params.defaults.opts?.onQueuedFollowupAdmitted?.();
+    if (!requiresDurableSourceAdmission) {
+      await admitFollowupRunLifecycle(params.queued);
+      if (isFollowupRunAborted(params.queued)) {
+        return { kind: "skipped", reason: "aborted", operation };
+      }
+      queuedFollowupAdmitted = true;
+      await params.defaults.opts?.onQueuedFollowupAdmitted?.();
+    }
     if (operation.sessionId !== run.sessionId) {
       run = {
         ...run,
@@ -283,11 +294,32 @@ export async function admitFollowupTurn(params: {
       params.defaults.opts?.isHeartbeat === true
         ? queued.currentInboundContext
         : refreshActiveGoalContext(queued.currentInboundContext, activeEntry);
+    const admittedQueued = { ...queued, currentInboundContext };
+    const restartRecoverySessionCtx = buildFollowupTemplateContext({
+      queued: admittedQueued,
+      session,
+    });
+    restartRecoveryClaim = createReplyAgentRestartRecoveryController({
+      activeSessionStore: sessionStore,
+      cfg: config,
+      followupRun: admittedQueued,
+      getActiveSessionEntry: () => session.current(),
+      opts: params.defaults.opts,
+      replyOperation: operation,
+      restartRecoverySourceTurnId: admittedQueued.restartRecovery?.sourceTurnId,
+      restartRecoveryConstituentSourceTurnIds:
+        admittedQueued.restartRecovery?.constituentSourceTurnIds,
+      runtimePolicySessionKey: admittedQueued.run.runtimePolicySessionKey,
+      sessionCtx: restartRecoverySessionCtx,
+      sessionKey: replySessionKey,
+      setActiveSessionEntry: (entry) => session.adopt(entry),
+      storePath: params.defaults.storePath,
+    });
     // Preallocate the one lifecycle identity passed as opts.runId; canonical
     // execution owns registration and cleanup under this same id.
     const turn: AdmittedFollowupTurn = {
       runId: crypto.randomUUID(),
-      queued: { ...queued, currentInboundContext },
+      queued: admittedQueued,
       operation,
       config,
       session,
@@ -295,6 +327,7 @@ export async function admitFollowupTurn(params: {
       currentInboundContext,
       sendPolicy: resolveTurnSendPolicy(activeEntry),
       preflightCompactionApplied: false,
+      restartRecoveryClaim,
     };
     const refreshTurnSessionState = (entry: SessionEntry | undefined) => {
       const refreshedInboundContext =
@@ -465,8 +498,71 @@ export async function admitFollowupTurn(params: {
         turn,
       );
     }
+    if (requiresDurableSourceAdmission) {
+      const userTurnAdmission = await restartRecoveryClaim.admitUserTurn(
+        turn.queued.userTurnTranscriptRecorder,
+      );
+      activeEntry = session.current() ?? activeEntry;
+      if (userTurnAdmission === "duplicate-source") {
+        // Durable terminal ownership means this provider redelivery is consumed,
+        // not abandoned back into the ingress retry loop.
+        await admitFollowupRunLifecycle(params.queued);
+        return { kind: "skipped", reason: "lifecycle-invalidated", operation };
+      }
+      if (userTurnAdmission === "source-overlap") {
+        // The queue still owns every constituent. Close this provisional lane and
+        // let the next drain remove consumed members before rebuilding the batch.
+        operation.complete();
+        return { kind: "deferred", reason: "source-overlap" };
+      }
+      // Preflight runs while ingress still owns the source. The durable transcript
+      // and exact route must exist before adoption can retire that spool item.
+      await admitFollowupRunLifecycle(params.queued);
+      if (isFollowupRunAborted(params.queued)) {
+        await restartRecoveryClaim.clear();
+        return { kind: "skipped", reason: "aborted", operation };
+      }
+      // Queue drains retain the latest live runner closure per key. Keep local dispatcher
+      // callbacks in that closure so retried non-routable items use the newest transport owner.
+      queuedFollowupAdmitted = true;
+      await params.defaults.opts?.onQueuedFollowupAdmitted?.();
+      const postAdoptionEntry = readTurnSessionEntry();
+      const ownedEntry = session.current();
+      if (
+        (postAdoptionEntry || ownedEntry) &&
+        !isSameSessionGeneration(postAdoptionEntry, ownedEntry)
+      ) {
+        throw new FollowupSessionGenerationInvalidatedError(
+          "Follow-up session generation changed after reply admission",
+        );
+      }
+    }
     return { kind: "admitted", turn };
   } catch (error) {
+    if (restartRecoveryClaim?.isTracked() === true) {
+      try {
+        await restartRecoveryClaim.deferToRecovery();
+      } catch (recoveryError) {
+        // Keep the durable claim intact. Startup recovery remains authoritative if
+        // the immediate wake marker could not be persisted during a store outage.
+        defaultRuntime.error?.(
+          `followup queue: failed to arm admitted source recovery: ${formatErrorMessage(recoveryError)}`,
+        );
+      }
+      if (queuedFollowupAdmitted) {
+        await settleQueuedFollowupPresentation(params.defaults);
+      }
+      operation.fail("run_failed", error);
+      operation.complete();
+      return { kind: "skipped", reason: "recovery-scheduled", operation };
+    }
+    try {
+      await restartRecoveryClaim?.clear();
+    } catch (clearError) {
+      defaultRuntime.error?.(
+        `followup queue: recovery claim cleanup failed: ${formatErrorMessage(clearError)}`,
+      );
+    }
     if (queuedFollowupAdmitted) {
       await settleQueuedFollowupPresentation(params.defaults);
     }

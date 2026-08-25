@@ -332,6 +332,110 @@ describe("createReplyRestartRecoveryClaimController", () => {
     });
   });
 
+  it("claims and terminalizes every provider member of an aggregate source", async () => {
+    const root = tempDirs.make("openclaw-reply-aggregate-claim-");
+    const storePath = path.join(root, "sessions.json");
+    const sessionKey = "agent:main:telegram:group:chat:topic:aggregate";
+    const sessionId = "channel-session-id";
+    const sourceTurnId = "followup-collect:aggregate-1";
+    const constituentSourceTurnIds = ["telegram-update-a", "telegram-update-b"];
+    const deliveryContext = {
+      channel: "telegram",
+      to: "chat",
+      accountId: "default",
+      threadId: "thread",
+    };
+    let entry: SessionEntry = { sessionId, updatedAt: 10 };
+    await replaceSessionEntry({ storePath, sessionKey }, entry);
+    const recorder = createUserTurnTranscriptRecorder({
+      input: { text: "collected turn", idempotencyKey: sourceTurnId },
+      target: {
+        agentId: "main",
+        sessionEntry: entry,
+        sessionId,
+        sessionKey,
+        storePath,
+      },
+      updateMode: "none",
+    });
+    await recorder.persistApproved();
+    const controller = createReplyRestartRecoveryClaimController({
+      constituentSourceTurnIds,
+      getEntry: () => entry,
+      getSessionId: () => sessionId,
+      isRestartAbort: () => false,
+      resolveDeliveryContext: () => deliveryContext,
+      sessionKey,
+      setEntry: (next) => {
+        entry = next;
+      },
+      sourceTurnId,
+      storePath,
+    });
+
+    await expect(controller.admitUserTurn(recorder)).resolves.toBe("admitted");
+    expect(loadSessionEntry({ storePath, sessionKey })).toMatchObject({
+      restartRecoveryDeliverySourceRunId: sourceTurnId,
+      restartRecoveryDeliveryConstituentSourceTurnIds: constituentSourceTurnIds,
+      status: "running",
+    });
+
+    for (const constituentSourceTurnId of constituentSourceTurnIds) {
+      const duplicate = createReplyRestartRecoveryClaimController({
+        getEntry: () => entry,
+        getSessionId: () => sessionId,
+        isRestartAbort: () => false,
+        resolveDeliveryContext: () => deliveryContext,
+        sessionKey,
+        setEntry: (next) => {
+          entry = next;
+        },
+        sourceTurnId: constituentSourceTurnId,
+        storePath,
+      });
+      await expect(duplicate.admitUserTurn()).resolves.toBe("duplicate-source");
+    }
+
+    const partialOverlap = createReplyRestartRecoveryClaimController({
+      constituentSourceTurnIds: [constituentSourceTurnIds[0], "telegram-update-fresh"],
+      getEntry: () => entry,
+      getSessionId: () => sessionId,
+      isRestartAbort: () => false,
+      resolveDeliveryContext: () => deliveryContext,
+      sessionKey,
+      setEntry: (next) => {
+        entry = next;
+      },
+      sourceTurnId: "followup-collect:aggregate-2",
+      storePath,
+    });
+    await expect(partialOverlap.admitUserTurn()).resolves.toBe("source-overlap");
+
+    await controller.beginBeforeAgentReply();
+    await controller.checkpointBeforeAgentReply({ state: "handled-silent" });
+    await controller.clear();
+    entry = loadSessionEntry({ storePath, sessionKey }) as SessionEntry;
+    expect(entry.restartRecoveryDeliveryConstituentSourceTurnIds).toBeUndefined();
+    expect(entry.restartRecoveryTerminalSourceTurnIdGroups).toContainEqual(
+      constituentSourceTurnIds,
+    );
+    for (const constituentSourceTurnId of constituentSourceTurnIds) {
+      const duplicate = createReplyRestartRecoveryClaimController({
+        getEntry: () => entry,
+        getSessionId: () => sessionId,
+        isRestartAbort: () => false,
+        resolveDeliveryContext: () => deliveryContext,
+        sessionKey,
+        setEntry: (next) => {
+          entry = next;
+        },
+        sourceTurnId: constituentSourceTurnId,
+        storePath,
+      });
+      await expect(duplicate.admitUserTurn()).resolves.toBe("duplicate-source");
+    }
+  });
+
   it("rejects claim adoption when a recovery cycle starts after the snapshot", async () => {
     const root = tempDirs.make("openclaw-reply-admission-cycle-");
     const storePath = path.join(root, "sessions.json");

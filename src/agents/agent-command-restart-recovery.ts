@@ -298,6 +298,7 @@ export function buildCurrentRunRestartRecoveryClaim(params: {
   | "restartRecoveryDisableMessageTool"
   | "restartRecoveryDeliveryRunId"
   | "restartRecoveryDeliverySourceRunId"
+  | "restartRecoveryDeliveryConstituentSourceTurnIds"
   | "restartRecoveryForceSafeTools"
   | "restartRecoverySourceIngress"
   | "restartRecoverySourceReplyDeliveryMode"
@@ -338,6 +339,9 @@ export function buildCurrentRunRestartRecoveryClaim(params: {
     restartRecoveryDeliverySourceRunId: adoptsExistingClaim
       ? params.entry.restartRecoveryDeliverySourceRunId
       : params.sourceRunId,
+    restartRecoveryDeliveryConstituentSourceTurnIds: adoptsExistingClaim
+      ? params.entry.restartRecoveryDeliveryConstituentSourceTurnIds
+      : undefined,
     restartRecoverySourceIngress: adoptsExistingClaim
       ? params.entry.restartRecoverySourceIngress
       : createsScopedDeliveryClaim

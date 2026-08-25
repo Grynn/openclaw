@@ -1,6 +1,7 @@
 import { settleProgressVisibilityCallbackResult } from "../../channels/progress-visibility.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { withBeforeAgentReplyObserver } from "../../plugins/before-agent-reply.js";
 import type { TemplateContext } from "../templating.js";
 import type { VerboseLevel } from "../thinking.js";
 import type { ReplyPayload } from "../types.js";
@@ -8,8 +9,10 @@ import { executeAgentTurn } from "./agent-runner-execution.js";
 import type { AgentTurnExecutionResult } from "./agent-runner-execution.types.js";
 import { buildTerminalAgentRunFailureReplyPayload } from "./agent-runner-failure-reply.js";
 import { resetReplyRunSession } from "./agent-runner-session-reset.js";
+import { createBeforeAgentReplyRecoveryObserver } from "./before-agent-reply-recovery.js";
 import { resolveTurnCommentaryProgressOwner } from "./commentary-progress-owner.js";
 import { requiresDurableToolResultDelivery } from "./dispatch-from-config.payloads.js";
+import { buildFollowupTemplateContext } from "./followup-template-context.js";
 import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./followup-turn-admission.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import { hasReplyOperationExecutionStarted } from "./reply-run-registry.js";
@@ -25,44 +28,6 @@ export type FollowupExecutionResult = {
     drain(): Promise<void>;
   };
 };
-
-function buildFollowupTemplateContext(turn: AdmittedFollowupTurn): TemplateContext {
-  const queued = turn.queued;
-  const run = queued.run;
-  const surface = queued.originatingChannel ?? run.messageProvider;
-  const sessionKey = turn.session.kind === "session" ? turn.session.key : run.sessionKey;
-  const currentMessageId =
-    run.inputProvenance?.kind === "internal_system" &&
-    run.inputProvenance.sourceTool === "restart-sentinel"
-      ? queued.originatingReplyToId
-      : queued.messageId;
-  return {
-    Provider: run.messageProvider,
-    Surface: surface,
-    OriginatingChannel: queued.originatingChannel,
-    OriginatingTo: queued.originatingTo,
-    To: queued.originatingTo,
-    AccountId: queued.originatingAccountId ?? run.agentAccountId,
-    ChatType: queued.originatingChatType ?? run.chatType,
-    SessionKey: sessionKey,
-    RuntimePolicySessionKey: run.runtimePolicySessionKey ?? sessionKey,
-    MessageSid: currentMessageId,
-    MessageSidFull: currentMessageId,
-    MessageThreadId: queued.originatingThreadId,
-    ReplyToId: queued.originatingReplyToId,
-    SenderId: run.senderId,
-    MemberRoleIds: run.memberRoleIds,
-    ChannelContext: run.channelContext,
-    SenderName: run.senderName,
-    SenderUsername: run.senderUsername,
-    SenderE164: run.senderE164,
-    GroupChannel: run.groupChannel,
-    GroupSpace: run.groupSpace,
-    InputProvenance: run.inputProvenance,
-    InboundEventKind: queued.currentInboundEventKind,
-    media: queued.media,
-  } as TemplateContext;
-}
 
 /** Adapts an admitted queued turn to the canonical agent execution owner. */
 export async function executeFollowupTurn(params: {
@@ -318,61 +283,82 @@ export async function executeFollowupTurn(params: {
     };
   } else {
     try {
-      execution = await executeAgentTurn({
-        commandBody: turn.queued.prompt,
-        transcriptCommandBody: turn.queued.transcriptPrompt,
-        followupRun: turn.queued,
-        sessionCtx,
-        replyOperation: turn.operation,
-        opts: progressOpts,
-        typingSignals,
-        blockReplyPipeline: null,
-        blockStreamingEnabled: false,
-        resolvedBlockStreamingBreak: turn.queued.run.blockReplyBreak,
-        applyReplyToMode: (payload) => payload,
-        shouldEmitToolResult,
-        shouldEmitToolOutput,
-        pendingToolTasks,
-        resetSessionAfterRoleOrderingConflict: async (reason) => {
-          const session = turn.session;
-          if (session.kind !== "session") {
-            return false;
-          }
-          return await resetReplyRunSession({
-            options: {
-              failureLabel: "role ordering conflict",
-              buildLogMessage: (nextSessionId) =>
-                `Role ordering conflict (${reason}). Restarting session ${session.key} -> ${nextSessionId}.`,
-              cleanupTranscripts: true,
-            },
-            sessionKey: session.key,
-            queueKey: session.key,
-            activeSessionEntry: session.current(),
-            activeSessionStore: turn.sessionStore,
-            storePath: session.storePath,
-            followupRun: turn.queued,
-            onActiveSessionEntry: (entry) => {
-              session.adopt(entry);
-              turn.operation.updateSessionId(entry.sessionId);
-            },
-            onNewSession: () => undefined,
-          });
-        },
-        isHeartbeat: sourceOpts?.isHeartbeat === true,
-        sessionKey: turn.session.kind === "session" ? turn.session.key : undefined,
-        runtimePolicySessionKey: turn.queued.run.runtimePolicySessionKey,
-        getActiveSessionEntry: turn.session.current,
-        activeSessionStore: turn.sessionStore,
-        storePath: turn.session.kind === "session" ? turn.session.storePath : undefined,
-        resolvedVerboseLevel: currentVerboseLevel() ?? "off",
-        toolProgressDetail: defaults.toolProgressDetail,
-        onCompactionNoticePayload: (payload) =>
-          enqueueProgress(() =>
-            progressAllowed()
-              ? params.onCompactionNoticePayload(payload, { runId: turn.runId })
-              : undefined,
-          ),
-      });
+      const execute = () =>
+        executeAgentTurn({
+          commandBody: turn.queued.prompt,
+          transcriptCommandBody: turn.queued.transcriptPrompt,
+          followupRun: turn.queued,
+          sessionCtx,
+          replyOperation: turn.operation,
+          opts: progressOpts,
+          typingSignals,
+          blockReplyPipeline: null,
+          blockStreamingEnabled: false,
+          resolvedBlockStreamingBreak: turn.queued.run.blockReplyBreak,
+          applyReplyToMode: (payload) => payload,
+          shouldEmitToolResult,
+          shouldEmitToolOutput,
+          pendingToolTasks,
+          resetSessionAfterRoleOrderingConflict: async (reason) => {
+            const session = turn.session;
+            if (session.kind !== "session") {
+              return false;
+            }
+            return await resetReplyRunSession({
+              options: {
+                failureLabel: "role ordering conflict",
+                buildLogMessage: (nextSessionId) =>
+                  `Role ordering conflict (${reason}). Restarting session ${session.key} -> ${nextSessionId}.`,
+                cleanupTranscripts: true,
+              },
+              sessionKey: session.key,
+              queueKey: session.key,
+              activeSessionEntry: session.current(),
+              activeSessionStore: turn.sessionStore,
+              storePath: session.storePath,
+              messageThreadId:
+                sessionCtx.MessageThreadId != null ? String(sessionCtx.MessageThreadId) : undefined,
+              followupRun: turn.queued,
+              onActiveSessionEntry: (entry) => {
+                session.adopt(entry);
+                turn.operation.updateSessionId(entry.sessionId);
+              },
+              onNewSession: () => undefined,
+            });
+          },
+          isHeartbeat: sourceOpts?.isHeartbeat === true,
+          sessionKey: turn.session.kind === "session" ? turn.session.key : undefined,
+          runtimePolicySessionKey: turn.queued.run.runtimePolicySessionKey,
+          getActiveSessionEntry: turn.session.current,
+          activeSessionStore: turn.sessionStore,
+          storePath: turn.session.kind === "session" ? turn.session.storePath : undefined,
+          resolvedVerboseLevel: currentVerboseLevel() ?? "off",
+          toolProgressDetail: defaults.toolProgressDetail,
+          isRestartRecoveryArmed: turn.restartRecoveryClaim?.isArmed,
+          onCompactionNoticePayload: (payload) =>
+            enqueueProgress(() =>
+              progressAllowed()
+                ? params.onCompactionNoticePayload(payload, { runId: turn.runId })
+                : undefined,
+            ),
+        });
+      const restartRecoveryClaim = turn.restartRecoveryClaim;
+      execution = restartRecoveryClaim
+        ? await withBeforeAgentReplyObserver(
+            createBeforeAgentReplyRecoveryObserver({
+              cfg: turn.config,
+              controller: restartRecoveryClaim,
+              getActiveSessionEntry: turn.session.current,
+              opts: sourceOpts,
+              replyOperation: turn.operation,
+              runtimePolicySessionKey: turn.queued.run.runtimePolicySessionKey,
+              sessionCtx,
+              sessionKey: turn.session.kind === "session" ? turn.session.key : undefined,
+              storePath: turn.session.kind === "session" ? turn.session.storePath : undefined,
+            }),
+            execute,
+          )
+        : await execute();
     } catch (error) {
       while (
         pendingProgressTasks.size > 0 ||

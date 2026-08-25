@@ -3,12 +3,33 @@ import type { ReplyPayload } from "../types.js";
 import type { AgentTurnParams } from "./agent-runner-execution.types.js";
 import type { AdmittedFollowupTurn } from "./followup-turn-admission.js";
 import { markReplyOperationExecutionStarted } from "./reply-run-registry.state.js";
+import { readChannelSourceTurnId } from "./source-turn-id.js";
 
 const state = vi.hoisted(() => ({
   execute: vi.fn(),
   loadEntryReadOnly: vi.fn(),
+  observer: undefined as
+    | {
+        beforeDispatch: () => Promise<boolean | void>;
+        afterDispatch: (result: undefined) => Promise<unknown>;
+      }
+    | undefined,
   reset: vi.fn(),
 }));
+
+vi.mock("../../plugins/before-agent-reply.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../plugins/before-agent-reply.js")>();
+  return {
+    ...actual,
+    withBeforeAgentReplyObserver: <T>(
+      observer: NonNullable<typeof state.observer>,
+      run: () => T,
+    ) => {
+      state.observer = observer;
+      return run();
+    },
+  };
+});
 
 vi.mock("./agent-runner-execution.js", () => ({
   executeAgentTurn: (...args: unknown[]) => state.execute(...args),
@@ -85,6 +106,7 @@ function createTurn(overrides: Partial<AdmittedFollowupTurn> = {}): AdmittedFoll
 beforeEach(() => {
   vi.clearAllMocks();
   state.loadEntryReadOnly.mockReturnValue(undefined);
+  state.observer = undefined;
   state.execute.mockResolvedValue({
     runId: "run-1",
     outcome: { kind: "rejected", payload: { text: "done" } },
@@ -93,7 +115,20 @@ beforeEach(() => {
 
 describe("executeFollowupTurn", () => {
   it("normalizes queued route facts into the canonical execution call", async () => {
-    const turn = createTurn();
+    const isArmed = vi.fn(() => true);
+    const beginBeforeAgentReply = vi.fn(async () => true);
+    const checkpointBeforeAgentReply = vi.fn(async () => undefined);
+    const turn = createTurn({
+      queued: {
+        ...createTurn().queued,
+        restartRecovery: { sourceTurnId: "followup-collect:aggregate-1" },
+      },
+      restartRecoveryClaim: {
+        isArmed,
+        beginBeforeAgentReply,
+        checkpointBeforeAgentReply,
+      } as never,
+    });
     const typing = createTypingController();
     const onAgentRunStart = vi.fn();
     state.execute.mockImplementation(async (params: AgentTurnParams) => {
@@ -123,6 +158,7 @@ describe("executeFollowupTurn", () => {
       sessionKey: "main",
     });
     expect(call.opts?.runId).toBe("run-1");
+    expect(call.isRestartRecoveryArmed).toBe(isArmed);
     expect(call.sessionCtx).toMatchObject({
       Provider: "slack",
       Surface: "discord",
@@ -134,6 +170,12 @@ describe("executeFollowupTurn", () => {
       SenderId: "user-1",
     });
     expect(call.sessionCtx.media).toEqual([{ kind: "audio", contentType: "audio/ogg" }]);
+    expect(readChannelSourceTurnId(call.sessionCtx)).toBe("followup-collect:aggregate-1");
+    expect(state.observer).toBeDefined();
+    await state.observer?.beforeDispatch();
+    await state.observer?.afterDispatch(undefined);
+    expect(beginBeforeAgentReply).toHaveBeenCalledTimes(1);
+    expect(checkpointBeforeAgentReply).toHaveBeenCalledWith({ state: undefined });
     expect(onAgentRunStart).toHaveBeenCalledWith("run-1", undefined);
   });
 

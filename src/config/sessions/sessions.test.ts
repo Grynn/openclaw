@@ -12,7 +12,12 @@ import {
   validateSessionId,
 } from "./paths.js";
 import { evaluateSessionFreshness, resolveSessionResetPolicy } from "./reset.js";
-import { mergeRestartRecoveryTerminalRunIds } from "./restart-recovery-state.js";
+import {
+  buildRestartRecoveryClaimCleanupPatch,
+  hasRestartRecoveryTerminalRun,
+  mergeRestartRecoveryTerminalRunIds,
+  mergeRestartRecoveryTerminalSourceTurnIdGroups,
+} from "./restart-recovery-state.js";
 import { normalizePersistedSessionEntryShape } from "./store-entry-shape.js";
 
 it("merges bounded restart tombstones without evicting fresh-only ids", () => {
@@ -23,6 +28,40 @@ it("merges bounded restart tombstones without evicting fresh-only ids", () => {
     "run-new",
   ]);
   expect(mergeRestartRecoveryTerminalRunIds(existing, ["run-0"])).toEqual(existing);
+});
+
+it("bounds terminal aggregate claims without truncating their provider members", () => {
+  const constituentSourceTurnIds = Array.from(
+    { length: 96 },
+    (_, index) => `channel-user:v1:constituent-${index}`,
+  );
+  const entry = {
+    sessionId: "session-1",
+    updatedAt: 42,
+    restartRecoveryDeliveryRunId: "recovery-1",
+    restartRecoveryDeliverySourceRunId: "followup-collect:aggregate-1",
+    restartRecoveryDeliveryConstituentSourceTurnIds: constituentSourceTurnIds,
+  };
+  const patch = buildRestartRecoveryClaimCleanupPatch({
+    entry,
+    recordTerminalSource: true,
+  });
+  const terminalEntry = { ...entry, ...patch };
+
+  expect(patch.restartRecoveryTerminalSourceTurnIdGroups).toEqual([constituentSourceTurnIds]);
+  for (const sourceTurnId of constituentSourceTurnIds) {
+    expect(hasRestartRecoveryTerminalRun(terminalEntry, sourceTurnId)).toBe(true);
+  }
+
+  let groups: string[][] | undefined;
+  for (let index = 0; index < 70; index += 1) {
+    groups = mergeRestartRecoveryTerminalSourceTurnIdGroups(groups, [
+      [`channel-user:v1:claim-${index}:a`, `channel-user:v1:claim-${index}:b`],
+    ]);
+  }
+  expect(groups).toHaveLength(64);
+  expect(groups?.at(0)).toEqual(["channel-user:v1:claim-6:a", "channel-user:v1:claim-6:b"]);
+  expect(groups?.at(-1)).toEqual(["channel-user:v1:claim-69:a", "channel-user:v1:claim-69:b"]);
 });
 
 it("filters legacy row metadata with a noncanonical transcript id", () => {

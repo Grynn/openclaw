@@ -84,6 +84,7 @@ function buildStrandedReplyRetryFollowupRun(
     disableCollectBatching: true,
     transcriptPrompt: undefined,
     userTurnTranscriptRecorder: undefined,
+    restartRecovery: undefined,
     currentInboundContext: undefined,
     // Internally generated system turn: the client turn's lifecycle (gateway cancel
     // identity) completes with the parent run. turnAdoptionLifecycle is one-shot

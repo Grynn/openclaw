@@ -12,6 +12,7 @@ import type {
 import type { SessionEntry } from "./types.js";
 
 const MAX_TERMINAL_RUN_IDS = 64;
+const MAX_TERMINAL_SOURCE_GROUPS = 64;
 
 type RestartRecoveryChannelAuthority = {
   deliveryContext: DeliveryContext & { channel: string; to: string };
@@ -268,6 +269,30 @@ function normalizeRestartRecoveryTerminalRunIds(value: unknown): string[] | unde
   return bounded.length > 0 ? bounded : undefined;
 }
 
+function normalizeRestartRecoveryTerminalSourceTurnIdGroups(
+  value: unknown,
+): string[][] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const groups: string[][] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const group = normalizeStringArray(item);
+    if (!group) {
+      continue;
+    }
+    const key = JSON.stringify(group);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    groups.push(group);
+  }
+  const bounded = groups.slice(-MAX_TERMINAL_SOURCE_GROUPS);
+  return bounded.length > 0 ? bounded : undefined;
+}
+
 type RestartRecoveryNormalizedField =
   | "restartRecoveryBeforeAgentReplyState"
   | "restartRecoveryDeliveryReceiptState"
@@ -278,13 +303,15 @@ type RestartRecoveryNormalizedField =
   | "restartRecoveryDeliveryRequestFingerprint"
   | "restartRecoveryDeliveryRunId"
   | "restartRecoveryDeliverySourceRunId"
+  | "restartRecoveryDeliveryConstituentSourceTurnIds"
   | "restartRecoveryRequesterAccountId"
   | "restartRecoveryRequesterSenderId"
   | "restartRecoverySameChannelThreadRequired"
   | "restartRecoverySourceIngress"
   | "restartRecoverySourceReplyDeliveryMode"
   | "restartRecoveryTerminalDeliveryEvidence"
-  | "restartRecoveryTerminalRunIds";
+  | "restartRecoveryTerminalRunIds"
+  | "restartRecoveryTerminalSourceTurnIdGroups";
 
 function sameOptionalStringArray(left: unknown, right: string[] | undefined): boolean {
   if (!Array.isArray(left) || !right) {
@@ -296,6 +323,25 @@ function sameOptionalStringArray(left: unknown, right: string[] | undefined): bo
 /** Compares normalized durable terminal-source tombstones by value and order. */
 export function sameRestartRecoveryTerminalRunIds(left: unknown, right: unknown): boolean {
   return sameOptionalStringArray(left, normalizeRestartRecoveryTerminalRunIds(right));
+}
+
+/** Compares normalized aggregate source membership by value and order. */
+export function sameRestartRecoveryDeliveryConstituentSourceTurnIds(
+  left: unknown,
+  right: unknown,
+): boolean {
+  return sameOptionalStringArray(left, normalizeStringArray(right));
+}
+
+/** Compares normalized terminal aggregate-source groups by value and order. */
+export function sameRestartRecoveryTerminalSourceTurnIdGroups(
+  left: unknown,
+  right: unknown,
+): boolean {
+  return isDeepStrictEqual(
+    normalizeRestartRecoveryTerminalSourceTurnIdGroups(left),
+    normalizeRestartRecoveryTerminalSourceTurnIdGroups(right),
+  );
 }
 
 /** Normalizes restart-claim fields while preserving an already-canonical array identity. */
@@ -352,6 +398,18 @@ export function normalizeRestartRecoveryEntryFields(
     "restartRecoveryDeliverySourceRunId",
     normalizeRunId(entry.restartRecoveryDeliverySourceRunId),
   );
+  const deliverySourceRunIds = normalizeStringArray(
+    entry.restartRecoveryDeliveryConstituentSourceTurnIds,
+  );
+  assign(
+    "restartRecoveryDeliveryConstituentSourceTurnIds",
+    sameOptionalStringArray(
+      entry.restartRecoveryDeliveryConstituentSourceTurnIds,
+      deliverySourceRunIds,
+    )
+      ? entry.restartRecoveryDeliveryConstituentSourceTurnIds
+      : deliverySourceRunIds,
+  );
   assign(
     "restartRecoveryRequesterAccountId",
     normalizeRunId(entry.restartRecoveryRequesterAccountId),
@@ -397,6 +455,15 @@ export function normalizeRestartRecoveryEntryFields(
       ? entry.restartRecoveryTerminalRunIds
       : terminalRunIds,
   );
+  const terminalSourceTurnIdGroups = normalizeRestartRecoveryTerminalSourceTurnIdGroups(
+    entry.restartRecoveryTerminalSourceTurnIdGroups,
+  );
+  assign(
+    "restartRecoveryTerminalSourceTurnIdGroups",
+    isDeepStrictEqual(entry.restartRecoveryTerminalSourceTurnIdGroups, terminalSourceTurnIdGroups)
+      ? entry.restartRecoveryTerminalSourceTurnIdGroups
+      : terminalSourceTurnIdGroups,
+  );
 }
 
 function mergeRestartRecoveryTerminalDeliveryEvidence(
@@ -431,6 +498,49 @@ export function mergeRestartRecoveryTerminalRunIds(
   return normalizeRestartRecoveryTerminalRunIds([...currentRunIds, ...appendedRunIds]);
 }
 
+/** Applies only terminal ids appended by one stale snapshot onto the current row. */
+export function mergeRestartRecoveryTerminalRunIdDelta(params: {
+  current: unknown;
+  initial: unknown;
+  next: unknown;
+}): string[] | undefined {
+  const initialIds = new Set(normalizeRestartRecoveryTerminalRunIds(params.initial) ?? []);
+  const appendedIds = (normalizeRestartRecoveryTerminalRunIds(params.next) ?? []).filter(
+    (runId) => !initialIds.has(runId),
+  );
+  return mergeRestartRecoveryTerminalRunIds(params.current, appendedIds);
+}
+
+/** Appends whole aggregate-source groups without truncating members within a claim. */
+export function mergeRestartRecoveryTerminalSourceTurnIdGroups(
+  current: unknown,
+  appended: unknown,
+): string[][] | undefined {
+  const currentGroups = normalizeRestartRecoveryTerminalSourceTurnIdGroups(current) ?? [];
+  const currentKeys = new Set(currentGroups.map((group) => JSON.stringify(group)));
+  const appendedGroups = (
+    normalizeRestartRecoveryTerminalSourceTurnIdGroups(appended) ?? []
+  ).filter((group) => !currentKeys.has(JSON.stringify(group)));
+  return normalizeRestartRecoveryTerminalSourceTurnIdGroups([...currentGroups, ...appendedGroups]);
+}
+
+/** Applies only aggregate-source groups appended by one stale snapshot onto the current row. */
+export function mergeRestartRecoveryTerminalSourceTurnIdGroupDelta(params: {
+  current: unknown;
+  initial: unknown;
+  next: unknown;
+}): string[][] | undefined {
+  const initialKeys = new Set(
+    (normalizeRestartRecoveryTerminalSourceTurnIdGroups(params.initial) ?? []).map((group) =>
+      JSON.stringify(group),
+    ),
+  );
+  const appendedGroups = (
+    normalizeRestartRecoveryTerminalSourceTurnIdGroups(params.next) ?? []
+  ).filter((group) => !initialKeys.has(JSON.stringify(group)));
+  return mergeRestartRecoveryTerminalSourceTurnIdGroups(params.current, appendedGroups);
+}
+
 export function hasRestartRecoveryTerminalRun(
   entry: SessionEntry | undefined,
   runId: string,
@@ -438,7 +548,10 @@ export function hasRestartRecoveryTerminalRun(
   return (
     normalizeRestartRecoveryTerminalRunIds(entry?.restartRecoveryTerminalRunIds)?.includes(
       runId,
-    ) === true
+    ) === true ||
+    normalizeRestartRecoveryTerminalSourceTurnIdGroups(
+      entry?.restartRecoveryTerminalSourceTurnIdGroups,
+    )?.some((group) => group.includes(runId)) === true
   );
 }
 
@@ -451,7 +564,10 @@ export function hasRestartRecoverySourceClaim(
   return (
     normalizedSourceTurnId !== undefined &&
     normalizeRunId(entry?.restartRecoveryDeliveryRunId) !== undefined &&
-    normalizeRunId(entry?.restartRecoveryDeliverySourceRunId) === normalizedSourceTurnId
+    (normalizeRunId(entry?.restartRecoveryDeliverySourceRunId) === normalizedSourceTurnId ||
+      normalizeStringArray(entry?.restartRecoveryDeliveryConstituentSourceTurnIds)?.includes(
+        normalizedSourceTurnId,
+      ) === true)
   );
 }
 
@@ -473,12 +589,22 @@ export function buildRestartRecoveryClaimCleanupPatch(params: {
   const sourceRunId =
     normalizeRunId(params.terminalSourceRunId) ??
     normalizeRunId(params.entry.restartRecoveryDeliverySourceRunId);
+  const sourceRunIds = normalizeStringArray(
+    params.entry.restartRecoveryDeliveryConstituentSourceTurnIds,
+  );
   const terminalRunIds =
     params.recordTerminalSource && (sourceRunId || params.terminalRunId)
       ? mergeRestartRecoveryTerminalRunIds(params.entry.restartRecoveryTerminalRunIds, [
           ...(sourceRunId ? [sourceRunId] : []),
           ...(params.terminalRunId ? [params.terminalRunId] : []),
         ])
+      : undefined;
+  const terminalSourceTurnIdGroups =
+    params.recordTerminalSource && sourceRunIds?.length
+      ? mergeRestartRecoveryTerminalSourceTurnIdGroups(
+          params.entry.restartRecoveryTerminalSourceTurnIdGroups,
+          [sourceRunIds],
+        )
       : undefined;
   const terminalDeliveryEvidence =
     params.recordTerminalSource && sourceRunId && params.terminalDeliveryEvidence
@@ -498,6 +624,7 @@ export function buildRestartRecoveryClaimCleanupPatch(params: {
     restartRecoveryDeliveryRequestFingerprint: undefined,
     restartRecoveryDeliveryRunId: undefined,
     restartRecoveryDeliverySourceRunId: undefined,
+    restartRecoveryDeliveryConstituentSourceTurnIds: undefined,
     restartRecoveryRequesterAccountId: undefined,
     restartRecoveryRequesterSenderId: undefined,
     restartRecoverySameChannelThreadRequired: undefined,
@@ -508,5 +635,8 @@ export function buildRestartRecoveryClaimCleanupPatch(params: {
       ? { restartRecoveryTerminalDeliveryEvidence: terminalDeliveryEvidence }
       : {}),
     ...(terminalRunIds ? { restartRecoveryTerminalRunIds: terminalRunIds } : {}),
+    ...(terminalSourceTurnIdGroups
+      ? { restartRecoveryTerminalSourceTurnIdGroups: terminalSourceTurnIdGroups }
+      : {}),
   };
 }
