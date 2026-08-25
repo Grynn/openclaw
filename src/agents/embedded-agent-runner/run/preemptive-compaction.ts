@@ -321,27 +321,46 @@ function estimateTranscriptBoundaryTokenPressure(params: {
     params.messages,
     params.providerProjectionFirstChangedMessageIndex,
   );
-  const boundaryIncludesSystemPrompt =
-    boundary !== undefined &&
-    params.providerBoundaryIncludesSystemPromptFromIndex !== undefined &&
-    boundary.index >= params.providerBoundaryIncludesSystemPromptFromIndex;
-  // The provider total owns transcript items through its assistant record. A
-  // same-turn boundary also owns the unchanged rendered system prompt; older
-  // boundaries have no such provenance, so retain the conservative local count.
-  const messagesForPressure = boundary
-    ? params.messages.slice(boundary.index + 1)
-    : params.messages;
-  const locallyEstimatedTokens = messagesForPressure.reduce(
-    (sum, message) => sum + estimateMessageTokenPressure(message),
-    estimateRenderedPromptTokens({
-      systemPrompt: boundaryIncludesSystemPrompt ? undefined : params.systemPrompt,
-      prompt: params.prompt,
-    }),
-  );
+  const estimateFromBoundary = (candidate: ProviderContextBoundary | undefined) => {
+    const boundaryIncludesSystemPrompt =
+      candidate !== undefined &&
+      params.providerBoundaryIncludesSystemPromptFromIndex !== undefined &&
+      candidate.index >= params.providerBoundaryIncludesSystemPromptFromIndex;
+    // The provider total owns transcript items through its assistant record. A
+    // same-turn boundary also owns the unchanged rendered system prompt; older
+    // boundaries have no such provenance, so retain the conservative local count.
+    const messagesForPressure = candidate
+      ? params.messages.slice(candidate.index + 1)
+      : params.messages;
+    const locallyEstimatedTokens = messagesForPressure.reduce(
+      (sum, message) => sum + estimateMessageTokenPressure(message),
+      estimateRenderedPromptTokens({
+        systemPrompt: boundaryIncludesSystemPrompt ? undefined : params.systemPrompt,
+        prompt: params.prompt,
+      }),
+    );
+    return (candidate?.totalTokens ?? 0) + Math.ceil(locallyEstimatedTokens * SAFETY_MARGIN);
+  };
+  let estimatedPromptTokens = estimateFromBoundary(boundary);
+  let source: TranscriptBoundaryTokenPressure["source"] = boundary?.source ?? "transcript_estimate";
+  if (params.providerProjectionFirstChangedMessageIndex !== undefined) {
+    const projectedBoundary = resolveProviderContextBoundary(params.messages);
+    if (
+      projectedBoundary &&
+      projectedBoundary.index >= params.providerProjectionFirstChangedMessageIndex
+    ) {
+      // Tool-result projection is reductive. The prior provider total therefore
+      // caps the projected prefix; only the locally estimated suffix needs margin.
+      const projectedBoundaryCap = estimateFromBoundary(projectedBoundary);
+      if (projectedBoundaryCap < estimatedPromptTokens) {
+        estimatedPromptTokens = projectedBoundaryCap;
+        source = projectedBoundary.source;
+      }
+    }
+  }
   return {
-    estimatedPromptTokens:
-      (boundary?.totalTokens ?? 0) + Math.ceil(locallyEstimatedTokens * SAFETY_MARGIN),
-    source: boundary?.source ?? "transcript_estimate",
+    estimatedPromptTokens,
+    source,
   };
 }
 

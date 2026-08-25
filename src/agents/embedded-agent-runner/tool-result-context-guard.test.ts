@@ -473,6 +473,49 @@ describe("installToolResultContextGuard", () => {
     expect(transformed).toBe(contextForNextCall);
   });
 
+  it("does not interrupt when reductive projection caps a pessimistic replay", async () => {
+    const agent = makeGuardableAgent();
+    const historicalPrefix = [
+      makeUser("historical context ".repeat(60_000)),
+      ...Array.from({ length: 12 }, (_, index) =>
+        makeToolResult(`call_history_${index}`, "r".repeat(60_000), "read"),
+      ),
+    ];
+    const contextForNextCall = [
+      ...historicalPrefix,
+      makeUser("current turn"),
+      makeAssistant("provider answer", {
+        api: "openai-chatgpt-responses",
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        usage: {
+          input: 198_418,
+          output: 1_018,
+          cacheRead: 0,
+          cacheWrite: 0,
+          contextUsage: {
+            state: "available",
+            promptTokens: 198_418,
+            totalTokens: 199_436,
+          },
+          totalTokens: 199_436,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "toolUse",
+      }),
+      makeToolResult("call_current", "r".repeat(32_000), "read"),
+    ];
+
+    const transformed = await applyMidTurnPrecheckGuardToContext(agent, contextForNextCall, {
+      contextTokenBudget: 272_000,
+      reserveTokens: 20_000,
+      prePromptMessageCount: historicalPrefix.length,
+      systemPrompt: "current system prompt ".repeat(1_600),
+    });
+
+    expect(transformed).toBe(contextForNextCall);
+  });
+
   it("does not re-add the system prompt after a same-turn exact provider boundary", async () => {
     const agent = makeGuardableAgent();
     const contextForNextCall = [

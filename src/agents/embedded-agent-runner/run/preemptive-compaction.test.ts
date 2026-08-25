@@ -265,6 +265,71 @@ describe("preemptive-compaction", () => {
     expect(projectedEstimate.route).toBe("fits");
   });
 
+  it("caps a pessimistic projected replay with the prior provider measurement", () => {
+    const rawMessages = [
+      {
+        role: "user",
+        content: "historical context ".repeat(60_000),
+        timestamp: timestamp++,
+      } as AgentMessage,
+      ...Array.from({ length: 12 }, () => makeToolResultMessage("r".repeat(60_000))),
+      makeProviderAssistant({ promptTokens: 198_418, totalTokens: 199_436 }),
+      makeToolResultMessage("r".repeat(32_000)),
+    ];
+    const projection = truncateOversizedToolResultsInMessages(
+      rawMessages,
+      272_000,
+      32_000,
+      256_000,
+      createToolResultPromptProjectionState(),
+    );
+
+    const result = shouldPreemptivelyCompactBeforePrompt({
+      messages: projection.messages,
+      systemPrompt: "current system prompt ".repeat(1_600),
+      prompt: "continue",
+      contextTokenBudget: 272_000,
+      reserveTokens: 20_000,
+      providerProjectionFirstChangedMessageIndex: projection.firstChangedMessageIndex,
+    });
+
+    expect(projection.firstChangedMessageIndex).toBeGreaterThan(0);
+    expect(result.pressureSource).toBe("provider_context_usage");
+    expect(result.estimatedPromptTokens).toBeGreaterThan(199_436);
+    expect(result.estimatedPromptTokens).toBeLessThan(252_000);
+    expect(result.route).toBe("fits");
+  });
+
+  it("prefers a newer reductive provider cap over an older exact boundary", () => {
+    const rawMessages = [
+      makeProviderAssistant({ promptTokens: 179_000, totalTokens: 180_000 }),
+      ...Array.from({ length: 12 }, () => makeToolResultMessage("r".repeat(60_000))),
+      makeProviderAssistant({ promptTokens: 198_418, totalTokens: 199_436 }),
+      makeToolResultMessage("r".repeat(32_000)),
+    ];
+    const projection = truncateOversizedToolResultsInMessages(
+      rawMessages,
+      272_000,
+      32_000,
+      256_000,
+      createToolResultPromptProjectionState(),
+    );
+
+    const result = shouldPreemptivelyCompactBeforePrompt({
+      messages: projection.messages,
+      prompt: "continue",
+      contextTokenBudget: 272_000,
+      reserveTokens: 20_000,
+      providerProjectionFirstChangedMessageIndex: projection.firstChangedMessageIndex,
+    });
+
+    expect(projection.firstChangedMessageIndex).toBeGreaterThan(0);
+    expect(result.pressureSource).toBe("provider_context_usage");
+    expect(result.estimatedPromptTokens).toBeGreaterThan(199_436);
+    expect(result.estimatedPromptTokens).toBeLessThan(252_000);
+    expect(result.route).toBe("fits");
+  });
+
   it("preserves an authoritative provider-usage floor for an unchanged view", () => {
     const result = shouldPreemptivelyCompactBeforePrompt({
       messages: [
