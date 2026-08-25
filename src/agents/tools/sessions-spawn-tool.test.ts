@@ -1031,6 +1031,73 @@ describe("sessions_spawn tool", () => {
     ).rejects.toThrow(message);
   });
 
+  it("omits serializer defaults before validating a visible spawn", async () => {
+    const callGateway = vi.fn(async () => ({
+      key: "agent:main:dashboard:normalized-child",
+      runStarted: true,
+      runId: "run-normalized-child",
+    }));
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+      config: { agents: { list: [{ id: "main" }] } },
+      callGateway: callGateway as never,
+      registerRun: vi.fn(),
+      countActiveRuns: () => 0,
+    });
+
+    const result = await tool.execute("visible-serializer-defaults", {
+      task: "inspect issue",
+      runtime: "subagent",
+      mode: "run",
+      thread: false,
+      thinking: "",
+      lightContext: false,
+      attachments: [],
+      attachAs: { mountPath: "" },
+      visible: true,
+    });
+
+    expect(result.details).toMatchObject({
+      status: "accepted",
+      childSessionKey: "agent:main:dashboard:normalized-child",
+      runId: "run-normalized-child",
+    });
+    expect(callGateway).toHaveBeenCalledWith(
+      "sessions.create",
+      expect.not.objectContaining({
+        mode: expect.anything(),
+        attachments: expect.anything(),
+        attachAs: expect.anything(),
+      }),
+    );
+  });
+
+  it.each([
+    ["invalid mode", { mode: "invalid" }, "mode"],
+    ["malformed attachments", { attachments: null }, "attachments"],
+    ["malformed attachAs", { attachAs: null }, "attachAs"],
+  ] as const)("still rejects visible %s", async (_name, override, field) => {
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+      config: { agents: { list: [{ id: "main" }] } },
+      callGateway: vi.fn(async () => ({
+        key: "agent:main:dashboard:invalid-child",
+        runStarted: true,
+        runId: "run-invalid-child",
+      })) as never,
+      registerRun: vi.fn(),
+      countActiveRuns: () => 0,
+    });
+
+    await expect(
+      tool.execute("visible-invalid-placeholder", {
+        task: "inspect",
+        visible: true,
+        ...override,
+      }),
+    ).rejects.toThrow(`Parameters unavailable with visible=true: ${field}:`);
+  });
+
   it("reports every unsupported visible parameter in one error", async () => {
     const tool = createSessionsSpawnTool({ agentSessionKey: "agent:main:main" });
 
@@ -1040,7 +1107,7 @@ describe("sessions_spawn tool", () => {
         runtime: "acp",
         thinking: "high",
         thread: true,
-        mode: "run",
+        mode: "session",
         lightContext: true,
         attachments: [{ name: "note.txt", content: "hello" }],
         attachAs: { mountPath: "inputs" },

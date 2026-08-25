@@ -4,7 +4,9 @@ import { resolveSessionModelRef } from "../../agents/session-model-ref.js";
 import { persistStickyModelSelectionBestEffort } from "../../agents/sticky-model-selection.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { isAcpSessionKey, isSubagentSessionKey } from "../../routing/session-key.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
+import { isAgentSessionModelPatchOrigin } from "../session-model-patch-origin.js";
 
 export function persistSessionPatchModelSelection(params: {
   callerScopes: readonly string[];
@@ -15,6 +17,12 @@ export function persistSessionPatchModelSelection(params: {
   targetAgentId: string;
 }): void {
   if (
+    isAgentSessionModelPatchOrigin() ||
+    isSubagentSessionKey(params.sessionKey) ||
+    isAcpSessionKey(params.sessionKey) ||
+    (params.entry.spawnDepth ?? 0) > 0 ||
+    Boolean(params.entry.spawnedBy?.trim()) ||
+    Boolean(params.entry.parentSessionKey?.trim()) ||
     typeof params.patch.model !== "string" ||
     !params.callerScopes.includes(ADMIN_SCOPE) ||
     params.entry.modelOverrideSource !== "user" ||

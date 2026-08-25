@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { Type } from "typebox";
 import { readMissingScopeErrorDetails } from "../../../packages/gateway-protocol/src/gateway-error-details.js";
@@ -135,36 +136,50 @@ export async function maybeSpawnVisibleSession(params: {
   const modelOverride = normalizeToolModelOverride(readToolStringParam(params.raw, "model"));
   const requestedCwd = readToolStringParam(params.raw, "cwd");
   const spawnedCwd = requestedCwd ? resolveUserPath(requestedCwd) : undefined;
+  const attachAs = params.raw.attachAs;
+  const emptyAttachAs =
+    isRecord(attachAs) &&
+    Object.keys(attachAs).every((key) => key === "mountPath") &&
+    (attachAs.mountPath === undefined ||
+      (typeof attachAs.mountPath === "string" && !attachAs.mountPath.trim()));
   const unsupported = [
     [
       "runtime",
-      params.runtime === "subagent" ? undefined : params.runtime,
+      params.raw.runtime === "subagent" ? undefined : params.raw.runtime,
       'supports runtime="subagent" only',
     ],
     [
       "thinking",
-      readToolStringParam(params.raw, "thinking"),
+      typeof params.raw.thinking === "string" && !params.raw.thinking.trim()
+        ? undefined
+        : params.raw.thinking,
       "thinking overrides are not wired to the sessions.create path",
     ],
     [
       "thread",
-      params.raw.thread === true ? true : undefined,
+      params.raw.thread === false ? undefined : params.raw.thread,
       "visible sessions route to the dashboard, not a channel thread",
     ],
-    ["mode", params.raw.mode, "visible sessions are persistent dashboard sessions"],
+    [
+      "mode",
+      params.raw.mode === "run" ? undefined : params.raw.mode,
+      "visible sessions are persistent dashboard sessions",
+    ],
     [
       "lightContext",
-      params.raw.lightContext === true ? true : undefined,
+      params.raw.lightContext === false ? undefined : params.raw.lightContext,
       "bootstrap staging is not wired to the sessions.create path",
     ],
     [
       "attachments",
-      Array.isArray(params.raw.attachments) ? params.raw.attachments : undefined,
+      Array.isArray(params.raw.attachments) && params.raw.attachments.length === 0
+        ? undefined
+        : params.raw.attachments,
       "attachment staging is not wired to the sessions.create path",
     ],
     [
       "attachAs",
-      params.raw.attachAs,
+      emptyAttachAs ? undefined : attachAs,
       "attachment staging is not wired to the sessions.create path",
     ],
   ] as const;
