@@ -313,7 +313,7 @@ type ResetEpochRewritePlan =
     };
 
 /** Plans a rewrite from only the active reset epoch; it performs no persistence reads or writes. */
-export function planTranscriptResetEpochRewrite(params: {
+function planTranscriptResetEpochRewrite(params: {
   replacements: TranscriptRewriteReplacement[];
   snapshot: SessionTranscriptResetEpochSnapshot;
 }): ResetEpochRewritePlan {
