@@ -106,13 +106,23 @@ const cfg = {
 let openClawTestState: OpenClawTestState;
 
 function context(): GatewayRequestContext {
+  const entries = [
+    { provider: "anthropic", id: "claude-opus-4-6" },
+    { provider: "anthropic", id: "claude-sonnet-4-6" },
+    { provider: "openai", id: "gpt-5.6-sol" },
+  ];
   return {
     getRuntimeConfig: () => cfg,
-    loadGatewayModelCatalog: vi.fn(async () => [
-      { provider: "anthropic", id: "claude-opus-4-6" },
-      { provider: "anthropic", id: "claude-sonnet-4-6" },
-      { provider: "openai", id: "gpt-5.6-sol" },
-    ]),
+    loadGatewayModelCatalog: vi.fn(async () => entries),
+    loadGatewayModelCatalogSnapshot: vi.fn(async ({ agentId } = {}) => ({
+      agentDir: `/tmp/${agentId ?? "main"}/agent`,
+      agentId: agentId ?? "main",
+      catalogComplete: true,
+      config: cfg,
+      entries,
+      routeVariants: entries,
+      workspaceDir: `/tmp/${agentId ?? "main"}/workspace`,
+    })),
     broadcastToConnIds: vi.fn(),
     getSessionEventSubscriberConnIds: () => new Set(),
     chatAbortControllers: new Map(),

@@ -28,6 +28,7 @@ import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snaps
 import {
   buildAgentMainSessionKey,
   isIncognitoSessionKey,
+  normalizeAgentId,
   parseAgentSessionKey,
   resolveAgentIdFromSessionKey,
 } from "../../routing/session-key.js";
@@ -68,7 +69,9 @@ import {
   resolveThinkingDefaultWithRuntimeCatalog,
 } from "../model-selection.js";
 import { createModelVisibilityPolicy } from "../model-visibility-policy.js";
-import { loadPreparedModelCatalog } from "../prepared-model-catalog.js";
+import { PreparedModelCatalogConfigReplacedError } from "../prepared-model-catalog.errors.js";
+import { loadResolvedPublishedModelCatalogOwner } from "../prepared-model-catalog.js";
+import { preparedModelRuntimeConfigsMatch } from "../prepared-model-runtime.js";
 import { resolveSessionModelIdentityRef } from "../session-model-ref.js";
 import {
   describeSessionStatusTool,
@@ -469,6 +472,9 @@ function formatSessionTaskLine(params: {
 
 async function resolveModelOverride(params: {
   cfg: OpenClawConfig;
+  catalog: Awaited<
+    ReturnType<typeof loadResolvedPublishedModelCatalogOwner>
+  >["modelCatalog"]["entries"];
   raw: string;
   sessionEntry?: SessionEntry;
   agentId: string;
@@ -501,15 +507,6 @@ async function resolveModelOverride(params: {
     agentId: params.agentId,
     defaultProvider: currentProvider,
   });
-  const catalog = await loadPreparedModelCatalog({
-    config: params.cfg,
-    agentId: params.agentId,
-    agentDir: params.agentDir,
-    readOnly: true,
-    ...(params.sessionEntry?.spawnedWorkspaceDir
-      ? { workspaceDir: params.sessionEntry.spawnedWorkspaceDir }
-      : {}),
-  });
   const workspaceDir = params.sessionEntry?.spawnedWorkspaceDir ?? params.workspaceDir;
   const manifestMetadataSnapshot =
     params.metadataSnapshot &&
@@ -531,7 +528,7 @@ async function resolveModelOverride(params: {
   };
   const policy = createModelVisibilityPolicy({
     cfg: params.cfg,
-    catalog,
+    catalog: params.catalog,
     defaultProvider: currentProvider,
     defaultModel: currentModel,
     agentId: params.agentId,
@@ -567,7 +564,7 @@ async function resolveModelOverride(params: {
   };
 }
 
-export function createSessionStatusTool(opts?: {
+type SessionStatusToolOptions = {
   agentSessionKey?: string;
   requesterAgentIdOverride?: string;
   /**
@@ -584,7 +581,31 @@ export function createSessionStatusTool(opts?: {
   callGateway?: AgentToolGatewayRequestCaller;
   /** Active live-run route, kept separate from the persisted/origin delivery route. */
   activeDeliveryContext?: DeliveryContext;
-}): AnyAgentTool {
+};
+
+type SessionStatusCatalogRetryCustody = {
+  requesterAgentId: string;
+  targetAgentId: string;
+  targetSessionId?: string;
+  targetSessionKey: string;
+  targetWorkspaceDir?: string;
+};
+
+class SessionStatusCatalogRetryError extends PreparedModelCatalogConfigReplacedError {
+  constructor(
+    agentDir: string,
+    readonly replacementConfig: OpenClawConfig,
+    readonly custody: SessionStatusCatalogRetryCustody,
+  ) {
+    super(agentDir);
+    this.name = "SessionStatusCatalogRetryError";
+  }
+}
+
+function createSessionStatusToolWithCatalogRetry(
+  opts: SessionStatusToolOptions | undefined,
+  retryState: { attempt: 0 | 1; custody?: SessionStatusCatalogRetryCustody },
+): AnyAgentTool {
   return {
     label: "Session Status",
     name: "session_status",
@@ -979,11 +1000,61 @@ export function createSessionStatusTool(opts?: {
           const configured = resolveDefaultModelForAgent({ cfg, agentId });
           const selectedAgentDir = resolveAgentDir(cfg, agentId);
           const selectedWorkspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+          const currentCustody = {
+            requesterAgentId,
+            targetAgentId: normalizeAgentId(agentId),
+            ...(scopedResolved.entry.sessionId
+              ? { targetSessionId: scopedResolved.entry.sessionId }
+              : {}),
+            targetSessionKey: scopedResolved.key,
+            ...(scopedResolved.entry.spawnedWorkspaceDir
+              ? { targetWorkspaceDir: scopedResolved.entry.spawnedWorkspaceDir }
+              : {}),
+          };
+          if (
+            retryState.custody &&
+            (retryState.custody.requesterAgentId !== currentCustody.requesterAgentId ||
+              retryState.custody.targetAgentId !== currentCustody.targetAgentId ||
+              retryState.custody.targetSessionId !== currentCustody.targetSessionId ||
+              retryState.custody.targetSessionKey !== currentCustody.targetSessionKey ||
+              retryState.custody.targetWorkspaceDir !== currentCustody.targetWorkspaceDir)
+          ) {
+            throw new Error(
+              "session_status target identity changed while refreshing the model catalog; retry the request",
+            );
+          }
+          const requestedWorkspaceDir = scopedResolved.entry.spawnedWorkspaceDir;
+          const catalogOwner = await loadResolvedPublishedModelCatalogOwner({
+            config: cfg,
+            agentId,
+            agentDir: selectedAgentDir,
+            readOnly: true,
+            ...(requestedWorkspaceDir ? { workspaceDir: requestedWorkspaceDir } : {}),
+          });
+          if (catalogOwner.agentId !== normalizeAgentId(agentId)) {
+            throw new Error(
+              `session_status model catalog resolved agent "${catalogOwner.agentId}" instead of "${normalizeAgentId(agentId)}"`,
+            );
+          }
+          if (requestedWorkspaceDir && catalogOwner.workspaceDir !== requestedWorkspaceDir) {
+            throw new Error(
+              `session_status model catalog resolved workspace "${catalogOwner.workspaceDir}" instead of "${requestedWorkspaceDir}"`,
+            );
+          }
+          if (!preparedModelRuntimeConfigsMatch(catalogOwner.config, cfg)) {
+            throw new SessionStatusCatalogRetryError(
+              selectedAgentDir,
+              catalogOwner.config,
+              currentCustody,
+            );
+          }
+          const thinkingCatalog = catalogOwner.modelCatalog.entries;
           const modelRaw = readToolStringParam(params, "model");
           let changedModel = false;
           if (typeof modelRaw === "string") {
             const selection = await resolveModelOverride({
               cfg,
+              catalog: thinkingCatalog,
               raw: modelRaw,
               sessionEntry: scopedResolved.entry,
               agentId,
@@ -1024,6 +1095,14 @@ export function createSessionStatusTool(opts?: {
                   storePath,
                 },
                 (entry, context) => {
+                  const currentConfig = getRuntimeConfig();
+                  if (!preparedModelRuntimeConfigsMatch(currentConfig, cfg)) {
+                    throw new SessionStatusCatalogRetryError(
+                      selectedAgentDir,
+                      currentConfig,
+                      currentCustody,
+                    );
+                  }
                   const persistedEntryPatch: SessionEntry = { ...entry };
                   applyModelOverrideWithAuthProfileCompatibility({
                     cfg,
@@ -1135,16 +1214,6 @@ export function createSessionStatusTool(opts?: {
             callerAgentId: requesterAgentId,
             config: cfg,
           });
-          // Tool status may read persisted/configured facts, but must not start provider discovery.
-          const thinkingCatalog = await loadPreparedModelCatalog({
-            config: cfg,
-            agentId,
-            agentDir: selectedAgentDir,
-            readOnly: true,
-            ...(statusSessionEntry.spawnedWorkspaceDir
-              ? { workspaceDir: statusSessionEntry.spawnedWorkspaceDir }
-              : {}),
-          });
           const { buildStatusText } = await loadCommandsStatusRuntime();
           const statusText = await buildStatusText({
             cfg,
@@ -1168,13 +1237,7 @@ export function createSessionStatusTool(opts?: {
                 cfg,
                 provider: providerForCard,
                 model: defaultModelForCard,
-                loadRuntimeCatalog: () =>
-                  loadPreparedModelCatalog({
-                    config: cfg,
-                    agentId,
-                    agentDir: selectedAgentDir,
-                    readOnly: true,
-                  }),
+                loadRuntimeCatalog: async () => thinkingCatalog,
               }),
             isGroup,
             defaultGroupActivation: () => "mention",
@@ -1230,7 +1293,7 @@ export function createSessionStatusTool(opts?: {
                 : null;
 
           return {
-            content: [{ type: "text", text: visibleStatusText }],
+            content: [{ type: "text" as const, text: visibleStatusText }],
             details: {
               ok: true,
               sessionKey: scopedResolved.key,
@@ -1251,8 +1314,20 @@ export function createSessionStatusTool(opts?: {
             },
           };
         },
+      }).catch(async (error: unknown) => {
+        if (!(error instanceof SessionStatusCatalogRetryError) || retryState.attempt === 1) {
+          throw error;
+        }
+        return await createSessionStatusToolWithCatalogRetry(
+          { ...opts, config: error.replacementConfig },
+          { attempt: 1, custody: error.custody },
+        ).execute(_toolCallId, args);
       });
     },
   };
+}
+
+export function createSessionStatusTool(opts?: SessionStatusToolOptions): AnyAgentTool {
+  return createSessionStatusToolWithCatalogRetry(opts, { attempt: 0 });
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

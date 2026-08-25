@@ -12,6 +12,7 @@ import {
   validateSessionsCreateParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
+import { isPreparedModelCatalogConfigReplacedError } from "../../agents/prepared-model-catalog.errors.js";
 import { insideGitCheckout } from "../../agents/worktrees/git.js";
 import { slugifyWorktreeTitle } from "../../agents/worktrees/name.js";
 import { managedWorktrees, WorktreeRepositoryError } from "../../agents/worktrees/service.js";
@@ -32,6 +33,7 @@ import {
   createGatewaySession,
   resolveSessionCreateModelSelection as resolveCreateTitleEntry,
 } from "../session-create-service.js";
+import { projectSessionMutationModelCatalog } from "../session-model-catalog.js";
 import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
 import { readSessionMessageCountAsync } from "../session-transcript-readers.js";
 import {
@@ -562,8 +564,14 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       creation: sessionCreation,
       authorizedPluginId: normalizeOptionalString(client?.internal?.pluginRuntimeOwnerId),
       armSessionDiffBaselineCapture: true,
-      loadGatewayModelCatalog: () =>
-        context.loadGatewayModelCatalog({ agentId: modelCatalogAgentId }),
+      loadGatewayModelCatalog: async () =>
+        projectSessionMutationModelCatalog({
+          agentId: modelCatalogAgentId,
+          config: cfg,
+          snapshot: await context.loadGatewayModelCatalogSnapshot({
+            agentId: modelCatalogAgentId,
+          }),
+        }),
       ...(commitGuard ? { commitGuard } : {}),
       afterCreate: async ({ key, agentId, entry, storePath }) => {
         if (!authority.hasActive()) {
@@ -610,7 +618,19 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
           });
         }
       },
-    }).catch((error: unknown) => authority.handleClosedError(error));
+    }).catch((error: unknown) => {
+      if (isPreparedModelCatalogConfigReplacedError(error)) {
+        return {
+          ok: false as const,
+          error: errorShape(
+            ErrorCodes.UNAVAILABLE,
+            "Gateway configuration changed while validating the session model; retry the request.",
+            { retryable: true },
+          ),
+        };
+      }
+      return authority.handleClosedError(error);
+    });
     if (!created) {
       return;
     }

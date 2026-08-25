@@ -6,6 +6,7 @@ import {
   type SessionsPatchManyTarget,
   type SessionsPatchParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { isPreparedModelCatalogConfigReplacedError } from "../../agents/prepared-model-catalog.errors.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { isInternalSessionEffectsKey } from "../../config/sessions/internal-session-key.js";
 import { SESSION_LIFECYCLE_CHANGED_ERROR_REASON } from "../../config/sessions/lifecycle.js";
@@ -21,6 +22,7 @@ import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lif
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import { ensureSessionGroupRegistered } from "../session-groups.js";
+import { projectSessionMutationModelCatalog } from "../session-model-catalog.js";
 import { triggerSessionPatchHook } from "../session-patch-hooks.js";
 import { resolvePluginSessionOwnershipError } from "../session-plugin-ownership.js";
 import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
@@ -89,6 +91,13 @@ type MutationCoreResult =
 
 function unexpectedPatchError(key: string, error: unknown): ErrorShape {
   sessionLog.warn(`sessions.patch: target failed for ${key}: ${formatErrorMessage(error)}`);
+  if (isPreparedModelCatalogConfigReplacedError(error)) {
+    return errorShape(
+      ErrorCodes.UNAVAILABLE,
+      "Gateway configuration changed while validating the session model; retry the request.",
+      { retryable: true },
+    );
+  }
   const message = "Session patch failed unexpectedly. Retry the request.";
   return errorShape(ErrorCodes.UNAVAILABLE, message, { retryable: true });
 }
@@ -271,7 +280,9 @@ async function executeSessionPatchMutations(params: {
   const loadModelCatalog = (agentId: string) => {
     let promise = modelCatalogByAgent.get(agentId);
     if (!promise) {
-      promise = params.context.loadGatewayModelCatalog({ agentId });
+      promise = params.context
+        .loadGatewayModelCatalogSnapshot({ agentId })
+        .then((snapshot) => projectSessionMutationModelCatalog({ agentId, config: cfg, snapshot }));
       modelCatalogByAgent.set(agentId, promise);
     }
     return promise;

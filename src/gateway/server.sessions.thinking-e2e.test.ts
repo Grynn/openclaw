@@ -261,10 +261,24 @@ test("session rows keep the selected Codex Sol model when runtime metadata conta
   expect(session?.agentRuntime?.id).toBe("codex");
   expect(session?.thinkingOptions).toContain("max");
 
+  const cfg = (await getGatewayConfigModule()).getRuntimeConfig();
+  const entries = await loadSolCatalog();
   const patchResponse = await directSessionReq(
     "sessions.patch",
     { key: "main", thinkingLevel: "max" },
-    { context: { loadGatewayModelCatalog: loadSolCatalog } },
+    {
+      context: {
+        loadGatewayModelCatalogSnapshot: async () => ({
+          agentDir: "/tmp/main/agent",
+          agentId: "main",
+          catalogComplete: true,
+          config: cfg,
+          entries,
+          routeVariants: entries,
+          workspaceDir: "/tmp/main/workspace",
+        }),
+      },
+    },
   );
   expect(patchResponse.ok, patchResponse.error?.message).toBe(true);
   expect(patchResponse.error).toBeUndefined();

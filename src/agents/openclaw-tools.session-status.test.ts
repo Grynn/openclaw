@@ -51,6 +51,7 @@ const listSessionStateEventsSinceMock = vi.hoisted(() =>
     historyGap: false,
   })),
 );
+const loadResolvedPublishedModelCatalogOwnerMock = vi.hoisted(() => vi.fn());
 const emptyPluginMetadataSnapshot = vi.hoisted(() => ({
   configFingerprint: "session-status-test-empty-plugin-metadata",
   plugins: [],
@@ -202,24 +203,54 @@ function createConfigModuleMock() {
   };
 }
 
+function preparedModelCatalogEntries() {
+  return [
+    {
+      provider: "anthropic",
+      id: "claude-sonnet-4-6",
+      name: "Claude Sonnet 4.6",
+      contextWindow: 200000,
+    },
+    {
+      provider: "openai",
+      id: "gpt-5.4",
+      name: "GPT-5.4",
+      reasoning: true,
+      contextWindow: 400000,
+    },
+  ];
+}
+
+function preparedModelCatalogOwner(
+  params: {
+    agentDir?: string;
+    agentId?: string;
+    config: Record<string, unknown>;
+    workspaceDir?: string;
+  },
+  overrides?: { agentId?: string; config?: Record<string, unknown> },
+) {
+  return {
+    agentDir: params.agentDir ?? "/tmp/main/agent",
+    agentId: overrides?.agentId ?? params.agentId ?? "main",
+    authModes: {},
+    authStore: { version: 1, profiles: {} },
+    config: overrides?.config ?? params.config,
+    metadataSnapshot: emptyPluginMetadataSnapshot,
+    modelCatalog: {
+      entries: preparedModelCatalogEntries(),
+      routeVariants: [],
+    },
+    workspaceDir: params.workspaceDir ?? "/tmp/main/workspace",
+  };
+}
+
 function createModelCatalogModuleMock() {
   return {
     loadProviderScopedThinkingCatalog: async () => [],
-    loadPreparedModelCatalog: async () => [
-      {
-        provider: "anthropic",
-        id: "claude-sonnet-4-6",
-        name: "Claude Sonnet 4.6",
-        contextWindow: 200000,
-      },
-      {
-        provider: "openai",
-        id: "gpt-5.4",
-        name: "GPT-5.4",
-        reasoning: true,
-        contextWindow: 400000,
-      },
-    ],
+    loadPreparedModelCatalog: async () => preparedModelCatalogEntries(),
+    loadResolvedPublishedModelCatalogOwner: (params: unknown) =>
+      loadResolvedPublishedModelCatalogOwnerMock(params),
   };
 }
 
@@ -430,6 +461,15 @@ function resetSessionStore(inputStore: Record<string, SessionEntry>) {
     earliestAvailableSequence: 0,
     historyGap: false,
   });
+  loadResolvedPublishedModelCatalogOwnerMock.mockReset();
+  loadResolvedPublishedModelCatalogOwnerMock.mockImplementation(
+    async (params: {
+      agentDir?: string;
+      agentId?: string;
+      config: Record<string, unknown>;
+      workspaceDir?: string;
+    }) => preparedModelCatalogOwner(params),
+  );
   loadSessionStoreMock.mockReturnValue(store);
   callGatewayMock.mockImplementation(async (opts: unknown) => {
     const request = opts as { method?: string; params?: Record<string, unknown> };
@@ -1615,6 +1655,172 @@ describe("session_status tool", () => {
       modelOverride: "claude-sonnet-4-6",
       liveModelSwitchPending: true,
     });
+  });
+
+  it("retries the whole model mutation once against the replacement catalog owner", async () => {
+    resetSessionStore({
+      main: {
+        sessionId: "catalog-refresh-session",
+        spawnedWorkspaceDir: "/tmp/catalog-refresh-workspace",
+        updatedAt: 10,
+      },
+    });
+    const staleConfig = mockConfig;
+    const replacementConfig = {
+      ...createMockConfig(),
+      logging: { level: "debug" },
+    };
+    const tool = createSessionStatusTool({
+      agentSessionKey: "main",
+      config: staleConfig as never,
+    });
+    mockConfig = replacementConfig;
+    loadResolvedPublishedModelCatalogOwnerMock.mockImplementationOnce(
+      async (params: Parameters<typeof preparedModelCatalogOwner>[0]) =>
+        preparedModelCatalogOwner(params, { config: replacementConfig }),
+    );
+
+    const result = await tool.execute("catalog-refresh-model", {
+      model: "anthropic/claude-sonnet-4-6",
+    });
+
+    expect(result.details).toMatchObject({
+      changedModel: true,
+      modelOverride: "anthropic/claude-sonnet-4-6",
+      sessionKey: "main",
+    });
+    expect(loadResolvedPublishedModelCatalogOwnerMock).toHaveBeenCalledTimes(2);
+    expect(loadResolvedPublishedModelCatalogOwnerMock.mock.calls[0]?.[0]).toMatchObject({
+      agentId: "main",
+      config: staleConfig,
+      readOnly: true,
+      workspaceDir: "/tmp/catalog-refresh-workspace",
+    });
+    expect(loadResolvedPublishedModelCatalogOwnerMock.mock.calls[1]?.[0]).toMatchObject({
+      agentId: "main",
+      config: replacementConfig,
+      readOnly: true,
+      workspaceDir: "/tmp/catalog-refresh-workspace",
+    });
+    expect(updateSessionStoreMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("revalidates replacement model policy before a retried mutation", async () => {
+    resetSessionStore({
+      main: {
+        sessionId: "catalog-policy-session",
+        updatedAt: 10,
+      },
+    });
+    const staleConfig = mockConfig;
+    const replacementConfig = {
+      ...createMockConfig(),
+      agents: {
+        defaults: {
+          model: { primary: "openai/gpt-5.4" },
+          models: {},
+          modelPolicy: { allow: ["openai/gpt-5.4"] },
+        },
+      },
+    };
+    const tool = createSessionStatusTool({
+      agentSessionKey: "main",
+      config: staleConfig as never,
+    });
+    mockConfig = replacementConfig;
+    loadResolvedPublishedModelCatalogOwnerMock.mockImplementationOnce(
+      async (params: Parameters<typeof preparedModelCatalogOwner>[0]) =>
+        preparedModelCatalogOwner(params, { config: replacementConfig }),
+    );
+
+    await expect(
+      tool.execute("catalog-refresh-policy", {
+        model: "anthropic/claude-sonnet-4-6",
+      }),
+    ).rejects.toThrow('Model "anthropic/claude-sonnet-4-6" is not allowed.');
+
+    expect(loadResolvedPublishedModelCatalogOwnerMock).toHaveBeenCalledTimes(2);
+    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the target session identity changes during catalog refresh", async () => {
+    resetSessionStore({
+      main: {
+        sessionId: "catalog-custody-before",
+        updatedAt: 10,
+      },
+    });
+    const staleConfig = mockConfig;
+    const replacementConfig = {
+      ...createMockConfig(),
+      logging: { level: "debug" },
+    };
+    const persistedStore = loadSessionStoreMock("/tmp/main/sessions.json") as Record<
+      string,
+      SessionEntry
+    >;
+    const tool = createSessionStatusTool({
+      agentSessionKey: "main",
+      config: staleConfig as never,
+    });
+    mockConfig = replacementConfig;
+    loadResolvedPublishedModelCatalogOwnerMock.mockImplementationOnce(
+      async (params: Parameters<typeof preparedModelCatalogOwner>[0]) => {
+        persistedStore.main = {
+          ...expectDefined(persistedStore.main, "persisted main session test invariant"),
+          sessionId: "catalog-custody-after",
+        };
+        return preparedModelCatalogOwner(params, { config: replacementConfig });
+      },
+    );
+
+    await expect(
+      tool.execute("catalog-refresh-custody", {
+        model: "anthropic/claude-sonnet-4-6",
+      }),
+    ).rejects.toThrow("target identity changed while refreshing the model catalog");
+
+    expect(loadResolvedPublishedModelCatalogOwnerMock).toHaveBeenCalledTimes(1);
+    expect(updateSessionStoreMock).not.toHaveBeenCalled();
+  });
+
+  it("bounds replacement catalog refresh to one retry", async () => {
+    resetSessionStore({
+      main: {
+        sessionId: "catalog-bounded-session",
+        updatedAt: 10,
+      },
+    });
+    const staleConfig = mockConfig;
+    const replacementConfig = {
+      ...createMockConfig(),
+      logging: { level: "debug" },
+    };
+    const secondReplacementConfig = {
+      ...createMockConfig(),
+      logging: { level: "warn" },
+    };
+    const tool = createSessionStatusTool({
+      agentSessionKey: "main",
+      config: staleConfig as never,
+    });
+    mockConfig = replacementConfig;
+    loadResolvedPublishedModelCatalogOwnerMock
+      .mockImplementationOnce(async (params: Parameters<typeof preparedModelCatalogOwner>[0]) =>
+        preparedModelCatalogOwner(params, { config: replacementConfig }),
+      )
+      .mockImplementationOnce(async (params: Parameters<typeof preparedModelCatalogOwner>[0]) =>
+        preparedModelCatalogOwner(params, { config: secondReplacementConfig }),
+      );
+
+    await expect(
+      tool.execute("catalog-refresh-bounded", {
+        model: "anthropic/claude-sonnet-4-6",
+      }),
+    ).rejects.toThrow("prepared model catalog owner config was replaced during the read");
+
+    expect(loadResolvedPublishedModelCatalogOwnerMock).toHaveBeenCalledTimes(2);
+    expect(updateSessionStoreMock).not.toHaveBeenCalled();
   });
 
   it("rejects model changes for model-locked sessions", async () => {

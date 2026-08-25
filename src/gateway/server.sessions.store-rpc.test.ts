@@ -157,6 +157,15 @@ test("lists and patches session store via sessions.* RPC", async () => {
     getSessionEventSubscriberConnIds: () => new Set<string>(),
     logGateway: { debug: vi.fn() },
     loadGatewayModelCatalog: async () => agentDiscoveryMock.models,
+    loadGatewayModelCatalogSnapshot: async (params?: { agentId?: string }) => ({
+      agentDir: path.join(defaultAgentWorkspace, ".openclaw", "agent"),
+      agentId: params?.agentId ?? "main",
+      catalogComplete: true,
+      config: getRuntimeConfig(),
+      entries: agentDiscoveryMock.models,
+      routeVariants: agentDiscoveryMock.models,
+      workspaceDir: defaultAgentWorkspace,
+    }),
     getRuntimeConfig,
   };
   async function directSessionReq<TPayload = unknown>(
@@ -311,7 +320,7 @@ test("lists and patches session store via sessions.* RPC", async () => {
     verboseLevel: "off",
     icon: "🦞",
   });
-  expect(patched.ok).toBe(true);
+  expect(patched.ok, JSON.stringify(patched)).toBe(true);
   expect(patched.payload?.ok).toBe(true);
   expect(patched.payload?.key).toBe("agent:main:main");
   expect(patched.payload?.entry.icon).toBe("🦞");
