@@ -313,7 +313,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: restore shipped channel setup helpers until stable packages migrate.
       // +1: canonical untrusted audio-transcript formatter for channel plugins.
       // +2: embedded foreground prompt context builder and its public context type.
-      4342,
+      // +1: canonical provider-bound tool-result cap for native harness adapters.
+      4343,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -406,7 +407,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: restore shipped channel setup helpers until stable packages migrate.
       // +1: canonical untrusted audio-transcript formatter for channel plugins.
       // +1: embedded foreground prompt context builder.
-      2582,
+      // +1: canonical provider-bound tool-result cap for native harness adapters.
+      2583,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
