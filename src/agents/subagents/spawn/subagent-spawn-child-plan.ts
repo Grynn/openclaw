@@ -11,6 +11,7 @@ import {
   resolveDefaultModelForAgent,
 } from "../../model-selection.js";
 import { supportsModelTools } from "../../model-tool-support.js";
+import { isPreparedModelCatalogConfigReplacedError } from "../../prepared-model-catalog.errors.js";
 import { summarizeSpawnError } from "../../spawn-pipeline.js";
 import { resolveSpawnSandboxError, mintSpawnSessionKey } from "../../spawn-plan.js";
 import { resolveRequesterOriginForChild } from "../../spawn-requester-origin.js";
@@ -51,18 +52,26 @@ function buildResolvedSubagentModelMetadata(resolvedModel?: string): {
   };
 }
 
-async function resolveSpawnModelError(params: {
+type SpawnModelPreflightResult =
+  | { status: "ok" }
+  | { status: "error"; error: string }
+  | {
+      status: "config-replaced";
+      error: string;
+    };
+
+async function resolveSpawnModelPreflight(params: {
   cfg: OpenClawConfig;
   targetAgentId: string;
   targetAgentDir: string;
   workspaceDir?: string;
   request: SpawnSubagentParams;
   resolvedModel?: string;
-}): Promise<string | undefined> {
+}): Promise<SpawnModelPreflightResult> {
   const { cfg, targetAgentId } = params;
   const requestedModel = normalizeOptionalString(params.request.model);
   if (!requestedModel && !params.request.outputSchema) {
-    return undefined;
+    return { status: "ok" };
   }
   const defaults = resolveDefaultModelForAgent({ cfg, agentId: targetAgentId });
   const selected = splitModelRef(params.resolvedModel);
@@ -78,15 +87,21 @@ async function resolveSpawnModelError(params: {
       scopedLiveProviderDiscovery: true,
     });
   } catch (error) {
-    return `sessions_spawn could not verify ${requestedModel ? "the requested model" : "outputSchema model capabilities"}: ${summarizeSpawnError(error)}`;
+    const message = `sessions_spawn could not verify ${requestedModel ? "the requested model" : "outputSchema model capabilities"}: ${summarizeSpawnError(error)}`;
+    return isPreparedModelCatalogConfigReplacedError(error)
+      ? { status: "config-replaced", error: message }
+      : { status: "error", error: message };
   }
 
   if (!requestedModel) {
     const model = selected.model ?? defaults.model;
     const entry = model && findModelCatalogEntry(catalog, { provider, modelId: model });
     return entry && !supportsModelTools(entry)
-      ? `sessions_spawn outputSchema requires a tool-capable target model; "${provider}/${model}" declares compat.supportsTools=false.`
-      : undefined;
+      ? {
+          status: "error",
+          error: `sessions_spawn outputSchema requires a tool-capable target model; "${provider}/${model}" declares compat.supportsTools=false.`,
+        }
+      : { status: "ok" };
   }
   const selection = {
     cfg,
@@ -100,7 +115,10 @@ async function resolveSpawnModelError(params: {
     raw: requestedModel,
   });
   if ("error" in resolved) {
-    return `sessions_spawn model "${requestedModel}" is not usable: ${resolved.error}`;
+    return {
+      status: "error",
+      error: `sessions_spawn model "${requestedModel}" is not usable: ${resolved.error}`,
+    };
   }
 
   const entry = findModelCatalogEntry(catalog, {
@@ -118,13 +136,19 @@ async function resolveSpawnModelError(params: {
         workspaceDir: params.workspaceDir,
       }).status === "owned";
     if (!knownProvider) {
-      return `sessions_spawn model "${requestedModel}" is not usable: unknown model provider "${resolvedProvider}"`;
+      return {
+        status: "error",
+        error: `sessions_spawn model "${requestedModel}" is not usable: unknown model provider "${resolvedProvider}"`,
+      };
     }
   }
   if (params.request.outputSchema && entry && !supportsModelTools(entry)) {
-    return `sessions_spawn outputSchema requires a tool-capable target model; "${resolved.ref.provider}/${resolved.ref.model}" declares compat.supportsTools=false.`;
+    return {
+      status: "error",
+      error: `sessions_spawn outputSchema requires a tool-capable target model; "${resolved.ref.provider}/${resolved.ref.model}" declares compat.supportsTools=false.`,
+    };
   }
-  return undefined;
+  return { status: "ok" };
 }
 
 type ResolvedSubagentChildPlan = {
@@ -144,6 +168,13 @@ type ResolvedSubagentChildPlan = {
 
 type ResolveSubagentChildPlanResult =
   | { ok: false; result: SpawnSubagentResult }
+  | {
+      ok: false;
+      retry: {
+        result: SpawnSubagentResult;
+        targetAgentId: string;
+      };
+    }
   | { ok: true; resolved: ResolvedSubagentChildPlan };
 
 export async function resolveSubagentChildPlan(params: {
@@ -264,7 +295,7 @@ export async function resolveSubagentChildPlan(params: {
     };
   }
   const { resolvedModel } = modelPlan;
-  const modelError = await resolveSpawnModelError({
+  const modelPreflight = await resolveSpawnModelPreflight({
     cfg: params.cfg,
     targetAgentId: params.targetAgentId,
     targetAgentDir,
@@ -272,12 +303,25 @@ export async function resolveSubagentChildPlan(params: {
     request: params.request,
     resolvedModel,
   });
-  if (modelError) {
+  if (modelPreflight.status === "config-replaced") {
+    return {
+      ok: false,
+      retry: {
+        targetAgentId: params.targetAgentId,
+        result: {
+          status: "error",
+          error: modelPreflight.error,
+          ...(params.request.outputSchema ? { childSessionKey } : {}),
+        },
+      },
+    };
+  }
+  if (modelPreflight.status === "error") {
     return {
       ok: false,
       result: {
         status: "error",
-        error: modelError,
+        error: modelPreflight.error,
         ...(params.request.outputSchema ? { childSessionKey } : {}),
       },
     };

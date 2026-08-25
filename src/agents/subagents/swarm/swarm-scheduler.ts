@@ -128,6 +128,21 @@ export function reserveSwarmRun(params: {
   return true;
 }
 
+/** Revalidate one queued reservation against current lane settings without changing FIFO order. */
+export function refreshQueuedSwarmRunReservation(params: {
+  groupId: string;
+  runId: string;
+  maxConcurrent: number;
+  activeRunIds: readonly string[];
+}): boolean {
+  const location = runLocations.get(params.runId);
+  if (!location || location.state !== "queued" || location.lane.groupId !== params.groupId) {
+    return false;
+  }
+  const lane = ensureLane(params);
+  return lane === location.lane && runLocations.get(params.runId) === location;
+}
+
 /** Attach launch work to an existing FIFO reservation. */
 export function activateSwarmRun(params: {
   groupId: string;

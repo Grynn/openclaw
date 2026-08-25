@@ -5,12 +5,15 @@ import type { SubagentLifecycleHookRunner } from "../../../plugins/hooks.js";
 import { isValidAgentId, normalizeAgentId } from "../../../routing/session-key.js";
 import { listAgentIds } from "../../agent-scope-config.js";
 import { resolveSessionAgentId } from "../../agent-scope.js";
-import { reserveChildAdmissionSlot } from "../../child-admission.js";
+import {
+  reserveChildAdmissionSlot,
+  type ChildAdmissionReservationHandle,
+} from "../../child-admission.js";
 import { resolveSpawnAdmission, resolveSpawnMode } from "../../spawn-plan.js";
 import { listSwarmRunsForGroup } from "../registry/subagent-registry.js";
 import { resolveSwarmConfig } from "../swarm/swarm-config.js";
 import { validateStructuredOutputSchema } from "../swarm/swarm-output-schema.js";
-import { reserveSwarmRun } from "../swarm/swarm-scheduler.js";
+import { refreshQueuedSwarmRunReservation, reserveSwarmRun } from "../swarm/swarm-scheduler.js";
 import { resolveSubagentContextMode } from "./subagent-spawn-context.js";
 import type {
   SpawnSubagentContext,
@@ -51,7 +54,7 @@ type ResolvedSubagentSpawnRequest = {
   admission: {
     resolve: (pendingChildren?: number) => ReturnType<typeof resolveSpawnAdmission>;
     initial: ReturnType<typeof resolveSpawnAdmission> & { ok: true };
-    reservation?: { release: () => void };
+    reservation?: ChildAdmissionReservationHandle<ReturnType<typeof resolveSpawnAdmission>>;
     childDepth: number;
     maxSpawnDepth: number;
   };
@@ -75,6 +78,10 @@ export function resolveSubagentSpawnRequest(
   requestedAgent: {
     initial?: string;
     applyDefault: (agentId?: string) => string | undefined;
+  },
+  options?: {
+    cfgOverride?: OpenClawConfig;
+    retryCustody?: ResolvedSubagentSpawnRequest;
   },
 ): ResolveSubagentSpawnRequestResult {
   const taskNameResult = normalizeSubagentTaskName(params.taskName);
@@ -122,7 +129,7 @@ export function resolveSubagentSpawnRequest(
     ? false
     : params.expectsCompletionMessage !== false;
   const hookRunner = getSubagentSpawnDeps().getGlobalHookRunner();
-  const cfg = loadSubagentConfig();
+  const cfg = options?.cfgOverride ?? loadSubagentConfig();
 
   // When agent omits runTimeoutSeconds, use the config default.
   // Falls back to 0 (no timeout) if config key is also unset,
@@ -154,6 +161,15 @@ export function resolveSubagentSpawnRequest(
     agentSessionKey: ctx.agentSessionKey,
     completionOwnerKey: ctx.completionOwnerKey,
   });
+  if (
+    options?.retryCustody &&
+    options.retryCustody.runtime.ownership.controllerSessionKey !== ownership.controllerSessionKey
+  ) {
+    return rejectSubagentSpawnRequest(
+      "error",
+      "sessions_spawn controller ownership changed while refreshing model configuration.",
+    );
+  }
 
   const requesterAgentId = resolveSessionAgentId({
     config: cfg,
@@ -238,13 +254,36 @@ export function resolveSubagentSpawnRequest(
       additionalActiveChildren: pendingChildren,
     });
   };
+  const retryAdmissionReservation = options?.retryCustody?.admission.reservation;
+  if (
+    options?.retryCustody &&
+    ((params.collect && retryAdmissionReservation) ||
+      (!params.collect && !retryAdmissionReservation) ||
+      Boolean(params.collect) !== options.retryCustody.swarm.reservationPending ||
+      (retryAdmissionReservation &&
+        retryAdmissionReservation.controllerSessionKey !== ownership.controllerSessionKey))
+  ) {
+    return rejectSubagentSpawnRequest(
+      "error",
+      "sessions_spawn retry custody no longer matches the requested launch mode.",
+    );
+  }
   const admissionReservation = params.collect
     ? undefined
-    : reserveChildAdmissionSlot({
+    : (retryAdmissionReservation ??
+      reserveChildAdmissionSlot({
         controllerSessionKey: ownership.controllerSessionKey,
         resolveAdmission,
-      });
-  const admission = admissionReservation ?? resolveAdmission();
+      }));
+  const admission = retryAdmissionReservation
+    ? retryAdmissionReservation.revalidate(resolveAdmission)
+    : (admissionReservation ?? resolveAdmission());
+  if (!admission) {
+    return rejectSubagentSpawnRequest(
+      "error",
+      "sessions_spawn admission custody was lost while refreshing model configuration.",
+    );
+  }
   if (!admission.ok) {
     return rejectSubagentSpawnRequest(
       "forbidden",
@@ -263,29 +302,60 @@ export function resolveSubagentSpawnRequest(
   const maxSpawnDepth = admission.maxSpawnDepth ?? childDepth;
   const swarmLaunchReplayKey = normalizeOptionalString(params.swarmLaunchReplayKey);
   // Registry and Gateway identities are global, while host replay keys are requester-scoped.
-  const childIdem = swarmLaunchReplayKey
+  const computedChildIdem = swarmLaunchReplayKey
     ? `swarm_${crypto
         .createHash("sha256")
         .update(JSON.stringify([requesterInternalKey, swarmLaunchReplayKey]))
         .digest("hex")
         .slice(0, 32)}`
     : crypto.randomUUID();
+  if (
+    options?.retryCustody &&
+    swarmLaunchReplayKey &&
+    options.retryCustody.childIdem !== computedChildIdem
+  ) {
+    return rejectSubagentSpawnRequest(
+      "error",
+      "sessions_spawn replay identity changed while refreshing model configuration.",
+    );
+  }
+  const childIdem = options?.retryCustody?.childIdem ?? computedChildIdem;
   let reservationPending = false;
   if (params.collect && swarmGroupId && swarmSchedulerGroupKey) {
     const groupRuns = listSwarmRunsForGroup(swarmGroupId, requesterInternalKey, requesterAgentId);
     if (
-      !reserveSwarmRun({
-        groupId: swarmSchedulerGroupKey,
-        runId: childIdem,
-        maxConcurrent: swarmConfig.maxConcurrent,
-        activeRunIds: groupRuns
-          .filter((entry) => entry.execution.status === "running")
-          .map((entry) => entry.schedulerSlotId ?? entry.runId),
-      })
+      options?.retryCustody &&
+      (options.retryCustody.swarm.groupId !== swarmGroupId ||
+        options.retryCustody.swarm.schedulerGroupKey !== swarmSchedulerGroupKey)
     ) {
       return rejectSubagentSpawnRequest(
         "error",
-        "sessions_spawn could not reserve swarm FIFO order.",
+        "sessions_spawn swarm ownership changed while refreshing model configuration.",
+      );
+    }
+    const activeRunIds = groupRuns
+      .filter((entry) => entry.execution.status === "running")
+      .map((entry) => entry.schedulerSlotId ?? entry.runId);
+    if (
+      !(options?.retryCustody
+        ? refreshQueuedSwarmRunReservation({
+            groupId: swarmSchedulerGroupKey,
+            runId: childIdem,
+            maxConcurrent: swarmConfig.maxConcurrent,
+            activeRunIds,
+          })
+        : reserveSwarmRun({
+            groupId: swarmSchedulerGroupKey,
+            runId: childIdem,
+            maxConcurrent: swarmConfig.maxConcurrent,
+            activeRunIds,
+          }))
+    ) {
+      return rejectSubagentSpawnRequest(
+        "error",
+        options?.retryCustody
+          ? "sessions_spawn could not preserve swarm FIFO order while refreshing model configuration."
+          : "sessions_spawn could not reserve swarm FIFO order.",
       );
     }
     reservationPending = true;

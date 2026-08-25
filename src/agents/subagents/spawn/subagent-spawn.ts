@@ -38,7 +38,6 @@ import {
   type SubagentAttachmentReceiptFile,
 } from "./subagent-attachments.js";
 import { resolveSubagentSpawnAcceptedNote } from "./subagent-spawn-accepted-note.js";
-import { resolveSubagentChildPlan } from "./subagent-spawn-child-plan.js";
 import {
   cleanupFailedSpawnBeforeAgentStart,
   cleanupProvisionalSession,
@@ -63,7 +62,7 @@ import {
 import { callNativeSubagentGateway, readGatewayRunId } from "./subagent-spawn-gateway.js";
 import { buildSubagentLaunchRequest } from "./subagent-spawn-launch-request.js";
 import { createSubagentSpawnLifecycleEmitter } from "./subagent-spawn-lifecycle.js";
-import { resolveSubagentSpawnRequest } from "./subagent-spawn-request.js";
+import { resolveSubagentSpawnPreflight } from "./subagent-spawn-preflight.js";
 import {
   createInitialSubagentSession,
   persistInitialChildSessionRuntimeModel,
@@ -104,16 +103,13 @@ export async function spawnSubagentDirect(
   const sandboxMode = params.sandbox === "require" ? "require" : "inherit";
   const requesterSessionKey = ctx.agentSessionKey;
   const gatewayContextResolver = getGatewayToolCallerIdentity()?.gatewayContextResolver;
-  let requestedAgentId = params.agentId?.trim();
-  const requestResolution = resolveSubagentSpawnRequest(params, ctx, {
-    initial: requestedAgentId,
-    applyDefault(agentId) {
-      requestedAgentId = agentId;
-      return requestedAgentId;
-    },
+  const preflight = await resolveSubagentSpawnPreflight({
+    request: params,
+    ctx,
+    sandboxMode,
   });
-  if (!requestResolution.ok) {
-    return requestResolution.result;
+  if (preflight.status !== "ready") {
+    return preflight.result;
   }
   const {
     request: { taskName, spawnMode, cleanup, expectsCompletionMessage },
@@ -142,26 +138,13 @@ export async function spawnSubagentDirect(
       maxSpawnDepth,
     },
     childIdem,
-  } = requestResolution.resolved;
+  } = preflight.request;
   let modelApplied = false;
   let threadBindingReady = false;
   let hasBoundThreadDeliveryOrigin = false;
   let childRunId: string = childIdem;
   let swarmReservationPending = reservationPending;
   try {
-    const childPlan = await resolveSubagentChildPlan({
-      request: params,
-      ctx,
-      cfg,
-      requesterInternalKey,
-      requesterAgentId,
-      targetAgentId,
-      sandboxMode,
-      swarmEnabled: swarmConfig.enabled,
-    });
-    if (!childPlan.ok) {
-      return childPlan.result;
-    }
     const {
       spawnedCwd,
       toolSpawnMetadata,
@@ -174,8 +157,8 @@ export async function spawnSubagentDirect(
       modelPlan: plan,
       launchAuthorization,
       resolvedModelMetadata,
-    } = childPlan.resolved;
-    let { childSessionOrigin } = childPlan.resolved;
+    } = preflight.child;
+    let { childSessionOrigin } = preflight.child;
     const spawnedByKey = requesterInternalKey;
     const { resolvedModel, thinkingOverride } = plan;
     const initialSession = await createInitialSubagentSession({

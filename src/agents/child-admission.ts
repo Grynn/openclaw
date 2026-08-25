@@ -25,18 +25,45 @@ const pendingChildAdmissions = resolveGlobalMap<string, Set<string | symbol>>(
 
 type ReservableChildAdmission = { ok: true } | { ok: false };
 
+type ChildAdmissionResolver<TAdmission extends ReservableChildAdmission> = (
+  pendingChildren: number,
+  pendingChildSessionKeys: ReadonlySet<string>,
+) => TAdmission;
+
+export type ChildAdmissionReservationHandle<TAdmission extends ReservableChildAdmission> = Extract<
+  TAdmission,
+  { ok: true }
+> & {
+  controllerSessionKey: string;
+  revalidate: (resolveAdmission: ChildAdmissionResolver<TAdmission>) => TAdmission | undefined;
+  release: () => void;
+};
+
 type ChildAdmissionReservation<TAdmission extends ReservableChildAdmission> =
   | Extract<TAdmission, { ok: false }>
-  | (Extract<TAdmission, { ok: true }> & { release: () => void });
+  | ChildAdmissionReservationHandle<TAdmission>;
 
 type ChildAdmissionReservationParams<TAdmission extends ReservableChildAdmission> = {
   controllerSessionKey: string;
   childSessionKey?: string;
-  resolveAdmission: (
-    pendingChildren: number,
-    pendingChildSessionKeys: ReadonlySet<string>,
-  ) => TAdmission;
+  resolveAdmission: ChildAdmissionResolver<TAdmission>;
 };
+
+function readSiblingChildAdmissions(
+  pending: ReadonlySet<string | symbol>,
+  reservation: string | symbol,
+): { count: number; sessionKeys: ReadonlySet<string> } | undefined {
+  if (!pending.has(reservation)) {
+    return undefined;
+  }
+  const sessionKeys = new Set<string>();
+  for (const candidate of pending) {
+    if (candidate !== reservation && typeof candidate === "string") {
+      sessionKeys.add(candidate);
+    }
+  }
+  return { count: pending.size - 1, sessionKeys };
+}
 
 // Infer the complete decision once so native, ACP, and visible payloads survive narrowing.
 export function reserveChildAdmissionSlot<TAdmission extends ReservableChildAdmission>(
@@ -58,6 +85,14 @@ export function reserveChildAdmissionSlot(
   pendingChildAdmissions.set(params.controllerSessionKey, pending);
   return {
     ...admission,
+    controllerSessionKey: params.controllerSessionKey,
+    revalidate(resolveAdmission) {
+      if (pendingChildAdmissions.get(params.controllerSessionKey) !== pending) {
+        return undefined;
+      }
+      const siblings = readSiblingChildAdmissions(pending, reservation);
+      return siblings ? resolveAdmission(siblings.count, siblings.sessionKeys) : undefined;
+    },
     release() {
       if (!pending.delete(reservation)) {
         return;

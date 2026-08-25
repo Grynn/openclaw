@@ -134,6 +134,7 @@ export async function loadSubagentSpawnModuleForTest(params: {
   getRuntimeConfig?: () => Record<string, unknown>;
   loadSessionStoreMock?: MockFn;
   loadPreparedModelCatalogMock?: MockFn;
+  loadResolvedPublishedModelCatalogOwnerMock?: MockFn;
   resolveProviderRefOwnershipMock?: MockFn;
   ensureContextEnginesInitializedMock?: MockFn;
   updateSessionStoreMock?: MockFn;
@@ -269,6 +270,13 @@ export async function loadSubagentSpawnModuleForTest(params: {
       createSubagentSpawnTestConfig(params.workspaceDir ?? os.tmpdir()),
     loadPreparedModelCatalog: (...args: unknown[]) =>
       params.loadPreparedModelCatalogMock?.(...args) ?? [],
+    loadResolvedPublishedModelCatalogOwner: (...args: unknown[]) =>
+      params.loadResolvedPublishedModelCatalogOwnerMock?.(...args) ?? {
+        agentId: "main",
+        config:
+          params.getRuntimeConfig?.() ??
+          createSubagentSpawnTestConfig(params.workspaceDir ?? os.tmpdir()),
+      },
     resolveProviderRefOwnership: (...args: unknown[]) =>
       params.resolveProviderRefOwnershipMock?.(...args) ?? {
         status: "owned",

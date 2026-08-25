@@ -4,3 +4,12 @@ export class PreparedModelCatalogConfigReplacedError extends Error {
     this.name = "PreparedModelCatalogConfigReplacedError";
   }
 }
+
+export function isPreparedModelCatalogConfigReplacedError(
+  error: unknown,
+): error is PreparedModelCatalogConfigReplacedError {
+  return (
+    error instanceof PreparedModelCatalogConfigReplacedError ||
+    (error instanceof Error && error.name === "PreparedModelCatalogConfigReplacedError")
+  );
+}

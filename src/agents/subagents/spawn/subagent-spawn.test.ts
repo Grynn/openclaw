@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../../../state/openclaw-agent-db.paths.js";
 import { resolveUserPath } from "../../../utils.js";
+import { PreparedModelCatalogConfigReplacedError } from "../../prepared-model-catalog.errors.js";
 import { installAcceptedSubagentGatewayMock } from "../../test-helpers/subagent-gateway.js";
 import { testing as swarmSchedulerTesting } from "../swarm/swarm-scheduler.test-support.js";
 import {
@@ -22,6 +23,7 @@ const hoisted = vi.hoisted(() => ({
     throw new Error("full model catalog should not materialize");
   }),
   loadPreparedModelCatalogMock: vi.fn(),
+  loadResolvedPublishedModelCatalogOwnerMock: vi.fn(),
   resolveProviderRefOwnershipMock: vi.fn(),
   updateSessionStoreMock: vi.fn(),
   registerSubagentRunMock: vi.fn(),
@@ -55,6 +57,24 @@ function createConfigOverride(overrides?: Record<string, unknown>) {
       ],
     },
     ...overrides,
+  });
+}
+
+function createCatalogRetryConfig(params: {
+  workspace: string;
+  models?: Record<string, Record<string, unknown>>;
+  swarm?: boolean;
+}) {
+  return createConfigOverride({
+    ...(params.swarm ? { tools: { swarm: { enabled: true, maxConcurrent: 1 } } } : {}),
+    agents: {
+      defaults: {
+        workspace: os.tmpdir(),
+        models: params.models ?? { "openai/gpt-5.4": {} },
+        subagents: { maxChildrenPerAgent: 1 },
+      },
+      list: [{ id: "main", workspace: params.workspace }],
+    },
   });
 }
 
@@ -173,6 +193,8 @@ describe("spawnSubagentDirect seam flow", () => {
       getRuntimeConfig: () => hoisted.configOverride,
       loadSessionStoreMock: hoisted.loadSessionStoreMock,
       loadPreparedModelCatalogMock: hoisted.loadPreparedModelCatalogMock,
+      loadResolvedPublishedModelCatalogOwnerMock:
+        hoisted.loadResolvedPublishedModelCatalogOwnerMock,
       resolveProviderRefOwnershipMock: hoisted.resolveProviderRefOwnershipMock,
       updateSessionStoreMock: hoisted.updateSessionStoreMock,
       registerSubagentRunMock: hoisted.registerSubagentRunMock,
@@ -197,6 +219,10 @@ describe("spawnSubagentDirect seam flow", () => {
     hoisted.loadSessionStoreMock.mockReset();
     hoisted.loadFullModelCatalogMock.mockClear();
     hoisted.loadPreparedModelCatalogMock.mockReset().mockResolvedValue([]);
+    hoisted.loadResolvedPublishedModelCatalogOwnerMock.mockReset().mockImplementation(async () => ({
+      agentId: "main",
+      config: hoisted.configOverride,
+    }));
     hoisted.resolveProviderRefOwnershipMock.mockReset().mockReturnValue({
       status: "owned",
       pluginIds: ["test-provider"],
@@ -727,6 +753,289 @@ describe("spawnSubagentDirect seam flow", () => {
     expect(hoisted.resolveProviderRefOwnershipMock).not.toHaveBeenCalled();
   });
 
+  it("retries explicit-model preflight once with the current published owner config", async () => {
+    const staleConfig = createCatalogRetryConfig({ workspace: "/tmp/workspace-stale" });
+    const currentConfig = createCatalogRetryConfig({ workspace: "/tmp/workspace-current" });
+    hoisted.configOverride = staleConfig;
+    hoisted.loadPreparedModelCatalogMock.mockImplementation(async (options: unknown) => {
+      const scoped = options as { config?: unknown; workspaceDir?: string };
+      if (scoped.config === staleConfig) {
+        hoisted.configOverride = currentConfig;
+        throw new PreparedModelCatalogConfigReplacedError("/tmp/agent-main");
+      }
+      expect(scoped.config).toBe(currentConfig);
+      expect(scoped.workspaceDir).toBe(resolveUserPath("/tmp/workspace-current"));
+      return [{ provider: "openai", id: "gpt-5.4", name: "GPT-5.4" }];
+    });
+    hoisted.loadResolvedPublishedModelCatalogOwnerMock.mockImplementation(
+      async (options: unknown) => {
+        expect(options).toEqual({ config: currentConfig, agentId: "main", readOnly: true });
+        expectNoChildSpawnSideEffects();
+        return { agentId: "main", config: currentConfig };
+      },
+    );
+
+    const result = await spawnSubagentDirect(
+      { task: "retry the atomic model preflight", model: "openai/gpt-5.4" },
+      { agentSessionKey: "agent:main:main" },
+    );
+
+    expect(result).toMatchObject({
+      status: "accepted",
+      resolvedModel: "openai/gpt-5.4",
+      modelApplied: true,
+    });
+    expect(hoisted.loadPreparedModelCatalogMock).toHaveBeenCalledTimes(2);
+    expect(hoisted.loadResolvedPublishedModelCatalogOwnerMock).toHaveBeenCalledTimes(1);
+    expect(hoisted.registerSubagentRunMock).toHaveBeenCalledTimes(1);
+    expect(gatewayRequestRecords().filter((entry) => entry.method === "agent")).toHaveLength(1);
+  });
+
+  it("retains cap-one admission while the current catalog owner is loading", async () => {
+    const staleConfig = createCatalogRetryConfig({ workspace: "/tmp/workspace-stale" });
+    const currentConfig = createCatalogRetryConfig({ workspace: "/tmp/workspace-current" });
+    hoisted.configOverride = staleConfig;
+    hoisted.loadPreparedModelCatalogMock.mockImplementation(async (options: unknown) => {
+      if ((options as { config?: unknown }).config === staleConfig) {
+        hoisted.configOverride = currentConfig;
+        throw new PreparedModelCatalogConfigReplacedError("/tmp/agent-main");
+      }
+      return [{ provider: "openai", id: "gpt-5.4", name: "GPT-5.4" }];
+    });
+    let resolveOwner!: (owner: { agentId: string; config: typeof currentConfig }) => void;
+    const ownerLoaded = new Promise<{ agentId: string; config: typeof currentConfig }>(
+      (resolve) => {
+        resolveOwner = resolve;
+      },
+    );
+    hoisted.loadResolvedPublishedModelCatalogOwnerMock.mockReturnValue(ownerLoaded);
+
+    const retrying = spawnSubagentDirect(
+      { task: "retain admission during refresh", model: "openai/gpt-5.4" },
+      { agentSessionKey: "agent:main:main" },
+    );
+    await vi.waitFor(() =>
+      expect(hoisted.loadResolvedPublishedModelCatalogOwnerMock).toHaveBeenCalledTimes(1),
+    );
+
+    const later = await spawnSubagentDirect(
+      { task: "must not steal the retained slot" },
+      { agentSessionKey: "agent:main:main" },
+    );
+    expect(later).toMatchObject({
+      status: "forbidden",
+      error: expect.stringContaining("max active children"),
+    });
+    expectNoChildSpawnSideEffects();
+
+    resolveOwner({ agentId: "main", config: currentConfig });
+    const result = await retrying;
+    expect(result.status).toBe("accepted");
+    expect(gatewayRequestRecords().filter((entry) => entry.method === "agent")).toHaveLength(1);
+  });
+
+  it("re-evaluates replacement model policy before creating child state", async () => {
+    const staleConfig = createCatalogRetryConfig({ workspace: "/tmp/workspace-stale" });
+    const currentConfig = createCatalogRetryConfig({
+      workspace: "/tmp/workspace-current",
+      models: { "openai/gpt-5.6-terra": {} },
+    });
+    hoisted.configOverride = staleConfig;
+    hoisted.loadPreparedModelCatalogMock.mockImplementation(async (options: unknown) => {
+      const scoped = options as { config?: unknown };
+      if (scoped.config === staleConfig) {
+        hoisted.configOverride = currentConfig;
+        throw new PreparedModelCatalogConfigReplacedError("/tmp/agent-main");
+      }
+      return [{ provider: "openai", id: "gpt-5.4", name: "GPT-5.4" }];
+    });
+    hoisted.loadResolvedPublishedModelCatalogOwnerMock.mockResolvedValue({
+      agentId: "main",
+      config: currentConfig,
+    });
+
+    const result = await spawnSubagentDirect(
+      { task: "recheck current policy", model: "openai/gpt-5.4" },
+      { agentSessionKey: "agent:main:main" },
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.error).toContain("model not allowed");
+    expect(hoisted.loadPreparedModelCatalogMock).toHaveBeenCalledTimes(2);
+    expectNoChildSpawnSideEffects();
+  });
+
+  it("fails closed after one repeated catalog replacement and releases retained admission", async () => {
+    const staleConfig = createCatalogRetryConfig({ workspace: "/tmp/workspace-stale" });
+    const currentConfig = createCatalogRetryConfig({ workspace: "/tmp/workspace-current" });
+    hoisted.configOverride = staleConfig;
+    hoisted.loadPreparedModelCatalogMock.mockImplementation(async (options: unknown) => {
+      if ((options as { config?: unknown }).config === staleConfig) {
+        hoisted.configOverride = currentConfig;
+      }
+      throw new PreparedModelCatalogConfigReplacedError("/tmp/agent-main");
+    });
+    hoisted.loadResolvedPublishedModelCatalogOwnerMock.mockResolvedValue({
+      agentId: "main",
+      config: currentConfig,
+    });
+
+    const rejected = await spawnSubagentDirect(
+      { task: "bound the catalog retry", model: "openai/gpt-5.4" },
+      { agentSessionKey: "agent:main:main" },
+    );
+
+    expect(rejected.status).toBe("error");
+    expect(rejected.error).toContain("prepared model catalog owner config was replaced");
+    expect(hoisted.loadPreparedModelCatalogMock).toHaveBeenCalledTimes(2);
+    expect(hoisted.loadResolvedPublishedModelCatalogOwnerMock).toHaveBeenCalledTimes(1);
+    expectNoChildSpawnSideEffects();
+
+    const accepted = await spawnSubagentDirect(
+      { task: "prove failed preflights released their cap-one admissions" },
+      { agentSessionKey: "agent:main:main" },
+    );
+    expect(accepted.status).toBe("accepted");
+  });
+
+  it("releases retained admission when the current catalog owner cannot be loaded", async () => {
+    const staleConfig = createCatalogRetryConfig({ workspace: "/tmp/workspace-stale" });
+    const currentConfig = createCatalogRetryConfig({ workspace: "/tmp/workspace-current" });
+    hoisted.configOverride = staleConfig;
+    hoisted.loadPreparedModelCatalogMock.mockImplementation(async () => {
+      hoisted.configOverride = currentConfig;
+      throw new PreparedModelCatalogConfigReplacedError("/tmp/agent-main");
+    });
+    hoisted.loadResolvedPublishedModelCatalogOwnerMock.mockRejectedValue(
+      new Error("published owner unavailable"),
+    );
+
+    const rejected = await spawnSubagentDirect(
+      { task: "release admission after refresh failure", model: "openai/gpt-5.4" },
+      { agentSessionKey: "agent:main:main" },
+    );
+
+    expect(rejected.status).toBe("error");
+    expect(rejected.error).toContain("current catalog owner refresh failed");
+    expectNoChildSpawnSideEffects();
+    const accepted = await spawnSubagentDirect(
+      { task: "prove owner failure released retained admission" },
+      { agentSessionKey: "agent:main:main" },
+    );
+    expect(accepted.status).toBe("accepted");
+  });
+
+  it("releases retained collector FIFO after a repeated catalog replacement", async () => {
+    const staleConfig = createCatalogRetryConfig({
+      workspace: "/tmp/workspace-stale",
+      swarm: true,
+    });
+    const currentConfig = createCatalogRetryConfig({
+      workspace: "/tmp/workspace-current",
+      swarm: true,
+    });
+    hoisted.configOverride = staleConfig;
+    hoisted.loadPreparedModelCatalogMock.mockImplementation(async (options: unknown) => {
+      if ((options as { config?: unknown }).config === staleConfig) {
+        hoisted.configOverride = currentConfig;
+      }
+      throw new PreparedModelCatalogConfigReplacedError("/tmp/agent-main");
+    });
+    hoisted.loadResolvedPublishedModelCatalogOwnerMock.mockResolvedValue({
+      agentId: "main",
+      config: currentConfig,
+    });
+    const request = {
+      task: "bound collector catalog retry",
+      model: "openai/gpt-5.4",
+      collect: true,
+      groupId: "swarm:catalog-retry-cleanup",
+      swarmLaunchReplayKey: "catalog-retry:cleanup",
+    } as const;
+
+    const rejected = await spawnSubagentDirect(request, {
+      agentSessionKey: "agent:main:main",
+      requesterRunId: "parent-run",
+    });
+    expect(rejected.status).toBe("error");
+    expectNoChildSpawnSideEffects();
+
+    hoisted.loadPreparedModelCatalogMock.mockResolvedValue([
+      { provider: "openai", id: "gpt-5.4", name: "GPT-5.4" },
+    ]);
+    const accepted = await spawnSubagentDirect(request, {
+      agentSessionKey: "agent:main:main",
+      requesterRunId: "parent-run",
+    });
+    expect(accepted.status).toBe("accepted");
+    await vi.waitFor(() =>
+      expect(gatewayRequestRecords().filter((entry) => entry.method === "agent")).toHaveLength(1),
+    );
+  });
+
+  it("retains collector FIFO custody while the current catalog owner is loading", async () => {
+    const staleConfig = createCatalogRetryConfig({
+      workspace: "/tmp/workspace-stale",
+      swarm: true,
+    });
+    const currentConfig = createCatalogRetryConfig({
+      workspace: "/tmp/workspace-current",
+      swarm: true,
+    });
+    hoisted.configOverride = staleConfig;
+    hoisted.loadPreparedModelCatalogMock.mockImplementation(async (options: unknown) => {
+      if ((options as { config?: unknown }).config === staleConfig) {
+        hoisted.configOverride = currentConfig;
+        throw new PreparedModelCatalogConfigReplacedError("/tmp/agent-main");
+      }
+      return [{ provider: "openai", id: "gpt-5.4", name: "GPT-5.4" }];
+    });
+    let resolveOwner!: (owner: { agentId: string; config: typeof currentConfig }) => void;
+    const ownerLoaded = new Promise<{ agentId: string; config: typeof currentConfig }>(
+      (resolve) => {
+        resolveOwner = resolve;
+      },
+    );
+    hoisted.loadResolvedPublishedModelCatalogOwnerMock.mockReturnValue(ownerLoaded);
+
+    const retrying = spawnSubagentDirect(
+      {
+        task: "preserve FIFO across a catalog generation change",
+        model: "openai/gpt-5.4",
+        collect: true,
+        groupId: "swarm:catalog-retry",
+        swarmLaunchReplayKey: "catalog-retry:one",
+      },
+      { agentSessionKey: "agent:main:main", requesterRunId: "parent-run" },
+    );
+    await vi.waitFor(() =>
+      expect(hoisted.loadResolvedPublishedModelCatalogOwnerMock).toHaveBeenCalledTimes(1),
+    );
+
+    const later = await spawnSubagentDirect(
+      {
+        task: "finish preparation later but remain behind",
+        model: "openai/gpt-5.4",
+        collect: true,
+        groupId: "swarm:catalog-retry",
+        swarmLaunchReplayKey: "catalog-retry:two",
+      },
+      { agentSessionKey: "agent:main:main", requesterRunId: "parent-run" },
+    );
+    expect(later.status).toBe("accepted");
+    expect(gatewayRequestRecords().filter((entry) => entry.method === "agent")).toHaveLength(0);
+
+    resolveOwner({ agentId: "main", config: currentConfig });
+    const result = await retrying;
+    expect(result.status).toBe("accepted");
+    expect(hoisted.loadPreparedModelCatalogMock).toHaveBeenCalledTimes(3);
+    await vi.waitFor(() => {
+      const launches = gatewayRequestRecords().filter((entry) => entry.method === "agent");
+      expect(launches).toHaveLength(1);
+      expect(requireRecord(launches[0]?.params).idempotencyKey).toBe(result.runId);
+    });
+  });
+
   it("rejects an explicit model when catalog validation fails without creating child state", async () => {
     hoisted.loadPreparedModelCatalogMock.mockRejectedValue(new Error("catalog unavailable"));
 
@@ -739,6 +1048,7 @@ describe("spawnSubagentDirect seam flow", () => {
     expect(result.error).toContain(
       "sessions_spawn could not verify the requested model: catalog unavailable",
     );
+    expect(hoisted.loadResolvedPublishedModelCatalogOwnerMock).not.toHaveBeenCalled();
     expectNoChildSpawnSideEffects();
   });
 

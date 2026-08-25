@@ -147,4 +147,48 @@ describe("resolveChildAdmission", () => {
     }
     expect(rejected.activeChildren).toBe(1);
   });
+
+  it("revalidates a live reservation without counting itself and retains custody on rejection", () => {
+    type RevalidatableAdmission =
+      | {
+          ok: true;
+          pendingChildren?: number;
+          pendingChildSessionKeys?: ReadonlySet<string>;
+        }
+      | Extract<ReturnType<typeof resolveChildAdmission>, { ok: false }>;
+    const reserve = (childSessionKey: string) =>
+      reserveChildAdmissionSlot({
+        controllerSessionKey: "agent:main:revalidate-controller",
+        childSessionKey,
+        resolveAdmission: (): RevalidatableAdmission => ({ ok: true }),
+      });
+    const first = reserve("agent:main:child:first");
+    const sibling = reserve("agent:main:child:sibling");
+    if (!first.ok || !sibling.ok) {
+      throw new Error("Expected live child reservations");
+    }
+
+    const observed = first.revalidate((pendingChildren, pendingChildSessionKeys) => ({
+      ok: true as const,
+      pendingChildren,
+      pendingChildSessionKeys,
+    }));
+    expect(observed).toMatchObject({ ok: true, pendingChildren: 1 });
+    if (!observed?.ok) {
+      throw new Error("Expected successful reservation revalidation");
+    }
+    expect(observed.pendingChildSessionKeys).toEqual(new Set(["agent:main:child:sibling"]));
+    expect(
+      first.revalidate((pendingChildren) =>
+        resolveChildAdmission(announce({ activeChildren: pendingChildren, maxActiveChildren: 1 })),
+      ),
+    ).toMatchObject({ ok: false, governingCap: "subagents.maxChildrenPerAgent" });
+
+    sibling.release();
+    expect(first.revalidate((pendingChildren) => ({ ok: true as const, pendingChildren }))).toEqual(
+      { ok: true, pendingChildren: 0 },
+    );
+    first.release();
+    expect(first.revalidate(() => ({ ok: true as const }))).toBeUndefined();
+  });
 });

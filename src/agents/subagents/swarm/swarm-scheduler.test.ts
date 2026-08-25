@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activateSwarmRun,
   enqueueSwarmRun,
+  refreshQueuedSwarmRunReservation,
   isSwarmRunQueued,
   releaseSwarmRun,
   removeQueuedSwarmRun,
@@ -103,6 +104,50 @@ describe("swarm scheduler", () => {
     await vi.waitFor(() => expect(started).toEqual(["one"]));
     expect(releaseSwarmRun("one")).toBe(true);
     await vi.waitFor(() => expect(started).toEqual(["one", "two"]));
+  });
+
+  it("refreshes one queued reservation in place without surrendering FIFO order", async () => {
+    expect(
+      reserveSwarmRun({
+        groupId: "group",
+        runId: "retrying",
+        maxConcurrent: 1,
+        activeRunIds: [],
+      }),
+    ).toBe(true);
+    expect(
+      reserveSwarmRun({
+        groupId: "group",
+        runId: "later",
+        maxConcurrent: 1,
+        activeRunIds: [],
+      }),
+    ).toBe(true);
+    expect(
+      refreshQueuedSwarmRunReservation({
+        groupId: "group",
+        runId: "retrying",
+        maxConcurrent: 1,
+        activeRunIds: ["retrying"],
+      }),
+    ).toBe(true);
+
+    const started: string[] = [];
+    const activate = (runId: string) =>
+      activateSwarmRun({
+        groupId: "group",
+        runId,
+        start: async () => {
+          started.push(runId);
+        },
+        onStartFailure: vi.fn(() => true),
+      });
+    expect(activate("later")).toBe("queued");
+    expect(started).toEqual([]);
+    expect(activate("retrying")).toBe("started");
+    await vi.waitFor(() => expect(started).toEqual(["retrying"]));
+    expect(releaseSwarmRun("retrying")).toBe(true);
+    await vi.waitFor(() => expect(started).toEqual(["retrying", "later"]));
   });
 
   it("removes a cancelled queued run before the next slot opens", async () => {
