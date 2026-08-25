@@ -3,6 +3,10 @@ import { stripCompactionReplayCheckpoint } from "@openclaw/ai/transports";
 import {
   loadTranscriptEventsSync,
   replayTranscriptBranch,
+  replayTranscriptResetEpochBranch,
+  type SessionTranscriptResetEpochSnapshot,
+  type SessionTranscriptRuntimeTarget,
+  type SessionTranscriptWriteScope,
   type TranscriptEvent,
 } from "../../config/sessions/session-accessor.js";
 import type {
@@ -12,12 +16,26 @@ import type {
 import type { AgentMessage } from "../runtime/index.js";
 import { getRawSessionAppendMessage } from "../session-raw-append-message.js";
 import { SessionManager } from "../sessions/index.js";
+import { createBoundedTranscriptRewritePlanner } from "./transcript-rewrite-planner-session.js";
 
 type SessionManagerLike = ReturnType<typeof SessionManager.open>;
 type SessionBranchEntry = ReturnType<SessionManagerLike["getBranch"]>[number];
+type ResetEpochRewriteTarget = SessionTranscriptRuntimeTarget &
+  Pick<SessionTranscriptWriteScope, "expectedLifecycleRevision" | "expectedWriterRunId">;
+
+function invalidateReplayedAssistantContextUsage(message: AgentMessage): AgentMessage {
+  if (message.role !== "assistant" || !message.usage) {
+    return message;
+  }
+  return {
+    ...message,
+    usage: { ...message.usage, contextUsage: { state: "unavailable" } },
+  };
+}
 
 function stripStalePrefixReplay(message: AgentMessage): AgentMessage {
-  return message.role === "assistant" ? stripCompactionReplayCheckpoint(message) : message;
+  const replay = message.role === "assistant" ? stripCompactionReplayCheckpoint(message) : message;
+  return invalidateReplayedAssistantContextUsage(replay);
 }
 
 function estimateMessageBytes(message: AgentMessage): number {
@@ -205,7 +223,7 @@ function rewriteTranscriptEntriesInPlace(params: {
           })
         : appendMessage(
             (params.preserveReplacementCompactionReplay
-              ? replacement
+              ? invalidateReplayedAssistantContextUsage(replacement)
               : stripStalePrefixReplay(replacement)) as Parameters<
               typeof params.sessionManager.appendMessage
             >[0],
@@ -283,4 +301,97 @@ export async function rewriteTranscriptEntriesInSessionManager(params: {
   } finally {
     params.sessionManager.reloadPersistedTranscript();
   }
+}
+
+type ResetEpochRewritePlan =
+  | { result: TranscriptRewriteResult }
+  | {
+      firstAbandonedChildId: string;
+      forkParentId: string;
+      replayEvents: TranscriptEvent[];
+      result: TranscriptRewriteResult & { changed: true };
+    };
+
+/** Plans a rewrite from only the active reset epoch; it performs no persistence reads or writes. */
+export function planTranscriptResetEpochRewrite(params: {
+  replacements: TranscriptRewriteReplacement[];
+  snapshot: SessionTranscriptResetEpochSnapshot;
+}): ResetEpochRewritePlan {
+  const plannedManager = createBoundedTranscriptRewritePlanner(params.snapshot.events);
+  const requestedIds = new Set(
+    params.replacements
+      .map((replacement) => replacement.entryId.trim())
+      .filter((entryId) => entryId.length > 0),
+  );
+  const firstTarget = plannedManager
+    .getBranch()
+    .find((entry) => entry.type === "message" && requestedIds.has(entry.id));
+  if (!firstTarget) {
+    return {
+      result: {
+        bytesFreed: 0,
+        changed: false,
+        reason: "no matching message entries",
+        rewrittenEntries: 0,
+      },
+    };
+  }
+  if (!firstTarget.parentId) {
+    return {
+      result: {
+        bytesFreed: 0,
+        changed: false,
+        reason: "reset-epoch rewrite target has no active parent",
+        rewrittenEntries: 0,
+      },
+    };
+  }
+  const result = rewriteTranscriptEntriesInPlace({
+    sessionManager: plannedManager,
+    replacements: params.replacements,
+  });
+  if (!result.changed) {
+    return { result };
+  }
+  const plannedEvents = plannedManager.getPersistedEntries();
+  assertUnchangedReplayPrefix(params.snapshot.events, plannedEvents);
+  return {
+    firstAbandonedChildId: firstTarget.id,
+    forkParentId: firstTarget.parentId,
+    replayEvents: plannedEvents.slice(params.snapshot.events.length),
+    result: { ...result, changed: true },
+  };
+}
+
+/** Commits a bounded reset-epoch plan without opening or reloading a persisted manager. */
+export async function rewriteTranscriptEntriesInResetEpochTarget(params: {
+  replacements: TranscriptRewriteReplacement[];
+  snapshot: SessionTranscriptResetEpochSnapshot;
+  target: ResetEpochRewriteTarget;
+}): Promise<TranscriptRewriteResult> {
+  const plan = planTranscriptResetEpochRewrite(params);
+  if (!plan.result.changed || !("replayEvents" in plan)) {
+    return plan.result;
+  }
+  const committed = await replayTranscriptResetEpochBranch(params.target, {
+    expectedWatermark: params.snapshot.watermark,
+    firstAbandonedChildId: plan.firstAbandonedChildId,
+    forkParentId: plan.forkParentId,
+    replayEvents: plan.replayEvents,
+    ...(params.snapshot.resetBoundary ? { resetBoundary: params.snapshot.resetBoundary } : {}),
+  });
+  if (committed.replayed) {
+    return plan.result;
+  }
+  return {
+    bytesFreed: 0,
+    changed: false,
+    reason:
+      committed.reason === "session-rebound"
+        ? "session changed before rewrite"
+        : committed.reason === "transcript-changed"
+          ? "transcript changed before rewrite"
+          : "reset-epoch branch changed before rewrite",
+    rewrittenEntries: 0,
+  };
 }

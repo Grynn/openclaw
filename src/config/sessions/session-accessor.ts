@@ -245,6 +245,7 @@ export {
   readTranscriptRawDelta,
   readTranscriptStatsSync,
   replayTranscriptBranch,
+  replayTranscriptResetEpochBranch,
   replaceTranscriptEvents,
   replaceTranscriptEventsSync,
   rewriteTranscriptEventRowsExact,
@@ -290,6 +291,10 @@ export type {
   SessionTranscriptMessageEvent,
   SessionTranscriptMessageEventPage,
 } from "./session-accessor.sqlite-active-events.js";
+export {
+  readSessionTranscriptResetEpochSnapshot,
+  type SessionTranscriptResetEpochSnapshot,
+} from "./session-accessor.sqlite-reset-window.js";
 export {
   readSessionTranscriptWatermark,
   readSessionTranscriptWatermarkBatch,

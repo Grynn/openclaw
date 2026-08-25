@@ -13,7 +13,11 @@ import {
   parseParentLinkedOpaqueEntry,
   partitionSessionFileEntries,
 } from "./session-manager-codec.js";
-import { createManagedSessionId, generateSessionEntryId } from "./session-manager-id.js";
+import {
+  createManagedSessionId,
+  generateSessionEntryId,
+  type SessionEntryIdGenerator,
+} from "./session-manager-id.js";
 import type {
   FileEntry,
   NewSessionOptions,
@@ -47,6 +51,7 @@ export class SessionManagerCore {
   protected boundedContextLimits: SessionManagerBoundedContextLimits | undefined;
   protected boundedContextIncomplete = false;
   protected persistedBoundaryCount: number | undefined;
+  private readonly entryIdGenerator: SessionEntryIdGenerator;
 
   constructor(
     cwd: string,
@@ -56,8 +61,10 @@ export class SessionManagerCore {
       boundaryCount: number;
       limits: SessionManagerBoundedContextLimits;
     },
+    entryIdGenerator: SessionEntryIdGenerator = generateSessionEntryId,
   ) {
     this.cwd = cwd;
+    this.entryIdGenerator = entryIdGenerator;
     this.persistenceTarget = persistenceTarget;
     this.boundedContextLimits = boundedContext?.limits;
     this.boundedContextIncomplete = boundedContext !== undefined;
@@ -67,6 +74,10 @@ export class SessionManagerCore {
     } else {
       this.newSession();
     }
+  }
+
+  protected createEntryId(existing: { has(id: string): boolean } = this.byId): string {
+    return this.entryIdGenerator(existing);
   }
 
   setSessionTarget(target: SessionManagerPersistenceTarget): void {
@@ -442,7 +453,7 @@ export class SessionManagerCore {
   ): SessionLeafControl {
     return {
       type: "leaf",
-      id: generateSessionEntryId({
+      id: this.createEntryId({
         has: (id) => this.byId.has(id) || this.opaqueParentsById.has(id),
       }),
       parentId,

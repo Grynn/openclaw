@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildEmbeddedRunnerAssistant,
   createMockUsage,
@@ -10,7 +10,19 @@ import { recoverEmbeddedRunAttempt } from "./attempt-recovery.js";
 import { createEmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
 import { resolveEmbeddedRunAttemptTerminalState } from "./terminal-outcome.js";
 
+const recoveryMocks = vi.hoisted(() => ({
+  recoverOverflow: vi.fn(async () => ({ action: "none" as const })),
+}));
+
+vi.mock("./overflow-context-recovery.js", () => ({
+  recoverEmbeddedRunOverflow: recoveryMocks.recoverOverflow,
+}));
+
 describe("recoverEmbeddedRunAttempt", () => {
+  beforeEach(() => {
+    recoveryMocks.recoverOverflow.mockClear();
+  });
+
   it("surfaces before_agent_run blocks with current carried usage", async () => {
     const historicalAssistant = buildEmbeddedRunnerAssistant({
       usage: createMockUsage(128_814, 3_000),
@@ -136,6 +148,10 @@ describe("recoverEmbeddedRunAttempt", () => {
     });
     const terminalState = resolveEmbeddedRunAttemptTerminalState({ attempt, assistant });
 
+    const writerFence = {
+      expectedLifecycleRevision: "lifecycle-current",
+      expectedWriterRunId: "writer-current",
+    };
     const recovery = await recoverEmbeddedRunAttempt({
       runInput: {
         runParams: {
@@ -175,7 +191,7 @@ describe("recoverEmbeddedRunAttempt", () => {
         canRestartForLiveSwitch: false,
       },
       runtimePlan: { auth: {} },
-      sessionPromptState: { sessionFile: "/tmp/session.jsonl" },
+      sessionPromptState: { sessionFile: "/tmp/session.jsonl", sessionWriterFence: writerFence },
       failoverRetryController,
       compactionRuntime: {},
       contextRecoveryState: createEmbeddedRunContextRecoveryState(),
@@ -190,6 +206,9 @@ describe("recoverEmbeddedRunAttempt", () => {
     } as never);
 
     expect(recovery).toEqual({ action: "proceed", shouldSurfaceCodexCompletionTimeout: false });
+    expect(recoveryMocks.recoverOverflow).toHaveBeenCalledWith(
+      expect.objectContaining({ writerFence }),
+    );
     expect(promptFailover).not.toHaveBeenCalled();
     expect(failoverRetryController.advanceAuthProfile).not.toHaveBeenCalled();
     expect(failoverRetryController.advanceRateLimitAuthProfile).not.toHaveBeenCalled();

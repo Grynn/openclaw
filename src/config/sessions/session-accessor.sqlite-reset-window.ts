@@ -1,5 +1,6 @@
 // Reset boundaries project a logical message window without rewriting raw cursor positions.
 import type { SessionTreeEntry } from "@openclaw/agent-core";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { sql } from "kysely";
 import { selectResetKeptEntries } from "../../../packages/agent-core/src/harness/session/tool-result-pairing.js";
 import {
@@ -10,7 +11,11 @@ import {
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
+import { withCurrentProjectionSnapshot } from "./session-accessor.sqlite-active-projection.js";
+import type {
+  SessionTranscriptReadScope,
+  TranscriptEvent,
+} from "./session-accessor.sqlite-contract.js";
 import { resolveSqliteTranscriptReadScope } from "./session-accessor.sqlite-scope.js";
 import type { SessionTranscriptProjectionState } from "./session-transcript-index.js";
 
@@ -39,6 +44,19 @@ type ResetWindowMessageEvent = {
   seq: number;
 };
 
+export type SessionTranscriptResetEpochSnapshot = {
+  events: TranscriptEvent[];
+  resetBoundary?: {
+    activePosition: number;
+    eventId: string;
+    eventSeq: number;
+  };
+  watermark: {
+    generation: string | null;
+    maxSeq: number;
+  };
+};
+
 type ResetMessageWindow = {
   boundarySeq: number;
   generation: string | undefined;
@@ -58,6 +76,11 @@ type ResetMessageWindowCacheEntry = {
 
 const resetMessageWindowCache = new Map<string, ResetMessageWindowCacheEntry>();
 const MAX_RESET_MESSAGE_WINDOW_CACHE = 64;
+
+function parseTranscriptEventJson(eventJson: string): TranscriptEvent {
+  const event: unknown = JSON.parse(eventJson);
+  return event;
+}
 
 function getResetWindowKysely(database: OpenClawAgentDatabase) {
   return getNodeSqliteKysely<ResetWindowDatabase>(database.db);
@@ -119,6 +142,60 @@ export function readTranscriptProjectionGeneration(
   )?.generation;
 }
 
+/** Reads the latest reset plus its active descendants without decoding retained history. */
+export function readSessionTranscriptResetEpochSnapshot(
+  scope: SessionTranscriptReadScope,
+): SessionTranscriptResetEpochSnapshot {
+  return withCurrentProjectionSnapshot(scope, (projection) => {
+    const db = getResetWindowKysely(projection.database);
+    const reset = readLatestActiveBoundaryMetadataByType(projection, "reset");
+    const baseQuery = db
+      .selectFrom("session_transcript_active_events as active")
+      .innerJoin("transcript_events as event", (join) =>
+        join
+          .onRef("event.session_id", "=", "active.session_id")
+          .onRef("event.seq", "=", "active.event_seq"),
+      )
+      .select("event.event_json")
+      .where("active.session_id", "=", projection.resolved.sessionId);
+    const query = (
+      reset ? baseQuery.where("active.active_position", ">=", reset.active_position) : baseQuery
+    ).orderBy("active.active_position", "asc");
+    const firstRow = executeSqliteQueryTakeFirstSync(
+      projection.database.db,
+      db
+        .selectFrom("transcript_events")
+        .select("event_json")
+        .where("session_id", "=", projection.resolved.sessionId)
+        .orderBy("seq", "asc")
+        .limit(1),
+    );
+    const firstEvent = firstRow ? parseTranscriptEventJson(firstRow.event_json) : undefined;
+    const activeEvents = executeSqliteQuerySync(projection.database.db, query).rows.map((row) =>
+      parseTranscriptEventJson(row.event_json),
+    );
+    return {
+      events:
+        isRecord(firstEvent) && firstEvent.type === "session"
+          ? [firstEvent, ...activeEvents]
+          : activeEvents,
+      ...(reset
+        ? {
+            resetBoundary: {
+              activePosition: reset.active_position,
+              eventId: reset.event_id,
+              eventSeq: reset.seq,
+            },
+          }
+        : {}),
+      watermark: {
+        generation: readTranscriptProjectionGeneration(projection) ?? null,
+        maxSeq: projection.state.indexedSeq,
+      },
+    };
+  });
+}
+
 function cacheResetMessageWindow(key: string, entry: ResetMessageWindowCacheEntry): void {
   resetMessageWindowCache.delete(key);
   resetMessageWindowCache.set(key, entry);
@@ -139,7 +216,12 @@ function readLatestActiveBoundaryMetadataByType(
           .onRef("identity.session_id", "=", "active.session_id")
           .onRef("identity.seq", "=", "active.event_seq"),
       )
-      .select(["active.active_position", "identity.event_type", "identity.seq"])
+      .select([
+        "active.active_position",
+        "identity.event_id",
+        "identity.event_type",
+        "identity.seq",
+      ])
       .where("active.session_id", "=", projection.resolved.sessionId)
       .where("identity.event_type", "=", eventType)
       .orderBy("identity.seq", "desc")

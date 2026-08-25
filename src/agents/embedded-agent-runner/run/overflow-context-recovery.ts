@@ -242,6 +242,7 @@ export async function recoverEmbeddedRunOverflow(
             sessionFile: sessionAfterCompaction.file,
             agentId: input.sessionAgentId,
           },
+          ...(input.writerFence ? { writerFence: input.writerFence } : {}),
           contextWindowTokens: input.contextTokenBudget,
           maxCharsOverride: resolveLiveToolResultMaxChars({
             contextWindowTokens: input.contextTokenBudget,
@@ -301,6 +302,7 @@ export async function recoverEmbeddedRunOverflow(
           sessionFile: session.file,
           agentId: input.sessionAgentId,
         },
+        ...(input.writerFence ? { writerFence: input.writerFence } : {}),
         contextWindowTokens: input.contextTokenBudget,
         maxCharsOverride: toolResultMaxChars,
         protectTrailingToolResults: preflightRecovery?.route === "compact_then_truncate",

@@ -40,6 +40,11 @@ export type EmbeddedRunCompactionRecoveryInput = {
   provider: string;
   modelId: string;
   harnessRuntime: string;
+  /** Run-owned persistence fence; never expose this to a context-engine target. */
+  writerFence?: {
+    expectedLifecycleRevision?: string;
+    expectedWriterRunId: string;
+  };
   thinkLevel: Parameters<typeof buildEmbeddedCompactionRuntimeContext>[0]["thinkLevel"];
   authProfileId?: string;
   authProfileIdSource: "auto" | "user";

@@ -35,6 +35,7 @@ type TranscriptIndexDatabase = Omit<
     | "session_transcript_active_events"
     | "session_transcript_fts"
     | "session_transcript_index_state"
+    | "transcript_event_identities"
     | "transcript_events"
   >,
   "session_transcript_fts"
@@ -59,6 +60,12 @@ export type SessionTranscriptProjectionState = {
 // work near a 250 ms event-loop stall and leave larger projections to the reconcile worker.
 export const SYNC_REBUILD_MAX_ROWS = 4_000;
 export const SYNC_REBUILD_MAX_BYTES = 4 * 1024 * 1024;
+
+export type SessionTranscriptResetBoundaryAnchor = {
+  activePosition: number;
+  eventId: string;
+  eventSeq: number;
+};
 
 function getIndexKysely(db: DatabaseSync) {
   return getNodeSqliteKysely<TranscriptIndexDatabase>(db);
@@ -347,6 +354,185 @@ function applyForwardIndex(
     },
     params.createdAt,
   );
+}
+
+type ActiveTranscriptIdentity = {
+  activePosition: number;
+  eventId: string;
+  eventSeq: number;
+  eventType: string | null;
+  parentId: string | null;
+};
+
+function readActiveTranscriptIdentity(
+  db: DatabaseSync,
+  sessionId: string,
+  eventId: string,
+): ActiveTranscriptIdentity | undefined {
+  const row = executeSqliteQueryTakeFirstSync(
+    db,
+    getIndexKysely(db)
+      .selectFrom("transcript_event_identities as identity")
+      .innerJoin("session_transcript_active_events as active", (join) =>
+        join
+          .onRef("active.session_id", "=", "identity.session_id")
+          .onRef("active.event_seq", "=", "identity.seq"),
+      )
+      .select([
+        "active.active_position",
+        "identity.event_id",
+        "identity.event_type",
+        "identity.parent_id",
+        "identity.seq",
+      ])
+      .where("identity.session_id", "=", sessionId)
+      .where("identity.event_id", "=", eventId),
+  );
+  return row
+    ? {
+        activePosition: row.active_position,
+        eventId: row.event_id,
+        eventSeq: row.seq,
+        eventType: row.event_type,
+        parentId: row.parent_id,
+      }
+    : undefined;
+}
+
+/**
+ * Rewinds only the active projection suffix before an append-only branch
+ * splice. Physical transcript rows remain immutable and the forward indexer
+ * advances from the old physical maximum when the replacement suffix lands.
+ */
+export function rewindSessionTranscriptIndexForBranchSpliceInTransaction(
+  db: DatabaseSync,
+  params: {
+    expectedIndexedSeq: number;
+    firstAbandonedChildId: string;
+    forkParentId: string;
+    resetBoundary?: SessionTranscriptResetBoundaryAnchor;
+    sessionId: string;
+  },
+): boolean {
+  const watermark = readSessionTranscriptProjectionState(db, params.sessionId);
+  const latest = executeSqliteQueryTakeFirstSync(
+    db,
+    getIndexKysely(db)
+      .selectFrom("transcript_events")
+      .select("seq")
+      .where("session_id", "=", params.sessionId)
+      .orderBy("seq", "desc")
+      .limit(1),
+  );
+  if (
+    !watermark ||
+    !latest ||
+    watermark.needsRebuild ||
+    watermark.indexedSeq !== params.expectedIndexedSeq ||
+    latest.seq !== params.expectedIndexedSeq
+  ) {
+    return false;
+  }
+  const fork = readActiveTranscriptIdentity(db, params.sessionId, params.forkParentId);
+  const firstAbandoned = readActiveTranscriptIdentity(
+    db,
+    params.sessionId,
+    params.firstAbandonedChildId,
+  );
+  if (
+    !fork ||
+    !firstAbandoned ||
+    firstAbandoned.eventType !== "message" ||
+    firstAbandoned.parentId !== fork.eventId ||
+    firstAbandoned.activePosition !== fork.activePosition + 1 ||
+    watermark.activeEventCount <= firstAbandoned.activePosition
+  ) {
+    return false;
+  }
+  if (params.resetBoundary) {
+    const reset = readActiveTranscriptIdentity(db, params.sessionId, params.resetBoundary.eventId);
+    if (
+      !reset ||
+      reset.eventType !== "reset" ||
+      reset.eventSeq !== params.resetBoundary.eventSeq ||
+      reset.activePosition !== params.resetBoundary.activePosition ||
+      fork.activePosition < reset.activePosition ||
+      firstAbandoned.activePosition <= reset.activePosition
+    ) {
+      return false;
+    }
+  }
+
+  const kysely = getIndexKysely(db);
+  const suffix = executeSqliteQueryTakeFirstSync(
+    db,
+    kysely
+      .selectFrom("session_transcript_active_events as active")
+      .select((eb) => [
+        eb.fn.count<number>("active.event_seq").as("event_count"),
+        eb.fn.count<number>("active.message_position").as("message_count"),
+      ])
+      .where("active.session_id", "=", params.sessionId)
+      .where("active.active_position", ">", fork.activePosition),
+  );
+  const suffixEventCount = suffix?.event_count ?? 0;
+  const suffixMessageCount = suffix?.message_count ?? 0;
+  if (suffixEventCount !== watermark.activeEventCount - fork.activePosition - 1) {
+    return false;
+  }
+  const abandonedMessageIds = kysely
+    .selectFrom("session_transcript_active_events as active")
+    .innerJoin("transcript_event_identities as identity", (join) =>
+      join
+        .onRef("identity.session_id", "=", "active.session_id")
+        .onRef("identity.seq", "=", "active.event_seq"),
+    )
+    .select("identity.event_id")
+    .where("active.session_id", "=", params.sessionId)
+    .where("identity.event_type", "=", "message")
+    .where("active.active_position", ">", fork.activePosition);
+  // FTS5 stores session/message identity as UNINDEXED auxiliary columns. Keep
+  // this as one set-based virtual-table scan; a rowid map can replace it if
+  // transcript search grows enough for this rare recovery write to matter.
+  executeSqliteQuerySync(
+    db,
+    kysely
+      .deleteFrom("session_transcript_fts")
+      .where("session_id", "=", params.sessionId)
+      .where("message_id", "in", abandonedMessageIds),
+  );
+  executeSqliteQuerySync(
+    db,
+    kysely
+      .deleteFrom("session_transcript_active_events")
+      .where("session_id", "=", params.sessionId)
+      .where("active_position", ">", fork.activePosition),
+  );
+  const remainingSuffixCount =
+    executeSqliteQueryTakeFirstSync(
+      db,
+      kysely
+        .selectFrom("session_transcript_active_events")
+        .select((eb) => eb.fn.count<number>("event_seq").as("event_count"))
+        .where("session_id", "=", params.sessionId)
+        .where("active_position", ">", fork.activePosition),
+    )?.event_count ?? 0;
+  if (remainingSuffixCount !== 0) {
+    throw new Error(`Transcript branch splice left ${remainingSuffixCount} active suffix rows`);
+  }
+  writeWatermark(
+    db,
+    params.sessionId,
+    {
+      activeEventCount: fork.activePosition + 1,
+      activeMessageCount: watermark.activeMessageCount - suffixMessageCount,
+      indexedSeq: params.expectedIndexedSeq,
+      leafEventId: fork.eventId,
+      needsRebuild: false,
+    },
+    Date.now(),
+  );
+  return true;
 }
 
 /** Marks one session for lazy rebuild without touching its FTS rows. */

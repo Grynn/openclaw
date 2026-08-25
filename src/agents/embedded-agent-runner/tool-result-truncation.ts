@@ -5,6 +5,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { parseDurationMs } from "../../cli/parse-duration.js";
+import { readSessionTranscriptResetEpochSnapshot } from "../../config/sessions/session-accessor.js";
 import type { AgentContextPruningConfig } from "../../config/types.agent-defaults.js";
 import { createDedupeCache } from "../../infra/dedupe.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -29,7 +30,10 @@ import {
   sliceToolResultTextTailToBudget,
   sliceToolResultTextToBudget,
 } from "./tool-result-text-budget.js";
-import { rewriteTranscriptEntriesInSessionManager } from "./transcript-rewrite.js";
+import {
+  rewriteTranscriptEntriesInResetEpochTarget,
+  rewriteTranscriptEntriesInSessionManager,
+} from "./transcript-rewrite.js";
 import {
   resolveRuntimeTranscriptReadTarget,
   type RuntimeTranscriptScope,
@@ -802,9 +806,26 @@ type ToolResultBranchEntry = {
   deferAggregateRecovery?: boolean;
 };
 
+function isToolResultBranchEntry(value: unknown): value is ToolResultBranchEntry {
+  if (!isRecord(value) || value.type === "session") {
+    return false;
+  }
+  return (
+    typeof value.id === "string" &&
+    typeof value.type === "string" &&
+    (value.message === undefined ||
+      (isRecord(value.message) && typeof value.message.role === "string"))
+  );
+}
+
 type ToolResultReplacement = {
   entryId: string;
   message: AgentMessage;
+};
+
+type RuntimeTranscriptWriterFence = {
+  expectedLifecycleRevision?: string;
+  expectedWriterRunId: string;
 };
 
 function getToolResultProjectionBaseKey(message: AgentMessage): string | undefined {
@@ -1445,8 +1466,8 @@ export function estimateToolResultReductionPotential(params: {
   };
 }
 
-async function truncateOversizedToolResultsInExistingSessionManager(params: {
-  sessionManager: SessionManager;
+async function truncateOversizedToolResultsInBranch(params: {
+  branch: ToolResultBranchEntry[];
   contextWindowTokens: number;
   maxCharsOverride?: number;
   aggregateMaxCharsOverride?: number;
@@ -1457,9 +1478,14 @@ async function truncateOversizedToolResultsInExistingSessionManager(params: {
   sessionKey?: string;
   agentId?: string;
   storePath?: string;
+  rewrite: (replacements: ToolResultReplacement[]) => Promise<{
+    bytesFreed: number;
+    changed: boolean;
+    reason?: string;
+    rewrittenEntries: number;
+  }>;
 }): Promise<{ truncated: boolean; truncatedCount: number; reason?: string }> {
-  const { sessionManager, contextWindowTokens } = params;
-  const branch = sessionManager.getBranch() as ToolResultBranchEntry[];
+  const { branch, contextWindowTokens } = params;
 
   if (branch.length === 0) {
     return { truncated: false, truncatedCount: 0, reason: "empty session" };
@@ -1480,10 +1506,7 @@ async function truncateOversizedToolResultsInExistingSessionManager(params: {
       reason: "no oversized or aggregate tool results",
     };
   }
-  const rewriteResult = await rewriteTranscriptEntriesInSessionManager({
-    sessionManager,
-    replacements: plan.replacements,
-  });
+  const rewriteResult = await params.rewrite(plan.replacements);
   const hasRuntimeTarget = Boolean(
     params.sessionId && params.sessionKey && params.agentId && params.storePath,
   );
@@ -1523,6 +1546,30 @@ async function truncateOversizedToolResultsInExistingSessionManager(params: {
   };
 }
 
+async function truncateOversizedToolResultsInExistingSessionManager(params: {
+  sessionManager: SessionManager;
+  contextWindowTokens: number;
+  maxCharsOverride?: number;
+  aggregateMaxCharsOverride?: number;
+  protectTrailingToolResults?: boolean;
+  projectionState?: ToolResultPromptProjectionState;
+  sessionFile?: string;
+  sessionId?: string;
+  sessionKey?: string;
+  agentId?: string;
+  storePath?: string;
+}): Promise<{ truncated: boolean; truncatedCount: number; reason?: string }> {
+  return await truncateOversizedToolResultsInBranch({
+    ...params,
+    branch: params.sessionManager.getBranch().filter(isToolResultBranchEntry),
+    rewrite: async (replacements) =>
+      await rewriteTranscriptEntriesInSessionManager({
+        sessionManager: params.sessionManager,
+        replacements,
+      }),
+  });
+}
+
 export async function truncateOversizedToolResultsInSessionManager(params: {
   sessionManager: SessionManager;
   contextWindowTokens: number;
@@ -1546,6 +1593,7 @@ export async function truncateOversizedToolResultsInSessionManager(params: {
 
 export async function truncateOversizedToolResultsInActiveTarget(params: {
   scope: RuntimeTranscriptScope;
+  writerFence?: RuntimeTranscriptWriterFence;
   contextWindowTokens: number;
   maxCharsOverride?: number;
   aggregateMaxCharsOverride?: number;
@@ -1554,9 +1602,9 @@ export async function truncateOversizedToolResultsInActiveTarget(params: {
 }): Promise<{ truncated: boolean; truncatedCount: number; reason?: string }> {
   try {
     const target = await resolveRuntimeTranscriptReadTarget(params.scope);
-    const sessionManager = SessionManager.open(target);
-    return await truncateOversizedToolResultsInExistingSessionManager({
-      sessionManager,
+    const snapshot = readSessionTranscriptResetEpochSnapshot(target);
+    return await truncateOversizedToolResultsInBranch({
+      branch: snapshot.events.filter(isToolResultBranchEntry),
       contextWindowTokens: params.contextWindowTokens,
       maxCharsOverride: params.maxCharsOverride,
       aggregateMaxCharsOverride: params.aggregateMaxCharsOverride,
@@ -1566,6 +1614,12 @@ export async function truncateOversizedToolResultsInActiveTarget(params: {
       sessionKey: target.sessionKey,
       agentId: target.agentId,
       storePath: target.storePath,
+      rewrite: async (replacements) =>
+        await rewriteTranscriptEntriesInResetEpochTarget({
+          replacements,
+          snapshot,
+          target: params.writerFence ? { ...target, ...params.writerFence } : target,
+        }),
     });
   } catch (err) {
     const errMsg = formatErrorMessage(err);

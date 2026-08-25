@@ -13,11 +13,21 @@ import { formatSqliteSessionFileMarker } from "../../config/sessions/legacy-sqli
 import {
   appendTranscriptMessage,
   loadTranscriptEvents,
+  readSessionTranscriptResetEpochSnapshot,
   replaceSessionEntry,
   replaceTranscriptEvents,
+  updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
-import type { SessionEntry as SessionStoreEntry } from "../../config/sessions/types.js";
+import {
+  resolveSqliteTranscriptScope,
+  toDatabaseOptions,
+} from "../../config/sessions/session-accessor.sqlite-scope.js";
+import type {
+  InternalSessionEntry,
+  SessionEntry as SessionStoreEntry,
+} from "../../config/sessions/types.js";
 import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
+import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { formatFullOutputFooter } from "../sessions/tools/tool-contracts.js";
 import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
 import {
@@ -33,6 +43,15 @@ import {
   getEmbeddedSessionPromptState,
   type ToolResultPromptProjectionState,
 } from "./session-prompt-state.js";
+
+const randomUuidOverrides = vi.hoisted((): string[] => []);
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:crypto")>();
+  return {
+    ...actual,
+    randomUUID: () => randomUuidOverrides.shift() ?? actual.randomUUID(),
+  };
+});
 
 let truncateToolResultMessage: typeof import("./tool-result-truncation.js").truncateToolResultMessage;
 let truncateOversizedToolResultsInMessages: typeof import("./tool-result-truncation.js").truncateOversizedToolResultsInMessages;
@@ -81,6 +100,7 @@ function createPromptProjectionStateForTest(): ToolResultPromptProjectionState {
 
 beforeEach(async () => {
   testTimestamp = 1;
+  randomUuidOverrides.length = 0;
   await loadFreshToolResultTruncationModuleForTest();
 });
 
@@ -1988,6 +2008,410 @@ describe("truncateOversizedToolResultsInSession", () => {
     expect(findAssistant("suppression owner")?.providerReplay).toEqual(suppressionReplay);
   });
 
+  it("rewrites only the active reset epoch in a transcript with 38k retained rows", async () => {
+    const dir = await createTmpDir();
+    const storePath = path.join(dir, "sessions.json");
+    const sessionId = "runtime-sqlite-reset-epoch-rewrite";
+    const sessionKey = "agent:main:reset-epoch-rewrite";
+    const sessionFile = formatSqliteSessionFileMarker({
+      agentId: "main",
+      sessionId,
+      storePath,
+    });
+    const scope = { agentId: "main", sessionId, sessionKey, storePath };
+    await replaceSessionEntry({ sessionKey, storePath }, {
+      sessionFile,
+      sessionId,
+      updatedAt: 10,
+    } as SessionStoreEntry);
+    const root = await appendTranscriptMessage(scope, {
+      message: makeUserMessage("historical root"),
+    });
+    const rootId = root.messageId;
+    const oldToolId = "deadbeef";
+    const resetId = "latest-reset";
+    const postUserId = "post-reset-user";
+    const postToolId = "post-reset-tool";
+    const postAssistantId = "post-reset-assistant";
+    const oldTool = {
+      ...makeToolResult("old output ".repeat(2_000), "old-call"),
+      idempotencyKey: "codex-app-server:historical:tool:old-call:result",
+    };
+    const postTool = {
+      ...makeToolResult("new output ".repeat(2_000), "post-call"),
+      idempotencyKey: "codex-app-server:current:tool:post-call:result",
+    };
+    const postAssistant = makeAssistantMessage("current suffix complete");
+    postAssistant.usage = {
+      input: 278_803,
+      output: 215,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 279_018,
+      contextUsage: {
+        state: "available",
+        promptTokens: 278_803,
+        totalTokens: 279_018,
+      },
+      cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 },
+    };
+    const resolved = resolveSqliteTranscriptScope(scope);
+    const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
+    const insertEvent = database.db.prepare(
+      "INSERT INTO transcript_events (session_id, seq, event_json, created_at) VALUES (?, ?, ?, ?)",
+    );
+    const insertIdentity = database.db.prepare(
+      `INSERT INTO transcript_event_identities
+         (session_id, event_id, seq, event_type, parent_id, message_idempotency_key, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const insertActive = database.db.prepare(
+      `INSERT INTO session_transcript_active_events
+         (session_id, active_position, event_seq, message_position)
+       VALUES (?, ?, ?, ?)`,
+    );
+    const appendFixtureEvent = (params: {
+      activePosition: number;
+      event: Record<string, unknown>;
+      eventId: string;
+      eventType: string;
+      messageIdempotencyKey?: string;
+      messagePosition: number | null;
+      parentId: string;
+      seq: number;
+    }) => {
+      insertEvent.run(sessionId, params.seq, JSON.stringify(params.event), params.seq);
+      insertIdentity.run(
+        sessionId,
+        params.eventId,
+        params.seq,
+        params.eventType,
+        params.parentId,
+        params.messageIdempotencyKey ?? null,
+        params.seq,
+      );
+      insertActive.run(sessionId, params.activePosition, params.seq, params.messagePosition);
+    };
+
+    database.db.exec("BEGIN IMMEDIATE");
+    try {
+      appendFixtureEvent({
+        activePosition: 1,
+        event: {
+          type: "message",
+          id: oldToolId,
+          parentId: rootId,
+          timestamp: "2026-08-25T00:00:02.000Z",
+          message: oldTool,
+        },
+        eventId: oldToolId,
+        eventType: "message",
+        messageIdempotencyKey: oldTool.idempotencyKey,
+        messagePosition: 1,
+        parentId: rootId,
+        seq: 2,
+      });
+      // A recursive insert reproduces the 38k-row lineage without allocating a
+      // 38k-object JavaScript fixture. Recovery must never materialize this prefix.
+      database.db
+        .prepare(
+          `WITH RECURSIVE synthetic(seq) AS (
+             SELECT 3
+             UNION ALL
+             SELECT seq + 1 FROM synthetic WHERE seq < 38000
+           )
+           INSERT INTO transcript_events (session_id, seq, event_json, created_at)
+           SELECT ?, seq,
+             '{"type":"message","id":"historical-' || seq ||
+             '","parentId":"' || CASE WHEN seq = 3 THEN ? ELSE 'historical-' || (seq - 1) END ||
+             '","timestamp":"2026-08-25T00:00:03.000Z","message":{"role":"user","content":"history"}}',
+             seq
+           FROM synthetic`,
+        )
+        .run(sessionId, oldToolId);
+      database.db
+        .prepare(
+          `WITH RECURSIVE synthetic(seq) AS (
+             SELECT 3
+             UNION ALL
+             SELECT seq + 1 FROM synthetic WHERE seq < 38000
+           )
+           INSERT INTO transcript_event_identities
+             (session_id, event_id, seq, event_type, parent_id, message_idempotency_key, created_at)
+           SELECT ?, 'historical-' || seq, seq, 'message',
+             CASE WHEN seq = 3 THEN ? ELSE 'historical-' || (seq - 1) END,
+             NULL, seq
+           FROM synthetic`,
+        )
+        .run(sessionId, oldToolId);
+      database.db
+        .prepare(
+          `WITH RECURSIVE synthetic(seq) AS (
+             SELECT 3
+             UNION ALL
+             SELECT seq + 1 FROM synthetic WHERE seq < 38000
+           )
+           INSERT INTO session_transcript_active_events
+             (session_id, active_position, event_seq, message_position)
+           SELECT ?, seq - 1, seq, seq - 1 FROM synthetic`,
+        )
+        .run(sessionId);
+      appendFixtureEvent({
+        activePosition: 38_000,
+        event: {
+          type: "reset",
+          id: resetId,
+          parentId: "historical-38000",
+          timestamp: "2026-08-25T00:01:00.000Z",
+          reason: "new",
+        },
+        eventId: resetId,
+        eventType: "reset",
+        messagePosition: null,
+        parentId: "historical-38000",
+        seq: 38_001,
+      });
+      appendFixtureEvent({
+        activePosition: 38_001,
+        event: {
+          type: "message",
+          id: postUserId,
+          parentId: resetId,
+          timestamp: "2026-08-25T00:01:01.000Z",
+          message: makeUserMessage("current request"),
+        },
+        eventId: postUserId,
+        eventType: "message",
+        messagePosition: 38_000,
+        parentId: resetId,
+        seq: 38_002,
+      });
+      appendFixtureEvent({
+        activePosition: 38_002,
+        event: {
+          type: "message",
+          id: postToolId,
+          parentId: postUserId,
+          timestamp: "2026-08-25T00:01:02.000Z",
+          message: postTool,
+        },
+        eventId: postToolId,
+        eventType: "message",
+        messageIdempotencyKey: postTool.idempotencyKey,
+        messagePosition: 38_001,
+        parentId: postUserId,
+        seq: 38_003,
+      });
+      appendFixtureEvent({
+        activePosition: 38_003,
+        event: {
+          type: "message",
+          id: postAssistantId,
+          parentId: postToolId,
+          timestamp: "2026-08-25T00:01:03.000Z",
+          message: postAssistant,
+        },
+        eventId: postAssistantId,
+        eventType: "message",
+        messagePosition: 38_002,
+        parentId: postToolId,
+        seq: 38_004,
+      });
+      const insertFts = database.db.prepare(
+        `INSERT INTO session_transcript_fts (text, session_id, message_id, role, timestamp)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      insertFts.run(getFirstToolResultText(oldTool), sessionId, oldToolId, "user", 2);
+      insertFts.run("current request", sessionId, postUserId, "user", 38_002);
+      insertFts.run(getFirstToolResultText(postTool), sessionId, postToolId, "user", 38_003);
+      insertFts.run("current suffix complete", sessionId, postAssistantId, "assistant", 38_004);
+      database.db
+        .prepare("UPDATE transcript_events SET event_json = ? WHERE session_id = ? AND seq = 20000")
+        .run(`{"malformed":"${"x".repeat(2_000_000)}`, sessionId);
+      database.db
+        .prepare(
+          `UPDATE session_transcript_index_state
+           SET indexed_seq = 38004, leaf_event_id = ?, active_event_count = 38004,
+               active_message_count = 38003, needs_rebuild = 0
+           WHERE session_id = ?`,
+        )
+        .run(postAssistantId, sessionId);
+      database.db.exec("COMMIT");
+    } catch (error) {
+      database.db.exec("ROLLBACK");
+      throw error;
+    }
+
+    const countRows = () =>
+      Number(
+        (
+          database.db
+            .prepare("SELECT COUNT(*) AS count FROM transcript_events WHERE session_id = ?")
+            .get(sessionId) as { count: number | bigint }
+        ).count,
+      );
+    const readEventJson = (seq: number) =>
+      (
+        database.db
+          .prepare("SELECT event_json FROM transcript_events WHERE session_id = ? AND seq = ?")
+          .get(sessionId, seq) as { event_json: string }
+      ).event_json;
+    const oldToolJsonBefore = readEventJson(2);
+    const malformedHistoryBefore = readEventJson(20_000);
+    const physicalCountBefore = countRows();
+
+    randomUuidOverrides.push("deadbeef-0000-4000-8000-000000000000");
+    const transcriptAccessor = await import("../../config/sessions/session-accessor.js");
+    const transcriptIndex = await import("../../config/sessions/session-transcript-index.js");
+    const fullLoadSpy = vi.spyOn(transcriptAccessor, "loadTranscriptEventsSync");
+    const reconcileSpy = vi.spyOn(transcriptIndex, "reconcileSessionTranscriptIndexInTransaction");
+    const openSpy = vi.spyOn(SessionManager, "open");
+    const reloadSpy = vi.spyOn(SessionManager.prototype, "reloadPersistedTranscript");
+    const recovery = await (async () => {
+      try {
+        const result = await truncateOversizedToolResultsInActiveTarget({
+          scope: { ...scope, sessionFile },
+          contextWindowTokens: 128_000,
+          maxCharsOverride: 1_000,
+          aggregateMaxCharsOverride: 1_000_000,
+        });
+        return {
+          fullLoads: fullLoadSpy.mock.calls.length,
+          opens: openSpy.mock.calls.length,
+          reconciles: reconcileSpy.mock.calls.length,
+          reloads: reloadSpy.mock.calls.length,
+          result,
+        };
+      } finally {
+        fullLoadSpy.mockRestore();
+        reconcileSpy.mockRestore();
+        openSpy.mockRestore();
+        reloadSpy.mockRestore();
+      }
+    })();
+    expect(recovery).toMatchObject({ fullLoads: 0, opens: 0, reconciles: 0, reloads: 0 });
+
+    const { result } = recovery;
+    expect(result.reason).toBeUndefined();
+    expect(result).toMatchObject({ truncated: true, truncatedCount: 1 });
+    expect(countRows() - physicalCountBefore).toBe(2);
+    expect(readEventJson(2)).toBe(oldToolJsonBefore);
+    expect(readEventJson(20_000)).toBe(malformedHistoryBefore);
+    const activeManager = SessionManager.fromEntries(
+      readSessionTranscriptResetEpochSnapshot(scope).events,
+    );
+    const activeBranch = activeManager.getBranch();
+    const activePostTool = activeBranch.find(
+      (entry) =>
+        entry.type === "message" &&
+        Reflect.get(entry.message, "idempotencyKey") === postTool.idempotencyKey,
+    );
+    expect(activePostTool?.type).toBe("message");
+    if (activePostTool?.type !== "message" || activePostTool.message.role !== "toolResult") {
+      throw new Error("expected active post-reset tool result");
+    }
+    expect(getFirstToolResultText(activePostTool.message)).toContain("truncated");
+    expect(activePostTool.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu,
+    );
+    expect(activePostTool.id).toBe("deadbeef-0000-4000-8000-000000000000");
+    expect(
+      SessionManager.inMemory().appendMessage(makeUserMessage("compact ids stay compact")),
+    ).toHaveLength(8);
+    const indexState = database.db
+      .prepare(
+        `SELECT indexed_seq, leaf_event_id, needs_rebuild, active_event_count,
+                active_message_count
+         FROM session_transcript_index_state WHERE session_id = ?`,
+      )
+      .get(sessionId) as {
+      active_event_count: number;
+      active_message_count: number;
+      indexed_seq: number;
+      leaf_event_id: string;
+      needs_rebuild: number;
+    };
+    expect(indexState).toMatchObject({
+      active_event_count: 38_004,
+      active_message_count: 38_003,
+      indexed_seq: 38_006,
+      needs_rebuild: 0,
+    });
+    expect(
+      database.db
+        .prepare("SELECT MAX(seq) AS max_seq FROM transcript_events WHERE session_id = ?")
+        .get(sessionId),
+    ).toEqual({ max_seq: indexState.indexed_seq });
+    const replayedSuffix = database.db
+      .prepare(
+        `SELECT identity.event_id, identity.parent_id, identity.event_type
+         FROM session_transcript_active_events active
+         JOIN transcript_event_identities identity
+           ON identity.session_id = active.session_id AND identity.seq = active.event_seq
+         WHERE active.session_id = ? AND active.active_position >= 38000
+         ORDER BY active.active_position`,
+      )
+      .all(sessionId) as Array<{ event_id: string; event_type: string; parent_id: string }>;
+    expect(replayedSuffix).toHaveLength(4);
+    expect(replayedSuffix[0]).toMatchObject({ event_id: resetId, parent_id: "historical-38000" });
+    expect(replayedSuffix[1]).toMatchObject({ event_id: postUserId, parent_id: resetId });
+    expect(replayedSuffix[2]).toMatchObject({
+      event_id: activePostTool.id,
+      parent_id: postUserId,
+    });
+    expect(replayedSuffix[3]?.parent_id).toBe(activePostTool.id);
+    expect(replayedSuffix.map((event) => event.parent_id)).toEqual([
+      "historical-38000",
+      resetId,
+      postUserId,
+      activePostTool.id,
+    ]);
+    expect(indexState.leaf_event_id).toBe(replayedSuffix[3]?.event_id);
+    const ftsRows = database.db
+      .prepare(
+        "SELECT message_id, text FROM session_transcript_fts WHERE session_id = ? ORDER BY rowid",
+      )
+      .all(sessionId) as Array<{ message_id: string; text: string }>;
+    expect(ftsRows.find((row) => row.message_id === oldToolId)?.text).toContain("old output");
+    expect(ftsRows.some((row) => row.message_id === postToolId)).toBe(false);
+    expect(ftsRows.some((row) => row.message_id === postAssistantId)).toBe(false);
+    expect(ftsRows.some((row) => row.message_id === activePostTool.id)).toBe(false);
+    expect(ftsRows.find((row) => row.message_id === replayedSuffix[3]?.event_id)?.text).toBe(
+      "current suffix complete",
+    );
+    const readKeyOwner = (key: string) =>
+      (
+        database.db
+          .prepare(
+            `SELECT event_id FROM transcript_event_identities
+             WHERE session_id = ? AND message_idempotency_key = ?`,
+          )
+          .get(sessionId, key) as { event_id: string } | undefined
+      )?.event_id;
+    expect(readKeyOwner(oldTool.idempotencyKey)).toBe(oldToolId);
+    expect(readKeyOwner(postTool.idempotencyKey)).toBe(activePostTool.id);
+    const replayedAssistant = activeManager
+      .buildSessionContext()
+      .messages.find((message) => message.role === "assistant");
+    expect(
+      replayedAssistant?.role === "assistant" ? replayedAssistant.usage : undefined,
+    ).toMatchObject({
+      totalTokens: 279_018,
+      contextUsage: { state: "unavailable" },
+    });
+    expect(
+      estimateLlmBoundaryTokenPressure({
+        messages: activeManager.buildSessionContext().messages,
+        prompt: "continue",
+      }),
+    ).toBeLessThan(10_000);
+
+    const countBeforeRetry = countRows();
+    const retry = await appendTranscriptMessage(scope, { message: activePostTool.message });
+    expect(retry).toMatchObject({ appended: false, messageId: activePostTool.id });
+    expect(countRows()).toBe(countBeforeRetry);
+  });
+
   it("reuses frozen provider projection bytes on the recovery branch", async () => {
     const dir = await createTmpDir();
     const storePath = path.join(dir, "sessions.json");
@@ -2039,6 +2463,110 @@ describe("truncateOversizedToolResultsInSession", () => {
         entry.id === persisted.messageId,
     ) as { message?: AgentMessage } | undefined;
     expect(originalEvent?.message).toEqual(original);
+  });
+
+  it("rejects stale active-target recovery after a same-session writer takeover", async () => {
+    const dir = await createTmpDir();
+    const storePath = path.join(dir, "sessions.json");
+    const sessionId = "runtime-sqlite-writer-fenced-recovery";
+    const sessionKey = "agent:main:writer-fenced-recovery";
+    const sessionFile = formatSqliteSessionFileMarker({
+      agentId: "main",
+      sessionId,
+      storePath,
+    });
+    const scope = { agentId: "main", sessionId, sessionKey, storePath };
+    await replaceSessionEntry(scope, {
+      activeWriterRunId: "writer-original",
+      lifecycleRevision: "lifecycle-current",
+      sessionFile,
+      sessionId,
+      updatedAt: 10,
+    } as InternalSessionEntry);
+    await appendTranscriptMessage(scope, { message: makeUserMessage("run fenced tool") });
+    await appendTranscriptMessage(scope, {
+      message: makeToolResult("writer-fenced output ".repeat(2_000), "writer-fenced-call"),
+    });
+    const database = openOpenClawAgentDatabase(
+      toDatabaseOptions(resolveSqliteTranscriptScope(scope)),
+    );
+    const readDurableTranscriptState = () => ({
+      active: database.db
+        .prepare(
+          `SELECT active_position, event_seq, message_position
+           FROM session_transcript_active_events
+           WHERE session_id = ? ORDER BY active_position`,
+        )
+        .all(sessionId),
+      events: database.db
+        .prepare(
+          `SELECT seq, event_json, created_at FROM transcript_events
+           WHERE session_id = ? ORDER BY seq`,
+        )
+        .all(sessionId),
+      fts: database.db
+        .prepare(
+          `SELECT rowid, message_id, role, text, timestamp FROM session_transcript_fts
+           WHERE session_id = ? ORDER BY rowid`,
+        )
+        .all(sessionId),
+      generation: database.db
+        .prepare(
+          `SELECT generation, updated_at FROM transcript_rewrite_watermarks
+           WHERE session_id = ?`,
+        )
+        .get(sessionId),
+      identities: database.db
+        .prepare(
+          `SELECT event_id, seq, event_type, parent_id, message_idempotency_key, created_at
+           FROM transcript_event_identities WHERE session_id = ? ORDER BY seq`,
+        )
+        .all(sessionId),
+      index: database.db
+        .prepare(
+          `SELECT indexed_seq, leaf_event_id, active_event_count, active_message_count,
+                  needs_rebuild
+           FROM session_transcript_index_state WHERE session_id = ?`,
+        )
+        .get(sessionId),
+      mutation: database.db
+        .prepare(
+          `SELECT transcript_updated_at, transcript_observed_at
+           FROM session_windows WHERE session_id = ?`,
+        )
+        .get(sessionId),
+    });
+    const watermarkBeforeClaim = readSessionTranscriptResetEpochSnapshot(scope).watermark;
+    const successor = await updateSessionEntry(
+      scope,
+      (entry) => Object.assign({}, entry, { activeWriterRunId: "writer-successor" }),
+      { skipMaintenance: true },
+    );
+    expect(successor as InternalSessionEntry).toMatchObject({
+      activeWriterRunId: "writer-successor",
+      lifecycleRevision: "lifecycle-current",
+      sessionId,
+    });
+    expect(readSessionTranscriptResetEpochSnapshot(scope).watermark).toEqual(watermarkBeforeClaim);
+    const stateAfterClaim = readDurableTranscriptState();
+
+    const result = await truncateOversizedToolResultsInActiveTarget({
+      scope: { ...scope, sessionFile },
+      writerFence: {
+        expectedLifecycleRevision: "lifecycle-current",
+        expectedWriterRunId: "writer-original",
+      },
+      contextWindowTokens: 128_000,
+      maxCharsOverride: 1_000,
+    });
+
+    expect(result).toMatchObject({
+      truncated: false,
+      truncatedCount: 0,
+      reason: expect.stringContaining("session writer claim changed"),
+    });
+    expect(readSessionTranscriptResetEpochSnapshot(scope).watermark).toEqual(watermarkBeforeClaim);
+    expect(readDurableTranscriptState()).toEqual(stateAfterClaim);
   });
 
   it("honors SQLite leaf controls when truncating runtime transcripts", async () => {

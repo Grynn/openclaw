@@ -311,6 +311,10 @@ describe("recoverEmbeddedRunOverflow", () => {
       truncated: true,
       truncatedCount: 1,
     });
+    const writerFence = {
+      expectedLifecycleRevision: "lifecycle-current",
+      expectedWriterRunId: "writer-current",
+    };
     const input = makeInput({
       attempt: {
         terminal: { kind: "failed", source: "prompt", error: overflowError() },
@@ -318,6 +322,7 @@ describe("recoverEmbeddedRunOverflow", () => {
         messagesSnapshot,
       },
       toolResultPromptProjectionState: projectionState,
+      writerFence,
     });
 
     const result = await recoverEmbeddedRunOverflow(input);
@@ -326,6 +331,7 @@ describe("recoverEmbeddedRunOverflow", () => {
     expect(mocks.truncateOversizedToolResults).toHaveBeenCalledWith(
       expect.objectContaining({
         projectionState,
+        writerFence,
         scope: expect.objectContaining({
           sessionId: "session-1",
           sessionKey: "agent:main:session-1",
@@ -403,6 +409,10 @@ describe("recoverEmbeddedRunOverflow", () => {
       truncated: true,
       truncatedCount: 2,
     });
+    const writerFence = {
+      expectedLifecycleRevision: "lifecycle-current",
+      expectedWriterRunId: "writer-current",
+    };
     const input = makeInput({
       attempt: {
         terminal: { kind: "failed", source: "precheck", error: overflowError() },
@@ -410,6 +420,7 @@ describe("recoverEmbeddedRunOverflow", () => {
         messagesSnapshot: [],
         preflightRecovery: { route: "compact_then_truncate" },
       },
+      writerFence,
     });
 
     expect(await recoverEmbeddedRunOverflow(input)).toEqual({ action: "retry" });
@@ -417,6 +428,7 @@ describe("recoverEmbeddedRunOverflow", () => {
       expect.objectContaining({
         projectionState: input.toolResultPromptProjectionState,
         protectTrailingToolResults: true,
+        writerFence,
       }),
     );
     expect(input.prepareCompactedTranscriptRetry).toHaveBeenCalledOnce();

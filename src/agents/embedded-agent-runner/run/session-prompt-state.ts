@@ -1,10 +1,7 @@
 import type { ContextEngineSessionTarget } from "../../../context-engine/types.js";
 import { registerAgentRunContext } from "../../../infra/agent-run-registry.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
-import {
-  resolveAgentRunSessionTarget,
-  type AgentRunSessionTarget,
-} from "../../run-session-target.js";
+import { resolveAgentRunSessionTarget } from "../../run-session-target.js";
 import { log } from "../logger.js";
 import type { PreparedEmbeddedRunInput } from "./execution-context.js";
 import { buildContextEngineCompactionSessionTarget } from "./session-bootstrap.js";
@@ -18,10 +15,10 @@ type ActivePrompt = {
   internal: boolean;
 };
 
-type SessionWriterFence = Pick<
-  AgentRunSessionTarget,
-  "expectedLifecycleRevision" | "expectedWriterRunId"
->;
+type SessionWriterFence = {
+  expectedLifecycleRevision?: string;
+  expectedWriterRunId: string;
+};
 
 export function createEmbeddedRunSessionPromptState(input: {
   runParams: PreparedEmbeddedRunInput["runParams"];

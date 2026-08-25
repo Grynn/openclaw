@@ -50,6 +50,19 @@ function createTextContent(text: string) {
   return [{ type: "text", text }];
 }
 
+function createAvailableUsage(input: number, output: number) {
+  const totalTokens = input + output;
+  return {
+    input,
+    output,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens,
+    contextUsage: { state: "available" as const, promptTokens: input, totalTokens },
+    cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 },
+  };
+}
+
 function createReadRewriteSession(options?: { tailAssistantText?: string }) {
   // Read rewrite fixtures include a suffix assistant turn so branch rewrites
   // must re-append downstream entries after replacing the tool result.
@@ -163,14 +176,11 @@ async function createPersistedKeyedRewriteSession() {
     updatedAt: 10,
   } as SessionEntry);
   const sessionManager = SessionManager.open(target, dir);
-  const originalToolResult = {
-    ...createToolResultReplacement("exec", "before rewrite", 2),
-    idempotencyKey: "codex-app-server:test-turn:tool:exec:result",
-  } as AgentMessage;
-  const rewrittenToolResult = {
-    ...createToolResultReplacement("exec", "[runtime rewrite]", 2),
-    idempotencyKey: originalToolResult.idempotencyKey,
-  } as AgentMessage;
+  const idempotencyKey = "codex-app-server:test-turn:tool:exec:result";
+  const originalToolResult = createToolResultReplacement("exec", "before rewrite", 2);
+  Reflect.set(originalToolResult, "idempotencyKey", idempotencyKey);
+  const rewrittenToolResult = createToolResultReplacement("exec", "[runtime rewrite]", 2);
+  Reflect.set(rewrittenToolResult, "idempotencyKey", idempotencyKey);
   const [, toolResultEntryId] = appendSessionMessages(sessionManager, [
     asAppendMessage({ role: "user", content: "run tool", timestamp: 1 }),
     asAppendMessage(originalToolResult),
@@ -183,6 +193,7 @@ async function createPersistedKeyedRewriteSession() {
   return {
     dir,
     originalToolResult,
+    idempotencyKey,
     rewrittenToolResult,
     sessionManager,
     target,
@@ -347,6 +358,62 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
     expect(replayedAssistant.content).toEqual([{ type: "text", text: "summarized" }]);
   });
 
+  it("invalidates provider context usage on assistants replayed after a rewrite", async () => {
+    const sessionManager = SessionManager.inMemory();
+    const appendedEntryIds = appendSessionMessages(sessionManager, [
+      asAppendMessage({ role: "user", content: "run tool", timestamp: 1 }),
+      asAppendMessage({
+        role: "assistant",
+        content: createTextContent("usage before rewrite boundary"),
+        stopReason: "stop",
+        usage: createAvailableUsage(10, 2),
+        timestamp: 2,
+      }),
+      asAppendMessage(createToolResultReplacement("exec", "before rewrite", 2)),
+      asAppendMessage({
+        role: "assistant",
+        content: createTextContent("summarized"),
+        stopReason: "stop",
+        usage: createAvailableUsage(278_803, 215),
+        timestamp: 3,
+      }),
+      asAppendMessage({
+        role: "assistant",
+        content: createTextContent("follow-up"),
+        stopReason: "stop",
+        usage: createAvailableUsage(50_000, 1),
+        timestamp: 4,
+      }),
+    ]);
+    const toolResultEntryId = appendedEntryIds[2];
+
+    await rewriteTranscriptEntriesInSessionManager({
+      sessionManager,
+      replacements: [
+        {
+          entryId: expectDefined(toolResultEntryId, "tool result entry id"),
+          message: createToolResultReplacement("exec", "after rewrite", 2),
+        },
+      ],
+    });
+
+    const assistants = getBranchMessages(sessionManager).filter(
+      (message): message is Extract<AgentMessage, { role: "assistant" }> =>
+        message.role === "assistant",
+    );
+    expect(assistants[0]?.usage).toMatchObject({
+      totalTokens: 12,
+      contextUsage: { state: "available", totalTokens: 12 },
+    });
+    expect(assistants.slice(1).map((assistant) => assistant.usage?.contextUsage)).toEqual([
+      { state: "unavailable" },
+      { state: "unavailable" },
+    ]);
+    expect(assistants.slice(1).map((assistant) => assistant.usage?.totalTokens)).toEqual([
+      279_018, 50_001,
+    ]);
+  });
+
   it("preserves original SQLite rows on the abandoned branch", async () => {
     const {
       dir,
@@ -390,7 +457,7 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
   });
 
   it("keeps the active keyed replacement canonical after projection reconciliation", async () => {
-    const { rewrittenToolResult, sessionManager, target, toolResultEntryId } =
+    const { idempotencyKey, rewrittenToolResult, sessionManager, target, toolResultEntryId } =
       await createPersistedKeyedRewriteSession();
     await rewriteTranscriptEntriesInSessionManager({
       sessionManager,
@@ -403,7 +470,7 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
           (entry) =>
             entry.type === "message" &&
             entry.message.role === "toolResult" &&
-            entry.message.idempotencyKey === rewrittenToolResult.idempotencyKey,
+            Reflect.get(entry.message, "idempotencyKey") === idempotencyKey,
         ),
       "active keyed replacement",
     );
@@ -415,20 +482,18 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
       target,
       async (transcript) =>
         await transcript.readMessageFacts({
-          idempotencyKeys: [rewrittenToolResult.idempotencyKey!],
+          idempotencyKeys: [idempotencyKey],
         }),
     );
 
-    expect(facts.messagesByIdempotencyKey.get(rewrittenToolResult.idempotencyKey!)).toEqual(
-      rewrittenToolResult,
-    );
-    expect(facts.anchorsByIdempotencyKey.get(rewrittenToolResult.idempotencyKey!)).toMatchObject({
+    expect(facts.messagesByIdempotencyKey.get(idempotencyKey)).toEqual(rewrittenToolResult);
+    expect(facts.anchorsByIdempotencyKey.get(idempotencyKey)).toMatchObject({
       entryId: replacementEntry.id,
     });
   });
 
   it("resolves an exact keyed retry to the active replacement without appending", async () => {
-    const { rewrittenToolResult, sessionManager, target, toolResultEntryId } =
+    const { idempotencyKey, rewrittenToolResult, sessionManager, target, toolResultEntryId } =
       await createPersistedKeyedRewriteSession();
     await rewriteTranscriptEntriesInSessionManager({
       sessionManager,
@@ -441,7 +506,7 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
           (entry) =>
             entry.type === "message" &&
             entry.message.role === "toolResult" &&
-            entry.message.idempotencyKey === rewrittenToolResult.idempotencyKey,
+            Reflect.get(entry.message, "idempotencyKey") === idempotencyKey,
         ),
       "active keyed replacement",
     );
@@ -460,7 +525,7 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
     expect(loadTranscriptEventsSync(target)).toHaveLength(eventCountBeforeRetry);
   });
 
-  it("rejects a stale replay plan without abandoning concurrent ingress", async () => {
+  it("rejects a stale full-transcript replay plan without abandoning concurrent ingress", async () => {
     const { dir, rewrittenToolResult, sessionManager, target, toolResultEntryId } =
       await createPersistedKeyedRewriteSession();
     const resolved = resolveSqliteTranscriptScope(target);

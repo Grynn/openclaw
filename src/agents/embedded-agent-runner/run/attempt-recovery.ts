@@ -238,6 +238,9 @@ export async function recoverEmbeddedRunAttempt(input: {
     provider: compactionSelection.provider,
     modelId: compactionSelection.model,
     harnessRuntime: runtime.agentHarness.id,
+    ...(sessionPromptState.sessionWriterFence
+      ? { writerFence: sessionPromptState.sessionWriterFence }
+      : {}),
     thinkLevel: runtime.thinkLevel,
     authProfileId: compactionSelection.authProfileId,
     authProfileIdSource: compactionSelection.authProfileIdSource,

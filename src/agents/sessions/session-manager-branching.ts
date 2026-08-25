@@ -9,7 +9,7 @@ import { projectCanonicalSessionEntryShape } from "../../config/sessions/store-e
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import { parseOpaqueLeafEntry, parseParentLinkedOpaqueEntry } from "./session-manager-codec.js";
 import { SessionManagerEntries } from "./session-manager-entries.js";
-import { createManagedSessionId, generateSessionEntryId } from "./session-manager-id.js";
+import { createManagedSessionId } from "./session-manager-id.js";
 import type {
   LabelEntry,
   PreservedOpaqueFileEntry,
@@ -138,7 +138,7 @@ export class SessionManagerBranching extends SessionManagerEntries {
     for (const { targetId, label, timestamp: labelTimestamp } of labelsToWrite) {
       const labelEntry: LabelEntry = {
         type: "label",
-        id: generateSessionEntryId(branchPath.usedIds),
+        id: this.createEntryId(branchPath.usedIds),
         parentId,
         timestamp: labelTimestamp,
         targetId,
