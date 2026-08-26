@@ -316,8 +316,6 @@ export async function executeFollowupTurn(params: {
               activeSessionEntry: session.current(),
               activeSessionStore: turn.sessionStore,
               storePath: session.storePath,
-              messageThreadId:
-                sessionCtx.MessageThreadId != null ? String(sessionCtx.MessageThreadId) : undefined,
               followupRun: turn.queued,
               onActiveSessionEntry: (entry) => {
                 session.adopt(entry);

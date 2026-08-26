@@ -46,6 +46,7 @@ describe("requestSessionUsage", () => {
       agentScope: "all",
       mode: "utc",
       groupBy: "family",
+      includeHistorical: true,
       limit: 1000,
       includeContextWeight: true,
     });
@@ -73,7 +74,10 @@ describe("requestSessionUsage", () => {
     const request = vi.fn().mockResolvedValue({ sessions: [] });
 
     await requestSessionUsage({ request } as never, {
-      ...query,
+      startDate: "2026-07-01",
+      endDate: "2026-07-28",
+      scope: "instance",
+      timeZone: "utc",
       limit: 1,
       includeContextWeight: false,
     });

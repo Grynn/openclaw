@@ -735,6 +735,9 @@ describe("compaction-safeguard summary budgets", () => {
         identifierPolicy: "strict",
       }),
     );
+    if (typeof finalized.summary !== "string" || typeof finalized.structuralSummary !== "string") {
+      throw new Error("expected finalized summary strings");
+    }
 
     expect(finalized.structuralSummary).toContain(`## Exact identifiers\n`);
     expect(finalized.structuralSummary).toContain(identifier);
@@ -768,6 +771,9 @@ describe("compaction-safeguard summary budgets", () => {
         identifierPolicy: "strict",
       }),
     );
+    if (typeof finalized.summary !== "string" || typeof finalized.structuralSummary !== "string") {
+      throw new Error("expected finalized summary strings");
+    }
 
     expect(finalized.structuralSummary).toBe(body);
     expect(finalized.summary).not.toContain(identifier);

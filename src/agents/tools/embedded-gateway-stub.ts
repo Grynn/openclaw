@@ -55,11 +55,6 @@ interface EmbeddedGatewayRuntime {
     queries: string[];
     sessionKeys?: string[];
   }) => EmbeddedTranscriptSearchResult[];
-  augmentChatHistoryWithCliSessionImports: (opts: {
-    entry: unknown;
-    provider: string | undefined;
-    localMessages: unknown[];
-  }) => unknown[];
   getMaxChatHistoryMessagesBytes: () => number;
   CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES: number;
   replaceOversizedChatHistoryMessages: (opts: {

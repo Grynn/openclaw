@@ -38,7 +38,7 @@ function runUpdater(overrides: Record<string, string | undefined>) {
   );
   chmodSync(fakeGit, 0o755);
 
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     OPENCLAW_TEST_GIT_LOG: gitLog,
     PATH: `${binDir}:${process.env.PATH ?? ""}`,

@@ -997,9 +997,7 @@ export async function runGatewayLoop(params: {
         gatewayLog.error(
           `deferred context-engine maintenance did not stop before lifecycle reset; ${maintenanceDrain.active} worker(s) still active; exiting for supervisor recovery`,
         );
-        await writeStabilityBundle("gateway.restart_context_maintenance_drain_timeout");
-        completeForcedStop("gateway.restart_context_maintenance_drain_timeout");
-        await exitProcessAfterLogFlush(1);
+        await forceExitAfterStabilityBundle("gateway.restart_context_maintenance_drain_timeout");
         // RuntimeEnv.exit terminates production processes. Keep test/custom
         // runtimes from advancing to resetAllLanes after a non-terminating exit.
         return await new Promise<void>(() => {});
