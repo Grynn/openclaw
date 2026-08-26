@@ -155,6 +155,27 @@ describe("githubCopilotMemoryEmbeddingProviderAdapter", () => {
     expect(githubCopilotMemoryEmbeddingProviderAdapter.allowExplicitWhenConfiguredAuto).toBe(true);
   });
 
+  it("propagates read-only status intent to stored GitHub token resolution", async () => {
+    mockDiscoveryResponse({
+      ok: true,
+      json: buildModelsResponse([
+        { id: "text-embedding-3-small", supported_endpoints: ["/v1/embeddings"] },
+      ]),
+    });
+
+    await githubCopilotMemoryEmbeddingProviderAdapter.create({
+      ...defaultCreateOptions(),
+      readOnly: true,
+    });
+
+    expect(resolveFirstGithubTokenMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentDir: "/tmp/test-agent",
+        readOnly: true,
+      }),
+    );
+  });
+
   it("picks text-embedding-3-small when available", async () => {
     mockDiscoveryResponse({
       ok: true,

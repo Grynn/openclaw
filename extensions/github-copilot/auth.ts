@@ -19,12 +19,14 @@ export async function resolveFirstGithubToken(params: {
   env: NodeJS.ProcessEnv;
   profileId?: string;
   authProfileMode?: ProviderPrepareDynamicModelContext["authProfileMode"];
+  readOnly?: boolean;
 }): Promise<{
   githubToken: string;
   hasProfile: boolean;
 }> {
   const authStore = ensureAuthProfileStore(params.agentDir, {
     allowKeychainPrompt: false,
+    ...(params.readOnly ? { readOnly: true, syncExternalCli: false } : {}),
   });
   const profileIds = listProfilesForProvider(authStore, PROVIDER_ID);
   const hasProfile = profileIds.length > 0;

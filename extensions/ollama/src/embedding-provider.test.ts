@@ -156,6 +156,16 @@ function expectEmbeddingFetch(
 }
 
 describe("ollama embedding provider", () => {
+  it("marks read-only status as configuration-only without issuing inference", async () => {
+    const fetchMock = mockEmbeddingFetch([1, 0]);
+
+    const result = await createMemoryEmbeddingProvider({ readOnly: true });
+
+    expect(result.runtime?.readOnlyProbe).toBe("configuration-only");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchConfiguredLocalOriginWithSsrFGuardMock).not.toHaveBeenCalled();
+  });
+
   it("calls /api/embed and returns normalized vectors", async () => {
     const fetchMock = mockEmbeddingFetch([3, 4]);
 

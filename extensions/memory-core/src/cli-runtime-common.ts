@@ -4,6 +4,7 @@ import {
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import {
   listAgentIds,
+  resolveAgentWorkspaceDir,
   resolveConfiguredAgentId,
 } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { buildAgentSessionKey } from "openclaw/plugin-sdk/routing";
@@ -223,6 +224,31 @@ export async function withMemoryCommand(params: {
       inspectSources: params.inspectSources,
       acquireLocalService: params.acquireLocalService,
       run: async (manager) => params.run({ manager, cfg, agentId }),
+    });
+  }
+  return cfg;
+}
+
+export async function withMemoryWorkspaceCommand(params: {
+  commandName: string;
+  agent?: string;
+  allAgents?: boolean;
+  diagnosticsToStderr?: boolean;
+  run: (context: { workspaceDir: string; cfg: OpenClawConfig; agentId: string }) => Promise<void>;
+}): Promise<OpenClawConfig> {
+  const { config: cfg, diagnostics } = await loadMemoryCommandConfig(
+    params.commandName,
+    "read_only_status",
+  );
+  emitMemorySecretResolveDiagnostics(diagnostics, { json: params.diagnosticsToStderr });
+  const agentIds = params.allAgents
+    ? resolveAgentIds(cfg, params.agent)
+    : [resolveAgent(cfg, params.agent)];
+  for (const agentId of agentIds) {
+    await params.run({
+      cfg,
+      agentId,
+      workspaceDir: resolveAgentWorkspaceDir(cfg, agentId),
     });
   }
   return cfg;

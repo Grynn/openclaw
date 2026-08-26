@@ -129,6 +129,7 @@ export async function resolveRemoteEmbeddingBearerClient(params: {
               provider: params.provider,
               cfg: params.options.config,
               agentDir: params.options.agentDir,
+              readOnly: params.options.readOnly,
             }),
             params.provider,
           )

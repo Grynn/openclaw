@@ -25,6 +25,7 @@ export const lmstudioMemoryEmbeddingProviderAdapter: MemoryEmbeddingProviderAdap
       provider,
       runtime: {
         id: "lmstudio",
+        readOnlyProbe: "configuration-only",
         inlineBatchTimeoutMs: 10 * 60_000,
         cacheKeyData: {
           provider: providerId,

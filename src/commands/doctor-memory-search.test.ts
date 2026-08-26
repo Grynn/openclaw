@@ -739,6 +739,7 @@ describe("noteMemorySearchHealth", () => {
       provider: authProvider,
       cfg,
       agentDir: "/tmp/agent-default",
+      readOnly: true,
     });
     expect(note).not.toHaveBeenCalled();
   });
@@ -967,6 +968,7 @@ describe("noteMemorySearchHealth", () => {
       provider: "openai",
       cfg: openaiCfg,
       agentDir: "/tmp/agent-default",
+      readOnly: true,
     });
   });
 
@@ -1135,6 +1137,7 @@ describe("memory recall doctor integration", () => {
   }
 
   it("notes recall-store audit problems with doctor guidance", async () => {
+    getActiveMemorySearchManagerCore.mockClear();
     auditShortTermPromotionArtifacts.mockResolvedValueOnce(
       shortTermAudit({
         entryCount: 12,
@@ -1171,6 +1174,7 @@ describe("memory recall doctor integration", () => {
       "memory status --fix",
     );
     expect(String(note.mock.calls[1]?.[0] ?? "")).toContain("Dreaming: enabled");
+    expect(getActiveMemorySearchManagerCore).not.toHaveBeenCalled();
   });
 
   it("runs memory recall repair during doctor --fix", async () => {
@@ -1278,17 +1282,6 @@ describe("memory recall doctor integration", () => {
     listAgentIds.mockReturnValue(["agent-default", "secondary"]);
     resolveAgentDir.mockImplementation((_cfg, agentId) => `/tmp/${agentId}`);
     resolveAgentWorkspaceDir.mockImplementation((_cfg, agentId) => `/tmp/${agentId}/workspace`);
-    const closes = new Map<string, ReturnType<typeof vi.fn>>();
-    getActiveMemorySearchManagerCore.mockImplementation(async ({ agentId }) => {
-      const close = vi.fn(async () => {});
-      closes.set(agentId, close);
-      return {
-        manager: {
-          status: () => ({ workspaceDir: `/tmp/${agentId}/workspace`, backend: "builtin" }),
-          close,
-        },
-      };
-    });
     auditShortTermPromotionArtifacts.mockImplementation(async ({ workspaceDir }) =>
       shortTermAudit({
         storePath: `${workspaceDir}/memory/.dreams/short-term-recall.json`,
@@ -1317,9 +1310,7 @@ describe("memory recall doctor integration", () => {
 
     await maybeRepairMemoryRecallHealth({ cfg, prompter });
 
-    expect(getActiveMemorySearchManagerCore).toHaveBeenCalledTimes(2);
-    expect(closes.get("agent-default")).toHaveBeenCalledOnce();
-    expect(closes.get("secondary")).toHaveBeenCalledOnce();
+    expect(getActiveMemorySearchManagerCore).not.toHaveBeenCalled();
     expect(repairShortTermPromotionArtifacts).toHaveBeenCalledTimes(1);
     expect(repairShortTermPromotionArtifacts).toHaveBeenCalledWith({
       workspaceDir: "/tmp/secondary/workspace",

@@ -922,6 +922,40 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
     expect(refreshProviderOAuthCredentialWithPluginMock).not.toHaveBeenCalled();
   });
 
+  it("keeps read-only provider probes from syncing CLI auth or refreshing expired OAuth", async () => {
+    const profileId = "openai:user@example.com";
+    saveAuthProfileStore(
+      createExpiredOauthStore({
+        profileId,
+        provider: "openai",
+        accountId: "acct-read-only",
+      }),
+      agentDir,
+      { filterExternalAuthProfiles: false, syncExternalCli: false },
+    );
+    const before = await readPersistedStore(agentDir);
+    readCodexCliCredentialsCachedMock.mockReturnValue({
+      type: "oauth",
+      provider: "openai",
+      access: "cli-access-must-not-be-read",
+      refresh: "cli-refresh-must-not-be-read",
+      expires: Date.now() + 86_400_000,
+      accountId: "acct-read-only",
+    });
+
+    await expect(
+      resolveApiKeyForProviderCore({
+        provider: "openai",
+        agentDir,
+        readOnly: true,
+      }),
+    ).rejects.toThrow('No API key found for provider "openai"');
+
+    expect(readCodexCliCredentialsCachedMock).not.toHaveBeenCalled();
+    expect(refreshProviderOAuthCredentialWithPluginMock).not.toHaveBeenCalled();
+    expect(await readPersistedStore(agentDir)).toEqual(before);
+  });
+
   it("rejects mismatched Codex CLI fallback after forced local refresh fails", async () => {
     const profileId = "openai:default";
     saveAuthProfileStore(

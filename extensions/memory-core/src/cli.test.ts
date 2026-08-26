@@ -383,9 +383,9 @@ describe("memory cli", () => {
     vi.stubEnv("OPENCLAW_STATE_DIR", path.join(workspaceDir, "state"));
     vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(workspaceDir, "openclaw.json"));
     await fs.mkdir(workspaceDir, { recursive: true });
+    getRuntimeConfig.mockReturnValue({ agents: { defaults: { workspace: workspaceDir } } });
     await seedCliBackfillTranscript("drain", ["2026-01-01", "2026-01-02", "2026-01-03"]);
 
-    mockManager({ status: () => makeMemoryStatus({ workspaceDir }), close: vi.fn() });
     const applyJson = spyRuntimeJson(defaultRuntime);
     await runMemoryCli([
       "session-backfill",
@@ -404,12 +404,12 @@ describe("memory cli", () => {
     expect(applied).toMatchObject({ batchCount: 3, candidateCount: 3 });
     expect(applied?.batches.map((batch) => batch.candidates)).toEqual([1, 1, 1]);
 
-    mockManager({ status: () => makeMemoryStatus({ workspaceDir }), close: vi.fn() });
     applyJson.mockClear();
     await runMemoryCli(["session-backfill", "--agent", "main", "--limit-days", "1", "--json"]);
     expect(firstWrittenJsonArg<{ candidateCount: number }>(applyJson)).toMatchObject({
       candidateCount: 0,
     });
+    expect(getMemorySearchManager).not.toHaveBeenCalled();
   });
 
   it("rejects invalid memory search numeric options before running the command", async () => {
@@ -542,6 +542,7 @@ describe("memory cli", () => {
   async function withTempWorkspace(run: (workspaceDir: string) => Promise<void>) {
     const workspaceDir = path.join(workspaceFixtureRoot, `case-${workspaceCaseId++}`);
     await fs.mkdir(path.join(workspaceDir, "memory", ".dreams"), { recursive: true });
+    getRuntimeConfig.mockReturnValue({ agents: { defaults: { workspace: workspaceDir } } });
     await run(workspaceDir);
   }
 
@@ -1464,7 +1465,7 @@ describe("memory cli", () => {
       expect(probeVectorAvailability).toHaveBeenCalled();
       expect(probeEmbeddingAvailability).toHaveBeenCalled();
       expect(getMemorySearchManager).toHaveBeenCalledWith({
-        cfg: {},
+        cfg: { agents: { defaults: { workspace: workspaceDir } } },
         agentId: "main",
         purpose: "cli",
         inspectSources: true,
@@ -1562,7 +1563,7 @@ describe("memory cli", () => {
 
       expectCliSync(sync);
       expect(getMemorySearchManager).toHaveBeenCalledWith({
-        cfg: {},
+        cfg: { agents: { defaults: { workspace: workspaceDir } } },
         agentId: "main",
         purpose: "cli",
         inspectSources: true,
@@ -1969,18 +1970,12 @@ describe("memory cli", () => {
   });
 
   it("prints no candidates when promote has no short-term recall data", async () => {
-    await withTempWorkspace(async (workspaceDir) => {
-      const close = vi.fn(async () => {});
-      mockManager({
-        status: () => makeMemoryStatus({ workspaceDir }),
-        close,
-      });
-
+    await withTempWorkspace(async () => {
       const log = spyRuntimeLogs(defaultRuntime);
       await runMemoryCli(["promote"]);
 
       expect(log).toHaveBeenCalledWith("No short-term recall candidates.");
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
       expect(process.exitCode).toBeUndefined();
     });
   });
@@ -2025,7 +2020,7 @@ describe("memory cli", () => {
       const payload = firstWrittenJsonArg<{ candidates: unknown[] }>(writeJson);
       expect(Array.isArray(payload?.candidates)).toBe(true);
       expect(payload?.candidates).toHaveLength(1);
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2057,7 +2052,7 @@ describe("memory cli", () => {
 
       const payload = firstWrittenJsonArg<{ candidate?: { snippet?: string } }>(writeJson);
       expect(payload?.candidate?.snippet).toContain("Configured VLAN 10");
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2102,7 +2097,7 @@ describe("memory cli", () => {
       }>(writeJson);
       expect(payload?.rem?.candidateTruths?.[0]?.snippet).toContain("Always check weather");
       expect(payload?.deep?.candidates?.[0]?.snippet).toContain("Always check weather");
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2144,7 +2139,7 @@ describe("memory cli", () => {
       expect(Array.isArray(payload?.rem?.candidateTruths)).toBe(true);
       expect(payload?.deep?.candidates?.[0]?.snippet).toContain("Happy Together");
       expect(payload?.deep?.candidates?.[0]?.path).toBe("memory/2025-01-01.md");
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2184,7 +2179,7 @@ describe("memory cli", () => {
         candidate.snippet?.includes("Happy Together"),
       );
       expect(calendarCandidate?.path).toBe("memory/2025-01-01-vendor-pitch.md");
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2235,7 +2230,7 @@ describe("memory cli", () => {
       expect(payload?.grounded?.files?.[0]?.memoryImplications?.[0]?.text).toContain(
         'Always use "Happy Together" calendar for flights and reservations',
       );
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2269,7 +2264,7 @@ describe("memory cli", () => {
       expect(dreams).toContain("What Happened");
       expect(dreams).toContain("Possible Lasting Updates");
       expect(dreams).toContain("Happy Together");
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2311,7 +2306,7 @@ describe("memory cli", () => {
       expect(dreams).toContain(`source=${secondSluggedPath}`);
       expect(dreams).toContain("Happy Together");
       expect(dreams).toContain("aisle seats");
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2329,7 +2324,7 @@ describe("memory cli", () => {
       expect(
         errors.mock.calls.some((call) => String(call[0]).includes("found no YYYY-MM-DD.md files")),
       ).toBe(true);
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2361,7 +2356,7 @@ describe("memory cli", () => {
       expect(entries[0]?.groundedCount).toBe(3);
       expect(entries[0]?.queryHashes).toHaveLength(2);
       expect(entries[0]?.recallCount).toBe(0);
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2394,7 +2389,7 @@ describe("memory cli", () => {
 
       const entries = await readShortTermRecallEntries({ workspaceDir });
       expect(entries).toHaveLength(0);
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2444,7 +2439,7 @@ describe("memory cli", () => {
         "MB Server repo updated but the active installed runtime is still old",
       );
       expect(rendered).not.toContain("jpclawhq updated and running");
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2496,7 +2491,7 @@ describe("memory cli", () => {
       expect(rendered).toContain("mostly as monitoring and operational state");
       expect(rendered).not.toContain("Pressure LOW");
       expect(rendered).not.toContain("invalid_grant");
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2556,7 +2551,7 @@ describe("memory cli", () => {
           item.text.includes("converting messy inbound information into routed workflows"),
         ),
       ).toBe(false);
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2594,7 +2589,7 @@ describe("memory cli", () => {
       const rendered = payload?.grounded?.files?.[0]?.renderedMarkdown ?? "";
       expect(rendered).not.toContain("Use long- term plans");
       expect(rendered).not.toContain("A self- aware workflow note");
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2639,7 +2634,7 @@ describe("memory cli", () => {
       const dreams = await fs.readFile(dreamsPath, "utf-8");
       expect(dreams).toContain("Keep this normal dream.");
       expect(dreams).not.toContain("Remove this entry.");
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2701,7 +2696,7 @@ describe("memory cli", () => {
       expect(memoryText).toContain("memory/2026-04-01.md:10-10");
       expectLogged(log, `Processed 1 candidate(s) for ${memoryPath}.`);
       expectLogged(log, "appended=1 reconciledExisting=0");
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 
@@ -2986,7 +2981,7 @@ describe("memory cli", () => {
 
       expectLogged(log, "recalls=2 avg=0.890 queries=2 age=1.0d consolidate=0.30 conceptual=1.00");
       expectLogged(log, "concepts=backup, glacier, router, vlan, configured, vectors");
-      expect(close).toHaveBeenCalled();
+      expect(getMemorySearchManager).not.toHaveBeenCalled();
     });
   });
 

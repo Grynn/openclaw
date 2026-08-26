@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveMemoryRemDreamingConfig } from "openclaw/plugin-sdk/memory-core-host-status";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
-import { resolveMemoryPluginConfig, withMemoryCommand } from "./cli-runtime-common.js";
+import { resolveMemoryPluginConfig, withMemoryWorkspaceCommand } from "./cli-runtime-common.js";
 import { defaultRuntime, shortenHomePath, theme } from "./cli.host.runtime.js";
 import type { MemoryRemBackfillOptions, MemoryRemHarnessOptions } from "./cli.types.js";
 import { removeBackfillDiaryEntries, writeBackfillDiaryEntries } from "./dreaming-narrative.js";
@@ -21,19 +21,12 @@ export async function runMemorySessionBackfill(
   opts: MemorySessionBackfillOptions,
   hostOptions?: MemoryCoreRuntimeHost,
 ) {
-  await withMemoryCommand({
+  await withMemoryWorkspaceCommand({
     commandName: "memory session-backfill",
     agent: opts.agent,
     diagnosticsToStderr: Boolean(opts.json),
-    purpose: "status",
     ...hostOptions,
-    run: async ({ manager, cfg, agentId }) => {
-      const workspaceDir = manager.status().workspaceDir?.trim();
-      if (!workspaceDir) {
-        defaultRuntime.error("Memory session-backfill requires a resolvable workspace directory.");
-        process.exitCode = 1;
-        return;
-      }
+    run: async ({ workspaceDir, cfg, agentId }) => {
       if (
         opts.rollback &&
         (opts.apply || opts.rem || opts.from || opts.to || opts.archiveFiles?.length)
@@ -115,27 +108,19 @@ export async function runMemoryRemHarness(
   opts: MemoryRemHarnessOptions,
   hostOptions?: MemoryCoreRuntimeHost,
 ) {
-  await withMemoryCommand({
+  await withMemoryWorkspaceCommand({
     commandName: "memory rem-harness",
     agent: opts.agent,
     diagnosticsToStderr: Boolean(opts.json),
-    purpose: "status",
     ...hostOptions,
-    run: async ({ manager, cfg, agentId }) => {
-      const status = manager.status();
-      const managerWorkspaceDir = status.workspaceDir?.trim();
+    run: async ({ workspaceDir: configuredWorkspaceDir, cfg, agentId }) => {
       const pluginConfig = resolveMemoryPluginConfig(cfg);
-      if (!managerWorkspaceDir && !opts.path) {
-        defaultRuntime.error("Memory rem-harness requires a resolvable workspace directory.");
-        process.exitCode = 1;
-        return;
-      }
       const remConfig = resolveMemoryRemDreamingConfig({
         pluginConfig,
         cfg,
       });
       const nowMs = Date.now();
-      let workspaceDir = managerWorkspaceDir ?? "";
+      let workspaceDir = configuredWorkspaceDir;
       let sourceFiles: string[] = [];
       let groundedInputPaths: string[] = [];
       let importedFileCount = 0;
@@ -164,11 +149,6 @@ export async function runMemoryRemHarness(
           process.exitCode = 1;
           return;
         }
-      }
-      if (!workspaceDir) {
-        defaultRuntime.error("Memory rem-harness requires a resolvable workspace directory.");
-        process.exitCode = 1;
-        return;
       }
       try {
         const preview = await previewRemHarness({
@@ -280,25 +260,17 @@ export async function runMemoryRemBackfill(
   opts: MemoryRemBackfillOptions,
   hostOptions?: MemoryCoreRuntimeHost,
 ) {
-  await withMemoryCommand({
+  await withMemoryWorkspaceCommand({
     commandName: "memory rem-backfill",
     agent: opts.agent,
     diagnosticsToStderr: Boolean(opts.json),
-    purpose: "status",
     ...hostOptions,
-    run: async ({ manager, cfg, agentId }) => {
-      const status = manager.status();
-      const workspaceDir = status.workspaceDir?.trim();
+    run: async ({ workspaceDir, cfg, agentId }) => {
       const pluginConfig = resolveMemoryPluginConfig(cfg);
       const remConfig = resolveMemoryRemDreamingConfig({
         pluginConfig,
         cfg,
       });
-      if (!workspaceDir) {
-        defaultRuntime.error("Memory rem-backfill requires a resolvable workspace directory.");
-        process.exitCode = 1;
-        return;
-      }
       if (opts.rollback || opts.rollbackShortTerm) {
         const diaryRollback = opts.rollback
           ? await removeBackfillDiaryEntries({ workspaceDir })

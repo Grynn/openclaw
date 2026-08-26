@@ -102,6 +102,20 @@ describe("resolveFirstGithubToken", () => {
     });
   });
 
+  it("opens stored profiles without sync or persistence during read-only diagnostics", async () => {
+    await resolveFirstGithubToken({
+      agentDir: "/tmp/github-read-only-agent",
+      env: {},
+      readOnly: true,
+    });
+
+    expect(ensureAuthProfileStoreMock).toHaveBeenCalledWith("/tmp/github-read-only-agent", {
+      allowKeychainPrompt: false,
+      readOnly: true,
+      syncExternalCli: false,
+    });
+  });
+
   it("uses environment direct auth without falling back to config or the first profile", async () => {
     const config = {
       models: {

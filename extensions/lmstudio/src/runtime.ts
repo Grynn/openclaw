@@ -229,6 +229,7 @@ export async function resolveLmstudioRuntimeApiKey(params: {
   agentDir?: string;
   env?: NodeJS.ProcessEnv;
   headers?: unknown;
+  readOnly?: boolean;
 }): Promise<string | undefined> {
   const config = params.config;
   if (!config) {
@@ -269,6 +270,7 @@ export async function resolveLmstudioRuntimeApiKey(params: {
       provider: LMSTUDIO_PROVIDER_ID,
       cfg: config,
       agentDir: params.agentDir,
+      readOnly: params.readOnly,
     });
   } catch {
     return await resolveConfiguredApiKeyOrThrow();

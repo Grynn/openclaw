@@ -22,12 +22,18 @@ describe("memory index", () => {
 
   it("caches embedding probe readiness across transient status managers", async () => {
     const cfg = createCfg({});
+    const schemaManager = await getFreshManager(cfg, "cli");
+    await schemaManager.close();
     const first = requireManager(
       await getMemorySearchManager({ cfg, agentId: "main", purpose: "status" }),
     );
     trackManager(first);
 
     await expect(first.probeEmbeddingAvailability()).resolves.toEqual({ ok: true });
+    expect(providerFixture.providerCalls.at(-1)).toMatchObject({
+      readOnly: true,
+      acquireLocalService: undefined,
+    });
     expect(providerFixture.embedBatchCalls).toBe(1);
     await first.close();
 
@@ -59,6 +65,43 @@ describe("memory index", () => {
 
     const cached = second.getCachedEmbeddingAvailability?.();
     expect((cached?.cacheExpiresAtMs ?? 0) - (cached?.checkedAtMs ?? 0)).toBe(30_000);
+  });
+
+  it("skips inference-only probes for read-only status while preserving writable probes", async () => {
+    const cfg = createCfg({});
+    const schemaManager = await getFreshManager(cfg, "cli");
+    await schemaManager.close();
+    const statusManager = await getFreshManager(cfg, "status");
+    const statusFields = statusManager as unknown as {
+      ensureProviderInitialized: () => Promise<void>;
+      providerRuntime: { id: string; readOnlyProbe: "configuration-only" };
+    };
+    await statusFields.ensureProviderInitialized();
+    statusFields.providerRuntime = {
+      id: "local-side-effect-boundary",
+      readOnlyProbe: "configuration-only",
+    };
+
+    await expect(statusManager.probeEmbeddingAvailability()).resolves.toEqual({
+      ok: true,
+      checked: false,
+    });
+    expect(providerFixture.embedBatchCalls).toBe(0);
+    await statusManager.close();
+
+    const writableManager = await getFreshManager(cfg, "cli");
+    const writableFields = writableManager as unknown as {
+      ensureProviderInitialized: () => Promise<void>;
+      providerRuntime: { id: string; readOnlyProbe: "configuration-only" };
+    };
+    await writableFields.ensureProviderInitialized();
+    writableFields.providerRuntime = {
+      id: "local-side-effect-boundary",
+      readOnlyProbe: "configuration-only",
+    };
+
+    await expect(writableManager.probeEmbeddingAvailability()).resolves.toEqual({ ok: true });
+    expect(providerFixture.embedBatchCalls).toBe(1);
   });
 
   it("clears cached embedding probe readiness when local embeddings degrade", async () => {

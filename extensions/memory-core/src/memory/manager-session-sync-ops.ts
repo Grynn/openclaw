@@ -7,6 +7,7 @@ import {
 } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
 import {
   listSessionTranscriptCorpusEntriesForAgent,
+  readTranscriptStatsBatchReadOnlySync,
   sessionPathForFile,
   sessionPathForSessionIdentity,
   statSessionEntrySync,
@@ -19,6 +20,7 @@ import {
   type MemorySyncParams,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
+import { isMemoryDatabaseReadOnly } from "./manager-db.js";
 import { shouldSyncSessionsForReindex } from "./manager-session-reindex.js";
 import {
   resolveMemorySessionStartupState,
@@ -69,7 +71,11 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
   }
 
   protected listSessionCorpusEntries(): Promise<SessionTranscriptCorpusEntry[]> {
-    return listSessionTranscriptCorpusEntriesForAgent(this.agentId);
+    const readOnly = isMemoryDatabaseReadOnly(this.db);
+    return listSessionTranscriptCorpusEntriesForAgent(this.agentId, {
+      includeContentRevision: !readOnly,
+      readOnly,
+    });
   }
 
   protected sessionPathForCorpusEntry(entry: SessionTranscriptCorpusEntry): string {
@@ -161,11 +167,42 @@ export abstract class MemoryManagerSessionSyncOps extends MemoryManagerWatchOps 
       db: this.db,
       source: "sessions",
     }).rows;
+    const readOnly = isMemoryDatabaseReadOnly(this.db);
+    const sqliteCorpusEntries = readOnly
+      ? corpusEntries.filter((entry) => entry.transcriptSource === "sqlite")
+      : [];
+    const readOnlyStats = readOnly
+      ? readTranscriptStatsBatchReadOnlySync(
+          sqliteCorpusEntries.map((entry) => ({
+            agentId: entry.agentId,
+            sessionId: entry.sessionId,
+            ...(entry.sessionKey ? { sessionKey: entry.sessionKey } : {}),
+            ...(entry.storePath ? { storePath: entry.storePath } : {}),
+          })),
+        )
+      : [];
+    const readOnlyStatsByEntry = new Map(
+      sqliteCorpusEntries.map((entry, index) => [entry, readOnlyStats[index]] as const),
+    );
     const fileStates = (
       await runWithConcurrency(
         corpusEntries.map(
           (corpusEntry) => async (): Promise<MemorySessionStartupFileState | null> => {
             if (corpusEntry.transcriptSource === "sqlite") {
+              if (readOnly) {
+                const stats = readOnlyStatsByEntry.get(corpusEntry);
+                return stats
+                  ? {
+                      absPath: corpusEntry.sessionFile,
+                      path: sessionPathForSessionIdentity(
+                        corpusEntry.agentId,
+                        corpusEntry.sessionId,
+                      ),
+                      mtimeMs: corpusEntry.updatedAtMs ?? stats.maxSeq,
+                      size: stats.sizeBytes,
+                    }
+                  : null;
+              }
               return statSessionEntrySync(
                 corpusEntry.sessionFile,
                 this.buildSessionEntryOptions(corpusEntry),

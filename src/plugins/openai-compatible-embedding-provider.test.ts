@@ -309,11 +309,38 @@ describe("openai-compatible generic embedding provider", () => {
     );
 
     expect(result.provider?.id).toBe("openai-compatible");
+    expect(result.runtime?.readOnlyProbe).toBeUndefined();
     expect(result.runtime?.cacheKeyData).toMatchObject({
       provider: "openai-compatible",
       baseUrl: server.baseUrl,
       model: "nomic-embed-text",
     });
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("marks configured local services configuration-only for read-only status", async () => {
+    const server = await startEmbeddingServer();
+    const result = await openAICompatibleEmbeddingProviderAdapter.create(
+      createOptions({
+        config: {
+          models: {
+            providers: {
+              "gpu-spark": {
+                api: "openai-completions",
+                baseUrl: server.baseUrl,
+                localService: { command: process.execPath },
+                models: [],
+              },
+            },
+          },
+        } as EmbeddingProviderCreateOptions["config"],
+        provider: "gpu-spark",
+        model: "gpu-spark/nomic-embed-text",
+        readOnly: true,
+      }),
+    );
+
+    expect(result.runtime?.readOnlyProbe).toBe("configuration-only");
     expect(server.requests).toHaveLength(0);
   });
 

@@ -15,6 +15,7 @@ import {
   MEMORY_INDEX_PATHS_FTS_TABLE,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import {
+  assertOpenClawAgentDatabaseReadOnlySchema,
   ensureOpenClawAgentDatabaseSchema,
   openNodeSqliteDatabase,
   runSqliteImmediateTransactionSync,
@@ -26,6 +27,7 @@ import {
 
 const MEMORY_REINDEX_SCHEMA = "memory_reindex";
 const MEMORY_INDEX_STATE_ID = 1;
+const READ_ONLY_MEMORY_DATABASES = new WeakSet<DatabaseSync>();
 const MEMORY_DATABASE_FILE_SUFFIXES = ["", "-wal", "-shm", "-journal"] as const;
 const MEMORY_REINDEX_ENTRY_SUFFIXES = ["-wal", "-shm", "-journal", ""] as const;
 const MEMORY_REINDEX_UUID_PATTERN =
@@ -66,6 +68,7 @@ function tableExists(db: DatabaseSync, schema: string, tableName: string): boole
     .get(tableName) as { ok?: unknown } | undefined;
   return row?.ok === 1;
 }
+export { tableExists as memoryDatabaseTableExists };
 
 function readTableSql(db: DatabaseSync, schema: string, tableName: string): string | null {
   const row = db
@@ -362,7 +365,40 @@ export function openMemoryDatabaseAtPath(
   }
 }
 
+/** Open an existing memory index without joining any writer-owned lifecycle. */
+export function openMemoryDatabaseReadOnlyAtPath(
+  dbPath: string,
+  allowExtension: boolean,
+  agentId: string,
+): DatabaseSync {
+  if (!fs.existsSync(dbPath)) {
+    throw new Error(`Memory index database does not exist: ${dbPath}`);
+  }
+  const db = openNodeSqliteDatabase(dbPath, { allowExtension, readOnly: true });
+  try {
+    // Keep each SELECT on a current committed WAL view. A manager-lifetime read
+    // transaction would pin stale transcript/provider status until close.
+    db.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;");
+    if (!assertOpenClawAgentDatabaseReadOnlySchema(db, { agentId, pathname: dbPath })) {
+      throw new Error(`OpenClaw agent database ${dbPath} has no schema ownership metadata.`);
+    }
+    READ_ONLY_MEMORY_DATABASES.add(db);
+    return db;
+  } catch (err) {
+    db.close();
+    throw err;
+  }
+}
+
 export function closeMemoryDatabase(db: DatabaseSync): void {
+  if (READ_ONLY_MEMORY_DATABASES.delete(db)) {
+    db.close();
+    return;
+  }
   closeMemorySqliteWalMaintenance(db);
   db.close();
+}
+
+export function isMemoryDatabaseReadOnly(db: DatabaseSync): boolean {
+  return READ_ONLY_MEMORY_DATABASES.has(db);
 }

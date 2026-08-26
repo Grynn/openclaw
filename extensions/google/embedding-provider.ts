@@ -395,6 +395,7 @@ async function resolveGeminiEmbeddingClient(
             provider: "google",
             cfg: options.config,
             agentDir: options.agentDir,
+            readOnly: options.readOnly,
           }),
           "google",
         )

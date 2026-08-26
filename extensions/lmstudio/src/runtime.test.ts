@@ -97,6 +97,28 @@ describe("lmstudio-runtime", () => {
     ).resolves.toBe(LMSTUDIO_LOCAL_API_KEY_PLACEHOLDER);
   });
 
+  it("propagates read-only status intent to provider auth resolution", async () => {
+    const config = buildLmstudioConfig();
+    resolveApiKeyForProviderMock.mockResolvedValueOnce({
+      apiKey: LMSTUDIO_LOCAL_API_KEY_PLACEHOLDER,
+      source: "models.providers.lmstudio (synthetic local key)",
+      mode: "api-key",
+    });
+
+    await resolveLmstudioRuntimeApiKey({
+      agentDir: "/tmp/lmstudio-read-only-agent",
+      config,
+      readOnly: true,
+    });
+
+    expect(resolveApiKeyForProviderMock).toHaveBeenCalledWith({
+      agentDir: "/tmp/lmstudio-read-only-agent",
+      cfg: config,
+      provider: "lmstudio",
+      readOnly: true,
+    });
+  });
+
   it("accepts synthesized lmstudio-local for explicit api-key mode", async () => {
     resolveApiKeyForProviderMock.mockResolvedValueOnce({
       apiKey: LMSTUDIO_LOCAL_API_KEY_PLACEHOLDER,

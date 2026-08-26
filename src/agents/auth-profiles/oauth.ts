@@ -31,6 +31,7 @@ import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
 import { authProfilesLog, CLAUDE_CLI_PROFILE_ID } from "./constants.js";
 import {
   evaluateStoredCredentialEligibility,
+  hasUsableOAuthCredential,
   resolveTokenExpiryState,
 } from "./credential-state.js";
 import { formatAuthDoctorHint } from "./doctor.js";
@@ -183,6 +184,7 @@ type ResolveApiKeyForProfileParams = {
   agentDir?: string;
   forceRefresh?: boolean;
   allowProfileFallback?: boolean;
+  readOnly?: boolean;
 };
 
 type SecretDefaults = NonNullable<OpenClawConfig["secrets"]>["defaults"];
@@ -483,6 +485,20 @@ export async function resolveApiKeyForProfile(
       email: cred.email,
       profileId,
       profileType: cred.type,
+    });
+  }
+
+  if (params.readOnly) {
+    if (!hasUsableOAuthCredential(cred)) {
+      return null;
+    }
+    return buildApiKeyProfileResult({
+      apiKey: await buildOAuthApiKey(cred.provider, cred, { cfg }),
+      provider: cred.provider,
+      email: cred.email,
+      profileId,
+      profileType: cred.type,
+      credential: cred,
     });
   }
 

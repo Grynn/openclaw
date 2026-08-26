@@ -11,6 +11,7 @@ import {
   scanMemoryManagerSources,
   type MemoryManager,
   withMemoryCommand,
+  withMemoryWorkspaceCommand,
 } from "./cli-runtime-common.js";
 import {
   defaultRuntime,
@@ -315,24 +316,16 @@ export async function runMemoryPromote(
   opts: MemoryPromoteCommandOptions,
   hostOptions?: MemoryCoreRuntimeHost,
 ) {
-  await withMemoryCommand({
+  await withMemoryWorkspaceCommand({
     commandName: "memory promote",
     agent: opts.agent,
     diagnosticsToStderr: Boolean(opts.json),
-    purpose: "status",
     ...hostOptions,
-    run: async ({ manager, cfg, agentId }) => {
-      const status = manager.status();
-      const workspaceDir = status.workspaceDir?.trim();
+    run: async ({ workspaceDir, cfg, agentId }) => {
       const dreaming = resolveShortTermPromotionDreamingConfig({
         pluginConfig: resolveMemoryPluginConfig(cfg),
         cfg,
       });
-      if (!workspaceDir) {
-        defaultRuntime.error("Memory promote requires a resolvable workspace directory.");
-        process.exitCode = 1;
-        return;
-      }
       let candidates: Awaited<ReturnType<typeof rankShortTermPromotionCandidates>>;
       try {
         const gatherAllForApply = Boolean(opts.apply);
@@ -489,24 +482,16 @@ export async function runMemoryPromoteExplain(
     process.exitCode = 1;
     return;
   }
-  await withMemoryCommand({
+  await withMemoryWorkspaceCommand({
     commandName: "memory promote-explain",
     agent: opts.agent,
     diagnosticsToStderr: Boolean(opts.json),
-    purpose: "status",
     ...hostOptions,
-    run: async ({ manager, cfg, agentId }) => {
-      const status = manager.status();
-      const workspaceDir = status.workspaceDir?.trim();
+    run: async ({ workspaceDir, cfg, agentId }) => {
       const dreaming = resolveShortTermPromotionDreamingConfig({
         pluginConfig: resolveMemoryPluginConfig(cfg),
         cfg,
       });
-      if (!workspaceDir) {
-        defaultRuntime.error("Memory promote-explain requires a resolvable workspace directory.");
-        process.exitCode = 1;
-        return;
-      }
       let candidates: Awaited<ReturnType<typeof rankShortTermPromotionCandidates>>;
       try {
         candidates = await rankShortTermPromotionCandidates({

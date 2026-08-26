@@ -21,6 +21,11 @@ export type EmbeddingProviderCallOptions = {
 /** Runtime metadata returned with a created embedding provider. */
 export type EmbeddingProviderRuntime = {
   id: string;
+  /**
+   * Read-only diagnostics must stop after provider creation instead of issuing
+   * an embedding request. Use this when inference can load or retain resources.
+   */
+  readOnlyProbe?: "configuration-only";
   cacheKeyData?: Record<string, unknown>;
   /** Prior persisted model/cache identities that are equivalent to the current identity. */
   indexIdentityAliases?: Array<{
@@ -59,6 +64,8 @@ export type EmbeddingProvider = {
 export type EmbeddingProviderCreateOptions = {
   config: OpenClawConfig;
   agentDir?: string;
+  /** Diagnostic creation must not refresh auth, provision services, or install model assets. */
+  readOnly?: boolean;
   provider?: string;
   remote?: {
     baseUrl?: string;

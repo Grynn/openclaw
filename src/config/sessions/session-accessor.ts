@@ -243,6 +243,7 @@ export {
   readLatestTranscriptAssistantText,
   readTranscriptEventAtSeqSync,
   readTranscriptRawDelta,
+  readTranscriptStatsBatchReadOnlySync,
   readTranscriptStatsSync,
   replayTranscriptBranch,
   replayTranscriptResetEpochBranch,

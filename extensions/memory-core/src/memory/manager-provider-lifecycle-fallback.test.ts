@@ -216,6 +216,8 @@ describe("memory index", () => {
 
   it("exposes already-created local runtime facts without probing embeddings", async () => {
     const cfg = createCfg({});
+    const schemaManager = await getFreshManager(cfg, "cli");
+    await schemaManager.close?.();
     const manager = await getFreshManager(cfg, "status");
     try {
       const getRuntimeFacts = vi.fn(() => ({

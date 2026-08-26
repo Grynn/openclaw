@@ -77,6 +77,21 @@ describe("bedrockMemoryEmbeddingProviderAdapter", () => {
     expect(createBedrockEmbeddingProviderMock).not.toHaveBeenCalled();
   });
 
+  it("fails closed before AWS credential or provider side effects in read-only diagnostics", async () => {
+    hasAwsCredentialsMock.mockResolvedValue(true);
+    stubCreate({ region: "us-east-1", model: "amazon.titan-embed-text-v2:0", dimensions: 1024 });
+
+    await expect(
+      bedrockMemoryEmbeddingProviderAdapter.create({
+        ...defaultCreateOptions(),
+        readOnly: true,
+      }),
+    ).rejects.toThrow("Read-only memory diagnostics do not resolve AWS credentials");
+
+    expect(hasAwsCredentialsMock).not.toHaveBeenCalled();
+    expect(createBedrockEmbeddingProviderMock).not.toHaveBeenCalled();
+  });
+
   it("creates the provider when AWS credentials are available", async () => {
     hasAwsCredentialsMock.mockResolvedValue(true);
     stubCreate({ region: "us-east-1", model: "amazon.titan-embed-text-v2:0", dimensions: 1024 });

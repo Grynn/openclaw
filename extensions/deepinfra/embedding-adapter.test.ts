@@ -102,6 +102,7 @@ describe("DeepInfra generic embedding adapter", () => {
       documentInputType: "document",
       dimensions: 1024,
       taskType: "SEMANTIC_SIMILARITY",
+      readOnly: true,
     });
 
     expect(mocks.createDeepInfraEmbeddingProvider).toHaveBeenCalledWith({
@@ -120,6 +121,7 @@ describe("DeepInfra generic embedding adapter", () => {
       documentInputType: "document",
       outputDimensionality: 1024,
       taskType: "SEMANTIC_SIMILARITY",
+      readOnly: true,
       defaultModel: "BAAI/bge-m3",
     });
     expect(result.runtime).toEqual({

@@ -319,6 +319,7 @@ export const githubCopilotMemoryEmbeddingProviderAdapter: MemoryEmbeddingProvide
             agentDir: options.agentDir,
             config: options.config,
             env: process.env,
+            readOnly: options.readOnly,
           })
         ).githubToken;
     if (!value) {

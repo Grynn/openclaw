@@ -15,6 +15,7 @@ export {
   listAgentIds,
   resolveConfiguredAgentId,
   resolveDefaultAgentId,
+  resolveAgentWorkspaceDir,
   resolveSessionAgentIds,
 } from "../agents/agent-scope.js";
 export { resolveMemorySearchConfig } from "../agents/memory-search.js";

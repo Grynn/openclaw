@@ -461,6 +461,7 @@ export async function resolveProviderEntryApiKeyBinding(params: {
   store: AuthProfileStore;
   agentDir?: string;
   secretSentinels?: boolean;
+  readOnly?: boolean;
 }): Promise<ProviderEntryApiKeyBindingResolution> {
   const reference = resolveProviderEntryApiKeyProfileReference(params);
   if (reference.kind === "none" || reference.kind === "marker") {
@@ -479,6 +480,7 @@ export async function resolveProviderEntryApiKeyBinding(params: {
       store: params.store,
       profileId: reference.profileId,
       agentDir: params.agentDir,
+      readOnly: params.readOnly,
     });
     if (!resolved) {
       return { kind: "profile-unresolved", profileId: reference.profileId };

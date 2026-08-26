@@ -79,10 +79,19 @@ export function resolveScopedAuthProfileStore(params: {
   provider: string;
   profileId?: string;
   preferredProfile?: string;
+  readOnly?: boolean;
 }): AuthProfileStore {
-  return ensureAuthProfileStore(params.agentDir, {
-    externalCli: externalCliDiscoveryForProviderAuth(params),
-  });
+  return ensureAuthProfileStore(
+    params.agentDir,
+    params.readOnly
+      ? {
+          allowKeychainPrompt: false,
+          externalCli: { mode: "none" as const },
+          readOnly: true,
+          syncExternalCli: false,
+        }
+      : { externalCli: externalCliDiscoveryForProviderAuth(params) },
+  );
 }
 
 /** Resolves the credential that should be used for one provider request. */
@@ -107,6 +116,8 @@ export async function resolveApiKeyForProviderCore(params: {
   modelApi?: string;
   /** Keep SecretRef-backed model credentials opaque until a sentinel-aware transport boundary. */
   secretSentinels?: boolean;
+  /** Resolve existing credentials only; never discover, refresh, or persist auth state. */
+  readOnly?: boolean;
 }): Promise<ResolvedProviderAuth> {
   const { provider, cfg, profileId, preferredProfile } = params;
   let deprecatedProfileIds: ReadonlySet<string> | undefined;
@@ -129,6 +140,7 @@ export async function resolveApiKeyForProviderCore(params: {
       provider,
       profileId: requestedProfileId,
       preferredProfile,
+      readOnly: params.readOnly,
     }));
 
   if (profileId) {
@@ -160,6 +172,7 @@ export async function resolveApiKeyForProviderCore(params: {
       profileId,
       agentDir,
       forceRefresh: params.forceRefresh,
+      readOnly: params.readOnly,
     });
     if (!resolved) {
       throw new Error(`No credentials found for profile "${profileId}".`);
@@ -308,6 +321,7 @@ export async function resolveApiKeyForProviderCore(params: {
     store: providerEntryStore,
     agentDir,
     secretSentinels: params.secretSentinels,
+    readOnly: params.readOnly,
   });
   if (providerEntryBinding.kind === "profile-resolved") {
     assertAuthModeAllowedForModel({
@@ -440,6 +454,7 @@ export async function resolveApiKeyForProviderCore(params: {
         profileId: candidate,
         agentDir,
         forceRefresh: params.forceRefresh,
+        readOnly: params.readOnly,
       });
       if (resolved) {
         const resolvedProfileId = resolved.profileId ?? candidate;

@@ -13,6 +13,7 @@ export {
   parseCanonicalSessionSyncTargetFromPath,
   parseSqliteSessionFileMarker,
   parseUsageCountedSessionIdFromFileName,
+  readTranscriptStatsBatchReadOnlySync,
   resolveSessionFileForSyncTarget,
   resolveSessionIdentityForTranscriptFile,
   sessionPathForFile,

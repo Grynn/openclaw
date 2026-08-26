@@ -115,12 +115,7 @@ export function assertOpenClawAgentCurrentRuntimeSchema(
       `OpenClaw agent database ${options.pathname} has no schema ownership metadata.`,
     );
   }
-  assertExistingAgentSchemaOwner(metadata, agentId, options.pathname);
-  if (metadata.schemaVersion !== OPENCLAW_AGENT_SCHEMA_VERSION) {
-    throw new Error(
-      `OpenClaw agent database ${options.pathname} metadata schema version ${metadata.schemaVersion ?? "invalid"} does not match ${OPENCLAW_AGENT_SCHEMA_VERSION}; run openclaw doctor --fix before using it.`,
-    );
-  }
+  assertCurrentAgentSchemaMetadata(metadata, agentId, options.pathname);
   if (hasRetiredAgentStateLeaseSchema(database)) {
     throw new Error(
       `OpenClaw agent database ${options.pathname} retains retired state_leases storage; run openclaw doctor --fix before using it.`,
@@ -290,6 +285,20 @@ export function assertExistingAgentSchemaOwner(
   if (normalizeAgentId(existing.agentId) !== agentId) {
     throw new Error(
       `OpenClaw agent database ${pathname} belongs to agent ${existing.agentId}; requested agent ${agentId}.`,
+    );
+  }
+}
+
+/** Enforce the exact steady-state owner and metadata version without inspecting physical tables. */
+export function assertCurrentAgentSchemaMetadata(
+  existing: ExistingAgentSchemaMeta,
+  agentId: string,
+  pathname: string,
+): void {
+  assertExistingAgentSchemaOwner(existing, agentId, pathname);
+  if (existing.schemaVersion !== OPENCLAW_AGENT_SCHEMA_VERSION) {
+    throw new Error(
+      `OpenClaw agent database ${pathname} metadata schema version ${existing.schemaVersion ?? "invalid"} does not match ${OPENCLAW_AGENT_SCHEMA_VERSION}; run openclaw doctor --fix before using it.`,
     );
   }
 }

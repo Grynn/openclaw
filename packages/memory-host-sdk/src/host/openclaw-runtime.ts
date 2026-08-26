@@ -61,6 +61,7 @@ export { resolveSessionTranscriptsDirForAgent } from "../../../../src/config/ses
 export {
   loadTranscriptEventsSync,
   listSessionEntries,
+  readTranscriptStatsBatchReadOnlySync,
   readTranscriptStatsSync,
   resolveTranscriptSessionKeyBySessionId,
   resolveStorePath,

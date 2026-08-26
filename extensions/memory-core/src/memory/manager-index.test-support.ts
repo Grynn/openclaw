@@ -56,6 +56,8 @@ type ProviderCall = {
   provider?: string;
   model?: string;
   outputDimensionality?: number;
+  readOnly?: boolean;
+  acquireLocalService?: unknown;
 };
 
 type ProviderControls = {
@@ -214,6 +216,8 @@ vi.mock("./embeddings.js", async (importOriginal) => {
         provider: options.provider,
         model: options.model,
         outputDimensionality: options.outputDimensionality,
+        readOnly: options.readOnly,
+        acquireLocalService: options.acquireLocalService,
       });
       await providerState.providerInitGate;
       if (options.provider === providerState.providerCreationFailure) {

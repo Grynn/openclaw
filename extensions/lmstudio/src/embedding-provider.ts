@@ -90,6 +90,7 @@ async function resolveLmstudioApiKey(
     return await resolveLmstudioRuntimeApiKey({
       config: options.config,
       agentDir: options.agentDir,
+      readOnly: options.readOnly,
     });
   } catch (error) {
     // Embeddings can target local LM Studio instances that do not require auth.
@@ -250,7 +251,7 @@ export async function createLmstudioEmbeddingProvider(
           headers,
         }
       : undefined;
-  const acquireLocalService = options.acquireLocalService;
+  const acquireLocalService = options.readOnly ? undefined : options.acquireLocalService;
   const withLocalServiceLease = async <T>(
     signal: AbortSignal | undefined,
     action: () => Promise<T>,
@@ -267,7 +268,7 @@ export async function createLmstudioEmbeddingProvider(
   };
 
   // The provider-owned JIT opt-out applies to embeddings as well as chat.
-  if (providerConfig?.params?.preload !== false) {
+  if (!options.readOnly && providerConfig?.params?.preload !== false) {
     await withLocalServiceLease(undefined, async () => {
       try {
         client.model = await ensureLmstudioModelLoaded({
@@ -294,7 +295,7 @@ export async function createLmstudioEmbeddingProvider(
         });
       }
     });
-  } else if (model.includes("@")) {
+  } else if (!options.readOnly && model.includes("@")) {
     // Variant aliases are not accepted by LM Studio's inference routes. Resolve
     // only the stable wire/cache identity here; JIT still owns the actual load.
     try {

@@ -41,20 +41,13 @@ import {
   type ShortTermAuditSummary,
 } from "../plugin-sdk/memory-core-bundled-runtime.js";
 import { normalizePluginsConfig } from "../plugins/config-state.js";
-import {
-  getActiveMemorySearchManagerCore,
-  resolveActiveMemoryBackendConfig,
-} from "../plugins/memory-runtime.js";
+import { resolveActiveMemoryBackendConfig } from "../plugins/memory-runtime.js";
 import { defaultSlotIdForKey } from "../plugins/slots.js";
 import { getProviderEnvVars } from "../secrets/provider-env-vars.js";
 import { resolveUserPath } from "../utils.js";
 import type { DoctorPrompter } from "./doctor-prompter.js";
 import { maybeRepairWorkspaceMemoryHealth, noteWorkspaceMemoryHealth } from "./doctor-workspace.js";
 import { isRecord } from "./doctor/shared/legacy-config-record-shared.js";
-
-type RuntimeMemoryAuditContext = {
-  workspaceDir?: string;
-};
 
 type MemoryDoctorAgentScope = {
   agentId: string;
@@ -243,29 +236,6 @@ function isKeyOptionalMemoryProvider(providerId: string, cfg: OpenClawConfig): b
   );
 }
 
-async function resolveRuntimeMemoryAuditContext(
-  cfg: OpenClawConfig,
-  agentId: string,
-): Promise<RuntimeMemoryAuditContext | null> {
-  const result = await getActiveMemorySearchManagerCore({
-    cfg,
-    agentId,
-    purpose: "status",
-  });
-  const manager = result.manager;
-  if (!manager) {
-    return null;
-  }
-  try {
-    const status = manager.status();
-    return {
-      workspaceDir: status.workspaceDir?.trim(),
-    };
-  } finally {
-    await manager.close?.().catch(() => undefined);
-  }
-}
-
 function buildMemoryRecallIssueNote(audit: ShortTermAuditSummary): string | null {
   if (audit.issues.length === 0) {
     return null;
@@ -308,11 +278,7 @@ export async function noteMemoryRecallHealth(cfg: OpenClawConfig): Promise<void>
   });
   for (const scope of scopes) {
     try {
-      const context = await resolveRuntimeMemoryAuditContext(cfg, scope.agentId);
-      const workspaceDir = context?.workspaceDir?.trim();
-      if (!workspaceDir) {
-        continue;
-      }
+      const workspaceDir = scope.workspaceDir;
       const audit = await auditShortTermPromotionArtifacts({ workspaceDir });
       const message = buildMemoryRecallIssueNote(audit);
       if (message) {
@@ -361,11 +327,7 @@ export async function maybeRepairMemoryRecallHealth(params: {
       },
     });
     try {
-      const context = await resolveRuntimeMemoryAuditContext(params.cfg, scope.agentId);
-      const workspaceDir = context?.workspaceDir?.trim();
-      if (!workspaceDir) {
-        continue;
-      }
+      const workspaceDir = scope.workspaceDir;
       const audit = await auditShortTermPromotionArtifacts({ workspaceDir });
       const hasFixableRecallIssue = audit.issues.some((issue) => issue.fixable);
       if (hasFixableRecallIssue) {
@@ -836,6 +798,7 @@ async function hasApiKeyForProvider(
       provider: authProviderId,
       cfg,
       agentDir,
+      readOnly: true,
     });
     return true;
   } catch {

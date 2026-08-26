@@ -35,6 +35,8 @@ export type EmbeddingProviderCallOptions = {
 export type EmbeddingProviderOptions = {
   config: OpenClawConfig;
   agentDir?: string;
+  /** Diagnostic creation must not refresh auth, provision services, or install model assets. */
+  readOnly?: boolean;
   provider?: EmbeddingProviderRequest;
   remote?: {
     baseUrl?: string;

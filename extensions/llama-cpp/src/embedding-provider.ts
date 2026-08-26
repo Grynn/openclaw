@@ -221,7 +221,9 @@ export const llamaCppEmbeddingProviderAdapter: EmbeddingProviderAdapter = {
     const local = readIdentityLocalOptions(options);
     const embeddingModel = resolveLlamaCppEmbeddingModel(local);
     const identity = resolveModelIdentity(local, embeddingModel.source, options.dimensions);
-    await prepareEmbeddingServer(options, embeddingModel.source, embeddingModel.isDefault);
+    if (!options.readOnly) {
+      await prepareEmbeddingServer(options, embeddingModel.source, embeddingModel.isDefault);
+    }
     const genericAdapter = getEmbeddingProvider("openai-compatible", options.config);
     if (!genericAdapter) {
       throw new Error("OpenAI-compatible embedding transport is unavailable.");
@@ -243,6 +245,7 @@ export const llamaCppEmbeddingProviderAdapter: EmbeddingProviderAdapter = {
       }),
       runtime: {
         id: "local",
+        readOnlyProbe: "configuration-only",
         inlineQueryTimeoutMs: 5 * 60_000,
         inlineBatchTimeoutMs: 10 * 60_000,
         cacheKeyData: identity.cacheKeyData,

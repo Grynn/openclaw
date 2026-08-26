@@ -1,4 +1,5 @@
 // Memory Core tests cover index plugin behavior.
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -16,6 +17,7 @@ import { resolveOpenClawAgentSqlitePath } from "openclaw/plugin-sdk/sqlite-runti
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
+  openOpenClawStateDatabase,
 } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -26,6 +28,12 @@ import type { MemoryIndexMeta } from "./manager-reindex-state.js";
 import type { MemoryIndexManager } from "./manager.js";
 
 const { closeAllMemorySearchManagers, getMemorySearchManager } = await import("./index.js");
+
+async function hashFile(targetPath: string): Promise<string> {
+  return createHash("sha256")
+    .update(await fs.readFile(targetPath))
+    .digest("hex");
+}
 
 describe("memory index", () => {
   const fixture: ManagerIndexFixture = createManagerIndexFixture({
@@ -778,6 +786,150 @@ describe("memory index", () => {
       agent_id: "main",
     });
   });
+
+  it("reports a missing status index without creating agent or registry databases", async () => {
+    const stateDir = process.env.OPENCLAW_STATE_DIR;
+    if (!stateDir) {
+      throw new Error("expected isolated state directory");
+    }
+    const agentPath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+    const statePath = path.join(stateDir, "state", "openclaw.sqlite");
+
+    const result = await getMemorySearchManager({
+      cfg: createCfg({}),
+      agentId: "main",
+      purpose: "status",
+      inspectSources: true,
+    });
+
+    expect(result.manager).toBeNull();
+    expect(result.error).toMatch(/does not exist/iu);
+    await expect(fs.access(agentPath)).rejects.toThrow("ENOENT");
+    await expect(fs.access(statePath)).rejects.toThrow("ENOENT");
+  });
+
+  it("reads committed WAL source drift without schema, data, or registry writes", async () => {
+    const cfg = createCfg({});
+    const indexingManager = await getFreshManager(cfg, "cli");
+    await indexingManager.sync({ reason: "test", force: true });
+    await indexingManager.close?.();
+
+    const agentPath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+    const writer = new DatabaseSync(agentPath);
+    const state = openOpenClawStateDatabase();
+    let statusManager: MemoryIndexManager | undefined;
+    try {
+      writer.exec("PRAGMA wal_autocheckpoint = 0; PRAGMA wal_checkpoint(TRUNCATE);");
+      writer
+        .prepare("UPDATE memory_index_sources SET hash = ? WHERE path = ? AND source = 'memory'")
+        .run("committed-in-wal", "memory/2026-01-12.md");
+      state.db
+        .prepare("UPDATE agent_databases SET last_seen_at = ?, size_bytes = ? WHERE agent_id = ?")
+        .run(17, 23, "main");
+      const registryBefore = state.db
+        .prepare("SELECT last_seen_at, size_bytes FROM agent_databases WHERE agent_id = 'main'")
+        .get();
+      const logicalBefore = {
+        schemaVersion: writer.prepare("PRAGMA schema_version").get(),
+        sources: writer.prepare("SELECT COUNT(*) AS count FROM memory_index_sources").get(),
+        chunks: writer.prepare("SELECT COUNT(*) AS count FROM memory_index_chunks").get(),
+      };
+      const artifactsBefore = {
+        database: await hashFile(agentPath),
+        wal: await hashFile(`${agentPath}-wal`),
+      };
+
+      statusManager = await getFreshManager(cfg, "status", true);
+      const status = statusManager.status();
+
+      expect(status.dirty).toBe(true);
+      expect(status.files).toBeGreaterThan(0);
+      expect(status.chunks).toBeGreaterThan(0);
+      expect(status.sourceCounts).toEqual([
+        expect.objectContaining({ source: "memory", eligible: status.files }),
+      ]);
+      expect(
+        state.db
+          .prepare("SELECT last_seen_at, size_bytes FROM agent_databases WHERE agent_id = 'main'")
+          .get(),
+      ).toEqual(registryBefore);
+      expect({
+        schemaVersion: writer.prepare("PRAGMA schema_version").get(),
+        sources: writer.prepare("SELECT COUNT(*) AS count FROM memory_index_sources").get(),
+        chunks: writer.prepare("SELECT COUNT(*) AS count FROM memory_index_chunks").get(),
+      }).toEqual(logicalBefore);
+      expect(await hashFile(agentPath)).toBe(artifactsBefore.database);
+      expect(await hashFile(`${agentPath}-wal`)).toBe(artifactsBefore.wal);
+    } finally {
+      await statusManager?.close?.();
+      writer.close();
+    }
+  });
+
+  it.each([
+    {
+      label: "a future user version",
+      mutate: (db: DatabaseSync) => db.exec("PRAGMA user_version = 18"),
+      error: /newer|version 18/iu,
+    },
+    {
+      label: "an outdated media schema",
+      mutate: (db: DatabaseSync) => db.exec("PRAGMA user_version = 16"),
+      error: /migration|doctor --fix|version 16/iu,
+    },
+    {
+      label: "missing schema ownership metadata",
+      mutate: (db: DatabaseSync) => db.exec("DROP TABLE schema_meta"),
+      error: /schema|ownership metadata/iu,
+    },
+    {
+      label: "outdated ownership metadata",
+      mutate: (db: DatabaseSync) =>
+        db.prepare("UPDATE schema_meta SET schema_version = 16 WHERE meta_key = 'primary'").run(),
+      error: /metadata schema version 16|does not match 17/iu,
+    },
+    {
+      label: "future ownership metadata",
+      mutate: (db: DatabaseSync) =>
+        db.prepare("UPDATE schema_meta SET schema_version = 18 WHERE meta_key = 'primary'").run(),
+      error: /metadata schema version 18|does not match 17/iu,
+    },
+    {
+      label: "the wrong agent owner",
+      mutate: (db: DatabaseSync) =>
+        db.prepare("UPDATE schema_meta SET agent_id = ? WHERE meta_key = 'primary'").run("other"),
+      error: /belongs to agent other|requested agent main/iu,
+    },
+  ])(
+    "rejects $label on the read-only status path without mutating it",
+    async ({ mutate, error }) => {
+      const cfg = createCfg({});
+      const indexingManager = await getFreshManager(cfg, "cli");
+      await indexingManager.sync({ reason: "test", force: true });
+      await indexingManager.close?.();
+      closeOpenClawAgentDatabasesForTest();
+
+      const agentPath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+      const writer = new DatabaseSync(agentPath);
+      mutate(writer);
+      writer.close();
+      const before = await hashFile(agentPath);
+
+      const result = await getMemorySearchManager({
+        cfg,
+        agentId: "main",
+        purpose: "status",
+        inspectSources: true,
+      });
+      try {
+        expect(result.manager).toBeNull();
+        expect(result.error).toMatch(error);
+        expect(await hashFile(agentPath)).toBe(before);
+      } finally {
+        await result.manager?.close?.();
+      }
+    },
+  );
 
   it("batches dirty memory chunks across files", async () => {
     await fs.writeFile(
@@ -2340,6 +2492,27 @@ describe("memory index", () => {
     expect(Reflect.get(manager, "memoryFullRetryDirty")).toBe(true);
   });
 
+  it("does not drop the shipped legacy vector table during status probing", async () => {
+    const cfg = createCfg({ vectorEnabled: true });
+    const schemaManager = await getFreshManager(cfg, "cli");
+    const writer = Reflect.get(schemaManager, "db") as DatabaseSync;
+    writer.exec("CREATE TABLE chunks_vec (id TEXT PRIMARY KEY, embedding BLOB)");
+    await schemaManager.close?.();
+
+    const statusManager = await getFreshManager(cfg, "status");
+    try {
+      await statusManager.probeVectorStoreAvailability?.();
+      const db = Reflect.get(statusManager, "db") as DatabaseSync;
+      expect(
+        db
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'chunks_vec'")
+          .get(),
+      ).toEqual({ name: "chunks_vec" });
+    } finally {
+      await statusManager.close?.();
+    }
+  });
+
   it("probes sqlite vector store availability without initializing embeddings", async () => {
     providerFixture.forceNoProvider = true;
     const cfg = createCfg({
@@ -2359,16 +2532,6 @@ describe("memory index", () => {
 
   it("reports persisted vector index state on the unprobed status path", async () => {
     const cfg = createCfg({ provider: "gemini", vectorEnabled: true });
-    const emptyManager = await getFreshManager(cfg, "status");
-    try {
-      const emptyStatus = emptyManager.status();
-      expect(emptyStatus.chunks).toBe(0);
-      expect(emptyStatus.vector?.storeAvailable).toBeUndefined();
-      expect(emptyStatus.vector?.index).toEqual({ state: "empty" });
-    } finally {
-      await emptyManager.close?.();
-    }
-
     const indexingManager = await getFreshManager(cfg);
     try {
       await indexingManager.sync({ reason: "test", force: true });
@@ -2384,14 +2547,20 @@ describe("memory index", () => {
         index: { state: "complete" },
         storeAvailable: undefined,
       });
-
-      const db = Reflect.get(statusManager, "db") as DatabaseSync;
-      db.prepare("UPDATE memory_index_meta SET value = '1' WHERE key = ?").run(
-        "memory_vector_rebuild_v1",
-      );
-      expect(statusManager.status().vector?.index).toEqual({ state: "incomplete" });
     } finally {
       await statusManager.close?.();
+    }
+
+    const writer = new DatabaseSync(resolveOpenClawAgentSqlitePath({ agentId: "main" }));
+    writer
+      .prepare("UPDATE memory_index_meta SET value = '1' WHERE key = ?")
+      .run("memory_vector_rebuild_v1");
+    writer.close();
+    const incompleteStatusManager = await getFreshManager(cfg, "status");
+    try {
+      expect(incompleteStatusManager.status().vector?.index).toEqual({ state: "incomplete" });
+    } finally {
+      await incompleteStatusManager.close?.();
     }
   });
 
@@ -2560,6 +2729,8 @@ describe("memory index", () => {
     const stateDirName = ".state-status-dirty-test";
     fixture.setStateDir(path.join(fixture.paths.workspace, stateDirName));
     try {
+      const schemaManager = await getFreshManager(cfg, "cli");
+      await schemaManager.close?.();
       await seedMemoryIndexSessionTranscript({
         sessionId: "status-dirty-test",
         messages: [
@@ -2570,6 +2741,14 @@ describe("memory index", () => {
           },
         ],
       });
+      closeOpenClawAgentDatabasesForTest();
+      const state = openOpenClawStateDatabase();
+      state.db
+        .prepare("UPDATE agent_databases SET last_seen_at = ?, size_bytes = ? WHERE agent_id = ?")
+        .run(29, 31, "main");
+      const registryBefore = state.db
+        .prepare("SELECT last_seen_at, size_bytes FROM agent_databases WHERE agent_id = 'main'")
+        .get();
 
       const manager = await getFreshManager(cfg, "status", true);
       trackManager(manager);
@@ -2579,6 +2758,11 @@ describe("memory index", () => {
       expect(result.sourceCounts).toEqual([
         expect.objectContaining({ source: "sessions", eligible: 1 }),
       ]);
+      expect(
+        state.db
+          .prepare("SELECT last_seen_at, size_bytes FROM agent_databases WHERE agent_id = 'main'")
+          .get(),
+      ).toEqual(registryBefore);
     } finally {
       fixture.restoreStateDir();
     }
@@ -2647,18 +2831,21 @@ describe("memory index", () => {
       const statusManager = await getFreshManager(cfg, "status", true);
       trackManager(statusManager);
       expect(statusManager.status().dirty).toBe(true);
+      await statusManager.close?.();
 
-      await statusManager.sync({ reason: "cli" });
+      const syncManager = await getFreshManager(cfg, "cli");
+      trackManager(syncManager);
+      await syncManager.sync({ reason: "cli" });
       expect(providerFixture.embedBatchCalls).toBe(0);
-      const deletedResults = await statusManager.search("ORBIT-DELETE-91", {
+      const deletedResults = await syncManager.search("ORBIT-DELETE-91", {
         minScore: 0,
         sources: ["sessions"],
       });
       expect(deletedResults.some((result) => result.path.includes(sessionId))).toBe(false);
       await expect(
-        statusManager.search("ORBIT-SURVIVE-92", { minScore: 0, sources: ["sessions"] }),
+        syncManager.search("ORBIT-SURVIVE-92", { minScore: 0, sources: ["sessions"] }),
       ).resolves.not.toEqual([]);
-      const db = Reflect.get(statusManager, "db") as DatabaseSync;
+      const db = Reflect.get(syncManager, "db") as DatabaseSync;
       const sourceCount = db
         .prepare("SELECT COUNT(*) AS count FROM memory_index_sources WHERE source = 'sessions'")
         .get() as { count: number };

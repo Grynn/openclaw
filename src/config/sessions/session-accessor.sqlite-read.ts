@@ -7,10 +7,12 @@ import {
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import { extractAssistantPhaseText } from "../../shared/chat-message-content.js";
 import { isTranscriptOnlyOpenClawAssistantModel } from "../../shared/transcript-only-openclaw-assistant.js";
+import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
   openOpenClawAgentDatabase,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import type {
   LatestTranscriptAssistantMessage,
   LatestTranscriptAssistantText,
@@ -246,10 +248,10 @@ function sqliteTranscriptJsonlByteSize() {
     + CASE WHEN COUNT(*) > 0 THEN COUNT(*) - 1 ELSE 0 END`.as("size_bytes");
 }
 
-/** Reads transcript freshness and byte size without materializing event rows. */
-export function readTranscriptStatsSync(scope: SessionTranscriptReadScope): SessionTranscriptStats {
-  const resolved = resolveSqliteTranscriptReadScope(scope);
-  const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
+function readTranscriptStatsFromDatabase(
+  database: Pick<OpenClawAgentDatabase, "db">,
+  sessionId: string,
+): SessionTranscriptStats {
   const db = getSessionKysely(database.db);
   const row = executeSqliteQueryTakeFirstSync(
     database.db,
@@ -260,14 +262,14 @@ export function readTranscriptStatsSync(scope: SessionTranscriptReadScope): Sess
         eb.fn.max<number>("seq").as("max_seq"),
         sqliteTranscriptJsonlByteSize(),
       ])
-      .where("session_id", "=", resolved.sessionId),
+      .where("session_id", "=", sessionId),
   );
   const session = executeSqliteQueryTakeFirstSync(
     database.db,
     db
       .selectFrom("session_windows")
       .select(["transcript_observed_at", "transcript_updated_at"])
-      .where("session_id", "=", resolved.sessionId),
+      .where("session_id", "=", sessionId),
   );
   return {
     eventCount: row?.event_count ?? 0,
@@ -280,6 +282,49 @@ export function readTranscriptStatsSync(scope: SessionTranscriptReadScope): Sess
     maxSeq: row?.max_seq ?? 0,
     sizeBytes: row?.size_bytes ?? 0,
   };
+}
+
+/** Reads transcript freshness and byte size without materializing event rows. */
+export function readTranscriptStatsSync(scope: SessionTranscriptReadScope): SessionTranscriptStats {
+  const resolved = resolveSqliteTranscriptReadScope(scope);
+  const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
+  return readTranscriptStatsFromDatabase(database, resolved.sessionId);
+}
+
+/** Read transcript stats without creating, migrating, registering, or retaining database handles. */
+export function readTranscriptStatsBatchReadOnlySync(
+  scopes: readonly SessionTranscriptReadScope[],
+): Array<SessionTranscriptStats | null> {
+  const results = scopes.map((): SessionTranscriptStats | null => null);
+  const groups = new Map<
+    string,
+    {
+      options: ReturnType<typeof toDatabaseOptions>;
+      items: Array<{ index: number; sessionId: string }>;
+    }
+  >();
+  for (const [index, scope] of scopes.entries()) {
+    const resolved = resolveSqliteTranscriptReadScope(scope);
+    const options = toDatabaseOptions(resolved);
+    const pathname = resolveOpenClawAgentSqlitePath(options);
+    const key = `${options.agentId}\0${pathname}`;
+    const group = groups.get(key) ?? { options, items: [] };
+    group.items.push({ index, sessionId: resolved.sessionId });
+    groups.set(key, group);
+  }
+  for (const group of groups.values()) {
+    const read = withOpenClawAgentDatabaseReadOnly((database) => {
+      for (const item of group.items) {
+        results[item.index] = readTranscriptStatsFromDatabase(database, item.sessionId);
+      }
+    }, group.options);
+    if (!read.found) {
+      for (const item of group.items) {
+        results[item.index] = null;
+      }
+    }
+  }
+  return results;
 }
 
 export function readTranscriptEventJsonSetInTransaction(

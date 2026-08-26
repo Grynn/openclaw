@@ -433,6 +433,7 @@ export const openAICompatibleEmbeddingProviderAdapter: EmbeddingProviderAdapter 
       provider,
       runtime: {
         id: OPENAI_COMPATIBLE_EMBEDDING_PROVIDER_ID,
+        ...(client.localServiceTarget ? { readOnlyProbe: "configuration-only" as const } : {}),
         inlineBatchTimeoutMs: 10 * 60_000,
         cacheKeyData: {
           provider: client.providerId,

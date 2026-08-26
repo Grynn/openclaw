@@ -135,6 +135,36 @@ describe("createLmstudioEmbeddingProvider preload context length", () => {
     await expect(readRequestedContextLength(buildConfig({ model }))).resolves.toBe(expected);
   });
 
+  it("does not refresh auth, acquire a service, or preload a model for read-only status", async () => {
+    const acquireLocalService = vi.fn(async () => ({ release: vi.fn() }));
+    const config = buildConfig({
+      provider: { localService: { command: "/usr/bin/lms" } },
+    });
+
+    const options = {
+      acquireLocalService,
+      agentDir: "/tmp/lmstudio-read-only-agent",
+      config,
+      fallback: "none",
+      model: EMBEDDING_MODEL,
+      provider: "lmstudio",
+      readOnly: true,
+    } as Parameters<typeof lmstudioMemoryEmbeddingProviderAdapter.create>[0] & {
+      acquireLocalService: typeof acquireLocalService;
+    };
+    const result = await lmstudioMemoryEmbeddingProviderAdapter.create(options);
+
+    expect(result.runtime?.readOnlyProbe).toBe("configuration-only");
+    expect(resolveLmstudioRuntimeApiKeyMock).toHaveBeenCalledWith({
+      agentDir: "/tmp/lmstudio-read-only-agent",
+      config,
+      readOnly: true,
+    });
+    expect(acquireLocalService).not.toHaveBeenCalled();
+    expect(ensureLmstudioModelLoadedMock).not.toHaveBeenCalled();
+    expect(fetchLmstudioModelsMock).not.toHaveBeenCalled();
+  });
+
   it.each(["lmstudio", "lmstudio-spark"])(
     "honors the preload opt-out for %s while retaining request-time service leases",
     async (providerId) => {

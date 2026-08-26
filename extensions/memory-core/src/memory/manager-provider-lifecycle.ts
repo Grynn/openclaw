@@ -307,7 +307,10 @@ export abstract class MemoryProviderLifecycle extends MemoryManagerEmbeddingOps 
         const providerResult = await createEmbeddingProvider({
           config: this.cfg,
           agentDir: resolveAgentDir(this.cfg, this.agentId),
-          ...(this.acquireLocalService ? { acquireLocalService: this.acquireLocalService } : {}),
+          readOnly: this.purpose === "status",
+          ...(this.purpose !== "status" && this.acquireLocalService
+            ? { acquireLocalService: this.acquireLocalService }
+            : {}),
           ...resolveMemoryPrimaryProviderRequest({ settings: this.settings }),
         });
         this.applyProviderResult(providerResult);
@@ -584,6 +587,12 @@ export abstract class MemoryProviderLifecycle extends MemoryManagerEmbeddingOps 
           error:
             this.providerUnavailableReason ?? "No embedding provider available (FTS-only mode)",
         });
+      }
+      if (
+        this.purpose === "status" &&
+        this.providerRuntime?.readOnlyProbe === "configuration-only"
+      ) {
+        return { ok: true, checked: false };
       }
       try {
         await this.embedBatchWithRetry(["ping"]);

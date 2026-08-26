@@ -314,7 +314,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: canonical untrusted audio-transcript formatter for channel plugins.
       // +2: embedded foreground prompt context builder and its public context type.
       // +1: canonical provider-bound tool-result cap for native harness adapters.
-      4343,
+      // +1: canonical mutation-free agent database schema gate for memory diagnostics.
+      4344,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -408,7 +409,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: canonical untrusted audio-transcript formatter for channel plugins.
       // +1: embedded foreground prompt context builder.
       // +1: canonical provider-bound tool-result cap for native harness adapters.
-      2583,
+      // +1: canonical mutation-free agent database schema gate for memory diagnostics.
+      2584,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

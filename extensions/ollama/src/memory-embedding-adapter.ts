@@ -45,6 +45,7 @@ export const ollamaMemoryEmbeddingProviderAdapter: MemoryEmbeddingProviderAdapte
       provider,
       runtime: {
         id: "ollama",
+        readOnlyProbe: "configuration-only",
         inlineBatchTimeoutMs: 10 * 60_000,
         cacheKeyData: {
           provider: providerId,

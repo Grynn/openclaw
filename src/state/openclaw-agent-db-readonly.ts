@@ -9,7 +9,7 @@ import type {
 } from "./openclaw-agent-db-contract.js";
 import {
   assertCanonicalAgentMediaPersistenceVersion,
-  assertExistingAgentSchemaOwner,
+  assertCurrentAgentSchemaMetadata,
   assertSupportedAgentSchemaVersion,
   readExistingAgentSchemaMeta,
 } from "./openclaw-agent-db-schema-helpers.js";
@@ -55,6 +55,22 @@ function findOpenAgentDatabase(
   }
 }
 
+/** Validate every canonical steady-state read gate without repairing or adopting the database. */
+export function assertOpenClawAgentDatabaseReadOnlySchema(
+  db: DatabaseSync,
+  options: { agentId: string; pathname: string },
+): boolean {
+  const agentId = normalizeAgentId(options.agentId);
+  assertSupportedAgentSchemaVersion(db, options.pathname);
+  assertCanonicalAgentMediaPersistenceVersion(db, options.pathname);
+  const schemaMeta = readExistingAgentSchemaMeta(db);
+  if (!schemaMeta) {
+    return false;
+  }
+  assertCurrentAgentSchemaMetadata(schemaMeta, agentId, options.pathname);
+  return true;
+}
+
 /** Read agent state without creating, registering, migrating, or joining its writable lifecycle. */
 export function withOpenClawAgentDatabaseReadOnly<T>(
   operation: (database: OpenClawAgentReadOnlyDatabase) => T,
@@ -77,9 +93,11 @@ export function withOpenClawAgentDatabaseReadOnly<T>(
   // rows that a fresh read-only connection could not have seen.
   const opened = findOpenAgentDatabase({ ...options, agentId });
   if (opened && !opened.db.isTransaction) {
-    // A newer build can migrate this file while the handle stays open, so the
-    // forward-compatibility gate still runs before any reused read.
-    assertSupportedAgentSchemaVersion(opened.db, pathname);
+    // A newer build can migrate or replace this file while the handle stays open,
+    // so every canonical read gate still runs before a reused read.
+    if (!assertOpenClawAgentDatabaseReadOnlySchema(opened.db, { agentId, pathname })) {
+      return { found: false, reason: "schema-missing" };
+    }
     try {
       return { found: true, value: operation(opened) };
     } catch (error) {
@@ -95,13 +113,9 @@ export function withOpenClawAgentDatabaseReadOnly<T>(
   const db = openNodeSqliteDatabase(pathname, { readOnly: true });
   try {
     db.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
-    assertSupportedAgentSchemaVersion(db, pathname);
-    assertCanonicalAgentMediaPersistenceVersion(db, pathname);
-    const schemaMeta = readExistingAgentSchemaMeta(db);
-    if (!schemaMeta) {
+    if (!assertOpenClawAgentDatabaseReadOnlySchema(db, { agentId, pathname })) {
       return { found: false, reason: "schema-missing" };
     }
-    assertExistingAgentSchemaOwner(schemaMeta, agentId, pathname);
     try {
       return { found: true, value: operation({ agentId, db, path: pathname }) };
     } catch (error) {

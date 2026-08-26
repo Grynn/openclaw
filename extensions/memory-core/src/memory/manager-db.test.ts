@@ -1,4 +1,5 @@
 // Memory Core tests cover shared agent database publication and shadow cleanup.
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +13,7 @@ import {
   cleanupAgedMemoryReindexTempFiles,
   closeMemoryDatabase,
   openMemoryDatabaseAtPath,
+  openMemoryDatabaseReadOnlyAtPath,
   publishMemoryDatabaseTables,
   readMemoryDatabaseRevision,
 } from "./manager-db.js";
@@ -27,6 +29,12 @@ function ensureTestMemorySchema(db: DatabaseSync, cacheEnabled = true, ftsEnable
 
 async function expectPathMissing(targetPath: string): Promise<void> {
   await expect(fs.access(targetPath)).rejects.toThrow("ENOENT");
+}
+
+async function hashFile(targetPath: string): Promise<string> {
+  return createHash("sha256")
+    .update(await fs.readFile(targetPath))
+    .digest("hex");
 }
 
 describe("memory manager database publication", () => {
@@ -50,6 +58,55 @@ describe("memory manager database publication", () => {
     } finally {
       closeMemoryDatabase(db);
     }
+  });
+
+  it("opens an existing WAL snapshot read-only without changing database artifacts", async () => {
+    const sourcePath = path.join(fixtureRoot, "source.sqlite");
+    const targetPath = path.join(fixtureRoot, "target.sqlite");
+    const writer = openMemoryDatabaseAtPath(sourcePath, false, "main");
+    try {
+      writer.exec(`
+        PRAGMA journal_mode = WAL;
+        PRAGMA wal_autocheckpoint = 0;
+        CREATE TABLE status_fixture (value TEXT NOT NULL);
+        PRAGMA wal_checkpoint(TRUNCATE);
+        INSERT INTO status_fixture (value) VALUES ('committed-in-wal');
+      `);
+      await fs.copyFile(sourcePath, targetPath);
+      await fs.copyFile(`${sourcePath}-wal`, `${targetPath}-wal`);
+      await expectPathMissing(`${targetPath}-shm`);
+      const before = {
+        database: await hashFile(targetPath),
+        wal: await hashFile(`${targetPath}-wal`),
+      };
+
+      const reader = openMemoryDatabaseReadOnlyAtPath(targetPath, false, "main");
+      try {
+        expect(reader.prepare("SELECT value FROM status_fixture").get()).toEqual({
+          value: "committed-in-wal",
+        });
+        expect(reader.prepare("PRAGMA query_only").get()).toEqual({ query_only: 1 });
+        expect(() => reader.exec("DELETE FROM status_fixture")).toThrow(/readonly|read-only/iu);
+      } finally {
+        closeMemoryDatabase(reader);
+      }
+
+      expect(await hashFile(targetPath)).toBe(before.database);
+      expect(await hashFile(`${targetPath}-wal`)).toBe(before.wal);
+      await expect(fs.access(`${targetPath}-shm`)).resolves.toBeUndefined();
+    } finally {
+      closeMemoryDatabase(writer);
+    }
+  });
+
+  it("does not create a database for a missing read-only status path", async () => {
+    const missingPath = path.join(fixtureRoot, "missing", "index.sqlite");
+
+    expect(() => openMemoryDatabaseReadOnlyAtPath(missingPath, false, "main")).toThrow(
+      /does not exist/iu,
+    );
+    await expectPathMissing(missingPath);
+    await expectPathMissing(path.dirname(missingPath));
   });
 
   it("lazily adds recall metadata storage before publishing to an existing database", async () => {

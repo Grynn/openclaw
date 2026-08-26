@@ -22,6 +22,12 @@ export const bedrockMemoryEmbeddingProviderAdapter: MemoryEmbeddingProviderAdapt
   allowExplicitWhenConfiguredAuto: true,
   shouldContinueAutoSelection: isMissingEmbeddingApiKeyError,
   create: async (options) => {
+    if (options.readOnly) {
+      throw new Error(
+        'No API key found for provider "bedrock". ' +
+          "Read-only memory diagnostics do not resolve AWS credentials or contact Bedrock.",
+      );
+    }
     if (!(await hasAwsCredentials())) {
       throw new Error(
         'No API key found for provider "bedrock". ' +

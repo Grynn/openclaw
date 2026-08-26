@@ -26,6 +26,7 @@ import {
   loadSessionEntryReadOnly,
   patchSessionEntryCore as patchAccessorSessionEntry,
   readSessionUpdatedAtCore as readAccessorSessionUpdatedAt,
+  readTranscriptStatsBatchReadOnlySync as readAccessorTranscriptStatsBatchReadOnlySync,
   readTranscriptStatsSync as readAccessorTranscriptStatsSync,
   resolveTranscriptSessionKeyBySessionId as resolveAccessorTranscriptSessionKeyBySessionId,
   updateSessionEntry,
@@ -431,6 +432,19 @@ export function readTranscriptStatsSync(params: {
   storePath?: string;
 }): { eventCount: number; maxSeq: number; sizeBytes: number } {
   return readAccessorTranscriptStatsSync(params);
+}
+
+/** Reads transcript stats in bounded read-only database groups without writer-side lifecycle work. */
+export function readTranscriptStatsBatchReadOnlySync(
+  params: ReadonlyArray<{
+    agentId?: string;
+    env?: NodeJS.ProcessEnv;
+    sessionId: string;
+    sessionKey?: string;
+    storePath?: string;
+  }>,
+): Array<{ eventCount: number; maxSeq: number; sizeBytes: number } | null> {
+  return readAccessorTranscriptStatsBatchReadOnlySync(params);
 }
 
 /** Resolves the persisted session key for one SQLite transcript identity. */
