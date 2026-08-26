@@ -127,10 +127,10 @@ export async function rankShortTermPromotionCandidates(
     if (!entry || entry.source !== "memory" || !isShortTermMemoryPath(entry.path)) {
       continue;
     }
-    // The durable write boundary rejects these origins unconditionally. Filter
-    // them before scoring so previews and dreaming runs do not rank, narrate,
-    // or consolidate candidates that can never be promoted.
-    if (isPromotionOriginBlocked(entry)) {
+    // Default ranking filters origins the durable write boundary will reject,
+    // so previews and dreaming do not narrate or consolidate them. Explicit
+    // apply may retain them long enough to report the rejection to the caller.
+    if (!options.includeBlockedOrigins && isPromotionOriginBlocked(entry)) {
       continue;
     }
     if (

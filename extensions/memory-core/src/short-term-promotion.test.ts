@@ -798,7 +798,7 @@ describe("short-term promotion", () => {
         1,
         1,
         0.99,
-        "Assistant: I'll start by reading the job script.",
+        "Untrusted router note must not become durable memory.",
         {
           provenance: {
             originClass: "untrusted",
@@ -827,6 +827,13 @@ describe("short-term promotion", () => {
     expect(ranked).toHaveLength(1);
     expect(ranked[0]?.path).toBe("memory/2026-04-02.md");
     expect(ranked[0] && isPromotionOriginBlocked(ranked[0])).toBe(false);
+
+    const applyRanked = await rankAllCandidates(workspaceDir, { includeBlockedOrigins: true });
+    expect(applyRanked.map((candidate) => candidate.path)).toEqual([
+      "memory/2026-04-01.md",
+      "memory/2026-04-02.md",
+    ]);
+    expect(applyRanked[0] && isPromotionOriginBlocked(applyRanked[0])).toBe(true);
   });
 
   it("reads only light-staged keys that have not already gone through REM", async (workspaceDir) => {

@@ -340,6 +340,7 @@ export async function runMemoryPromote(
           recencyHalfLifeDays: dreaming.recencyHalfLifeDays,
           maxAgeDays: gatherAllForApply ? undefined : dreaming.maxAgeDays,
           includePromoted: Boolean(opts.includePromoted),
+          includeBlockedOrigins: gatherAllForApply,
         });
       } catch (err) {
         defaultRuntime.error(`Memory promote ranking failed: ${formatErrorMessage(err)}`);

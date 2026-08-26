@@ -153,6 +153,8 @@ export type RankShortTermPromotionOptions = {
   minUniqueQueries?: number;
   maxAgeDays?: number;
   includePromoted?: boolean;
+  /** Retain blocked origins so an explicit apply can report their rejection. */
+  includeBlockedOrigins?: boolean;
   recencyHalfLifeDays?: number;
   weights?: Partial<PromotionWeights>;
   nowMs?: number;
