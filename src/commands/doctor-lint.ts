@@ -1,6 +1,7 @@
 /** CLI entrypoint for non-mutating doctor lint health checks. */
 import fs from "node:fs";
 import path from "node:path";
+import { withSuppressedNotes } from "../../packages/terminal-core/src/note.js";
 import { resolveAgentWorkspaceDir, tryResolveDefaultAgentId } from "../agents/agent-scope.js";
 import { createConfigIO, readConfigFileSnapshot } from "../config/config.js";
 import { maybeLoadDotEnvForConfig } from "../config/io.read-helpers.js";
@@ -85,7 +86,10 @@ export async function runDoctorLintCli(
   runtime: RuntimeEnv,
   opts: DoctorLintCliOptions,
 ): Promise<number> {
-  const execution = await prepareDoctorLintExecution(runtime, opts);
+  const execution =
+    detectMode(opts) === "json"
+      ? await withSuppressedNotes(() => prepareDoctorLintExecution(runtime, opts))
+      : await prepareDoctorLintExecution(runtime, opts);
   execution.writeOutput();
   return execution.exitCode;
 }
