@@ -710,6 +710,71 @@ describe("compaction-safeguard summary budgets", () => {
       auditSummaryQuality({ summary: finalized.summary, identifiers: [identifier], latestAsk }).ok,
     ).toBe(true);
   });
+
+  it("repairs a source-derived identifier omitted from an otherwise valid model body", () => {
+    const latestAsk = "finish the hidden identifier deployment audit";
+    const identifier = "/tmp/compaction-hidden-source-identifier.log";
+    const body = [
+      "## Decisions",
+      "Keep the current deployment flow.",
+      "## Open TODOs",
+      "Finish the audit.",
+      "## Constraints/Rules",
+      "Preserve exact source facts.",
+      "## Pending user asks",
+      latestAsk,
+      "## Exact identifiers",
+      "None captured by the model.",
+    ].join("\n");
+
+    const finalized = requireRecord(
+      budgetCompactionSummary(body, "", MAX_COMPACTION_SUMMARY_CHARS, {
+        auditSummary: body,
+        identifiers: [identifier],
+        latestAsk,
+        identifierPolicy: "strict",
+      }),
+    );
+
+    expect(finalized.structuralSummary).toContain(`## Exact identifiers\n`);
+    expect(finalized.structuralSummary).toContain(identifier);
+    expect(finalized.summary).not.toContain(SUMMARY_TRUNCATED_MARKER.trim());
+    expect(
+      auditSummaryQuality({ summary: finalized.summary, identifiers: [identifier], latestAsk }).ok,
+    ).toBe(true);
+  });
+
+  it("does not repair source identifiers when the model body also omits the latest ask", () => {
+    const latestAsk = "finish the mixed-quality deployment audit";
+    const identifier = "/tmp/compaction-mixed-quality.log";
+    const body = [
+      "## Decisions",
+      "Keep the current deployment flow.",
+      "## Open TODOs",
+      "Review unrelated history.",
+      "## Constraints/Rules",
+      "Preserve exact source facts.",
+      "## Pending user asks",
+      "None captured by the model.",
+      "## Exact identifiers",
+      "None captured by the model.",
+    ].join("\n");
+
+    const finalized = requireRecord(
+      budgetCompactionSummary(body, "", MAX_COMPACTION_SUMMARY_CHARS, {
+        auditSummary: body,
+        identifiers: [identifier],
+        latestAsk,
+        identifierPolicy: "strict",
+      }),
+    );
+
+    expect(finalized.structuralSummary).toBe(body);
+    expect(finalized.summary).not.toContain(identifier);
+    expect(
+      auditSummaryQuality({ summary: finalized.summary, identifiers: [identifier], latestAsk }),
+    ).toMatchObject({ ok: false });
+  });
 });
 
 describe("computeAdaptiveChunkRatio", () => {

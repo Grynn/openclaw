@@ -120,7 +120,7 @@ function parseRequiredSummarySectionContents(summary: string): string[] | null {
   return contents.map((lines) => lines.join("\n").trim());
 }
 
-/** Plan truncation that keeps audit-required headings, pending asks, and exact identifiers. */
+/** Plan retention that keeps audit-required headings, pending asks, and exact source identifiers. */
 export function createSummaryQualityRetentionPlan(
   summary: string,
   truncatedMarker: string,
@@ -138,12 +138,6 @@ export function createSummaryQualityRetentionPlan(
   }
   const enforceIdentifiers = (params.identifierPolicy ?? "strict") === "strict";
   const auditSummary = params.auditSummary ?? summary;
-  if (
-    enforceIdentifiers &&
-    params.identifiers.some((identifier) => !summaryIncludesIdentifier(auditSummary, identifier))
-  ) {
-    return null;
-  }
   if (!hasAskOverlap(auditSummary, params.latestAsk)) {
     return null;
   }
@@ -176,17 +170,27 @@ export function createSummaryQualityRetentionPlan(
   const optionalScaffolds = optionalHeadings.map((heading, index) =>
     optionalContents[index] ? `${heading}\n` : heading,
   );
+  const repairedSummary = REQUIRED_SUMMARY_SECTIONS.map((heading, index) => {
+    const content =
+      index < QUALITY_PROTECTED_SECTION_START
+        ? (optionalContents[index] ?? "")
+        : (protectedContents[index - QUALITY_PROTECTED_SECTION_START] ?? "");
+    return content ? `${heading}\n${content}` : heading;
+  }).join("\n\n");
   const minimumSummary = [...optionalScaffolds, marker, ...protectedBlocks].join("\n\n");
 
   return {
     minimumChars: minimumSummary.length,
     render(maxChars) {
-      const bodyHasRequiredAskContext = !requiredAskContext || summary.includes(requiredAskContext);
+      const bodyHasAskEvidence = hasAskOverlap(summary, params.latestAsk);
       const bodyHasIdentifiers =
         !enforceIdentifiers ||
         params.identifiers.every((identifier) => summaryIncludesIdentifier(summary, identifier));
-      if (summary.length <= maxChars && bodyHasRequiredAskContext && bodyHasIdentifiers) {
+      if (summary.length <= maxChars && bodyHasAskEvidence && bodyHasIdentifiers) {
         return summary;
+      }
+      if (repairedSummary.length <= maxChars) {
+        return repairedSummary;
       }
       if (maxChars < minimumSummary.length) {
         return null;

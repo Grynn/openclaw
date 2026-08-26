@@ -26,8 +26,11 @@ With the built-in safeguard quality guard enabled, OpenClaw applies the final
 summary budget before validation. Required headings must remain in the retained
 generated body, while pending asks and exact identifiers must remain in the
 exact text that would be stored. Invalid output gets only the configured number
-of corrective attempts. If no finalized summary passes, compaction stops before
-writing a transcript entry, keeps the original history, and surfaces the
+of corrective attempts. Under the strict identifier policy, a structurally
+valid body that reflects the latest ask may deterministically recover missing
+exact identifiers from the source-derived audit set; missing headings or ask
+evidence remain fail-closed. If no finalized summary passes, compaction stops
+before writing a transcript entry, keeps the original history, and surfaces the
 existing recovery outcome.
 
 ## Auto-compaction

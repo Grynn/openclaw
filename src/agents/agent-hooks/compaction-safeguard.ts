@@ -621,7 +621,7 @@ function budgetCompactionSummary(
 ) {
   const suffix = normalizeCompactionSuffix(suffixInput);
   const joined = `${summaryBody}${suffix.text}`;
-  if (maxChars <= 0 || joined.length <= maxChars) {
+  if (maxChars <= 0) {
     return {
       summary: joined,
       structuralSummary: summaryBody,
@@ -635,6 +635,19 @@ function budgetCompactionSummary(
   const retentionPlan = qualityRetention
     ? createSummaryQualityRetentionPlan(summaryBody, SUMMARY_TRUNCATED_MARKER, qualityRetention)
     : null;
+  if (joined.length <= maxChars) {
+    const retainedBody = retentionPlan?.render(maxChars - suffix.text.length) ?? summaryBody;
+    if (retainedBody.length + suffix.text.length <= maxChars) {
+      return {
+        summary: `${retainedBody}${suffix.text}`,
+        structuralSummary: retainedBody,
+        bodyBudget: maxChars - suffix.text.length,
+        bodyTrimmed: retainedBody.length < summaryBody.length,
+        suffixTrimmed: false,
+        qualityRetentionInfeasible: false,
+      };
+    }
+  }
   const bodyCapacity = retentionPlan ? maxChars : summaryBody.length;
   const bodyFloor = Math.min(
     bodyCapacity,
