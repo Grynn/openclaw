@@ -156,6 +156,46 @@ function addLogoutTarget(
   existing.profileIds = [...new Set([...existing.profileIds, ...profileIds])];
 }
 
+// Provider cards collapse credential aliases, but model catalog entries retain
+// the concrete runtime selected for each logical model. Limit the card's
+// headline auth rollup to those resolved routes so an unused direct route does
+// not override the credentials that will actually execute the configured
+// models. Raw rows remain intact for credential controls and sidebar alerts.
+function authRowsForResolvedModelRoutes(
+  providers: readonly ModelAuthStatusProvider[],
+  models: readonly ModelCatalogEntry[],
+): ModelAuthStatusProvider[] {
+  const groups = new Map<string, ModelAuthStatusProvider[]>();
+  for (const provider of providers) {
+    const id = canonicalProviderId(provider.provider);
+    groups.set(id, [...(groups.get(id) ?? []), provider]);
+  }
+  const selected = new Map<string, Set<string>>();
+  for (const model of models) {
+    const id = canonicalProviderId(model.provider);
+    const group = groups.get(id);
+    if (!group?.length) {
+      continue;
+    }
+    const runtimeId = normalizeProviderId(model.agentRuntime?.id ?? "");
+    const directId = normalizeProviderId(model.provider);
+    const route =
+      group.find((provider) => normalizeProviderId(provider.provider) === runtimeId) ??
+      group.find((provider) => normalizeProviderId(provider.provider) === directId) ??
+      group.find((provider) => normalizeProviderId(provider.provider) === id);
+    if (!route) {
+      continue;
+    }
+    const routes = selected.get(id) ?? new Set<string>();
+    routes.add(normalizeProviderId(route.provider));
+    selected.set(id, routes);
+  }
+  return providers.filter((provider) => {
+    const routes = selected.get(canonicalProviderId(provider.provider));
+    return !routes || routes.has(normalizeProviderId(provider.provider));
+  });
+}
+
 /**
  * Builds the provider card list. A provider qualifies as "configured" when it
  * has an auth row, catalog models (the default models.list view only contains
@@ -271,7 +311,9 @@ export function buildModelProviderCards(input: ModelProviderCardsInput): ModelPr
     }
   }
 
-  for (const provider of listEffectiveModelAuthProviders(input.authStatus?.providers ?? [])) {
+  const authRows = input.authStatus?.providers ?? [];
+  const resolvedAuthRows = authRowsForResolvedModelRoutes(authRows, input.models ?? []);
+  for (const provider of listEffectiveModelAuthProviders(resolvedAuthRows)) {
     const draft = findDraft(drafts, [canonicalProviderId(provider.provider)]);
     if (draft) {
       draft.card.auth = {

@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ModelProvidersData } from "./load.ts";
-import { loadModelProvidersData, loadRouteData } from "./load.ts";
+import {
+  loadModelProviderCost,
+  loadModelProvidersData,
+  loadModelProviderUsage,
+  loadRouteData,
+} from "./load.ts";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -46,12 +51,8 @@ describe("loadModelProvidersData", () => {
           method === "models.list" && (params as { view?: string } | undefined)?.view === "all",
       ),
     ).toHaveLength(0);
-    const sessionUsageCalls = request.mock.calls.filter(([method]) => method === "sessions.usage");
-    expect(sessionUsageCalls).toHaveLength(1);
-    expect(sessionUsageCalls[0]?.[1]).toMatchObject({
-      limit: 1,
-      includeContextWeight: false,
-    });
+    expect(request.mock.calls.map(([method]) => method)).not.toContain("usage.status");
+    expect(request.mock.calls.map(([method]) => method)).not.toContain("sessions.usage");
   });
 
   it("scopes only credential status to the selected agent", async () => {
@@ -93,10 +94,8 @@ describe("loadModelProvidersData", () => {
       agentId: "writer",
       refresh: true,
     });
-    expect(request).toHaveBeenCalledWith("usage.status");
-    const sessionUsageCall = request.mock.calls.find(([method]) => method === "sessions.usage");
-    expect(sessionUsageCall?.[1]).not.toHaveProperty("agentId");
-    expect(sessionUsageCall?.[1]).toHaveProperty("agentScope", "all");
+    expect(request.mock.calls.map(([method]) => method)).not.toContain("usage.status");
+    expect(request.mock.calls.map(([method]) => method)).not.toContain("sessions.usage");
   });
 
   it.each([
@@ -167,74 +166,9 @@ describe("loadModelProvidersData", () => {
     expect(result.providerOutcomes).toEqual([]);
     expect(result.catalogError).toBeNull();
     expect(result.config).toEqual({});
-    expect(result.providerUsage).toEqual({ ok: true, value: { updatedAt: 1, providers: [] } });
-    expect(result.costByProvider).toEqual([]);
+    expect(result.providerUsage).toBeNull();
+    expect(result.costByProvider).toBeNull();
     expect(result.error).toBeNull();
-  });
-
-  it("records a usage.status failure instead of reducing it to no data", async () => {
-    const request = vi.fn(async (method: string) => {
-      switch (method) {
-        case "models.authStatus":
-          return { ts: 1, providers: [] };
-        case "models.list":
-          return { models: [] };
-        case "config.get":
-          return { config: {}, hash: "hash" };
-        case "usage.status":
-          throw new Error("usage.status failed");
-        case "sessions.usage":
-          return { aggregates: { byProvider: [] } };
-        default:
-          return {};
-      }
-    });
-    const client = { request } as unknown as GatewayBrowserClient;
-
-    const result = await loadModelProvidersData(client, { agentId: "main" });
-
-    expect(result.providerUsage).toEqual({
-      ok: false,
-      error: { kind: "request-failed" },
-    });
-    expect(result.error).toBeNull();
-  });
-
-  it("keeps provider-scoped usage errors as data instead of a global request failure", async () => {
-    const request = vi.fn(async (method: string) => {
-      switch (method) {
-        case "models.authStatus":
-          return { ts: 1, providers: [] };
-        case "models.list":
-          return { models: [] };
-        case "config.get":
-          return { config: {}, hash: "hash" };
-        case "usage.status":
-          return {
-            updatedAt: 1,
-            providers: [
-              {
-                provider: "openai",
-                displayName: "OpenAI",
-                windows: [],
-                error: "provider API unavailable",
-              },
-            ],
-          };
-        case "sessions.usage":
-          return { aggregates: { byProvider: [] } };
-        default:
-          return {};
-      }
-    });
-    const client = { request } as unknown as GatewayBrowserClient;
-
-    const result = await loadModelProvidersData(client, { agentId: "main" });
-
-    expect(result.providerUsage).toMatchObject({
-      ok: true,
-      value: { providers: [{ error: "provider API unavailable" }] },
-    });
   });
 
   it("surfaces an explicit catalog refresh failure while retaining cached configured models", async () => {
@@ -277,6 +211,58 @@ describe("loadModelProvidersData", () => {
           (params as { view?: string } | undefined)?.view === "configured",
       ),
     ).toHaveLength(0);
+  });
+});
+
+describe("model provider supplemental loads", () => {
+  it("records a usage.status failure instead of reducing it to no data", async () => {
+    const client = {
+      request: vi.fn(async () => {
+        throw new Error("usage.status failed");
+      }),
+    } as unknown as GatewayBrowserClient;
+
+    await expect(loadModelProviderUsage(client)).resolves.toEqual({
+      ok: false,
+      error: { kind: "request-failed" },
+    });
+  });
+
+  it("keeps provider-scoped usage errors as data", async () => {
+    const client = {
+      request: vi.fn(async () => ({
+        updatedAt: 1,
+        providers: [
+          {
+            provider: "openai",
+            displayName: "OpenAI",
+            windows: [],
+            error: "provider API unavailable",
+          },
+        ],
+      })),
+    } as unknown as GatewayBrowserClient;
+
+    await expect(loadModelProviderUsage(client)).resolves.toMatchObject({
+      ok: true,
+      value: { providers: [{ error: "provider API unavailable" }] },
+    });
+  });
+
+  it("bounds the independent local-cost query without changing its aggregate scope", async () => {
+    const request = vi.fn(async () => ({ aggregates: { byProvider: [] } }));
+    const client = { request } as unknown as GatewayBrowserClient;
+
+    await expect(loadModelProviderCost(client)).resolves.toEqual([]);
+
+    expect(request).toHaveBeenCalledWith(
+      "sessions.usage",
+      expect.objectContaining({
+        agentScope: "all",
+        limit: 1,
+        includeContextWeight: false,
+      }),
+    );
   });
 });
 

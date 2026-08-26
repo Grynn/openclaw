@@ -1,6 +1,6 @@
-// Fetches the gateway signals behind the Models settings page.
-// Each source degrades independently: a missing usage hook or an older
-// gateway must not blank the provider list.
+// Fetches the gateway signals behind the Models settings page. Core provider
+// access stays separate from optional usage reads so slow billing endpoints or
+// a large session ledger cannot hold the whole route behind one spinner.
 import type { SessionModelUsage } from "../../../../src/infra/session-cost-usage.types.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type {
@@ -49,7 +49,7 @@ type RouteLoadEntry = {
 
 // Selecting the default agent invalidates the active route immediately after
 // its loader resolves. Reuse that just-completed read instead of launching the
-// same six gateway requests again. Keeping this beside the lazy loader avoids
+// same core requests again. Keeping this beside the lazy loader avoids
 // charging the route-specific cache to the startup bundle.
 const ROUTE_LOAD_REUSE_MS = 1_000;
 const routeLoads = new WeakMap<GatewayBrowserClient, Map<string, RouteLoadEntry>>();
@@ -108,29 +108,17 @@ export async function loadModelProvidersData(
       (error: unknown) => ({ ok: false as const, error }),
     ),
   );
-  const [authStatus, models, catalogResult, config, providerUsageFetch, costByProvider] =
-    await Promise.all([
-      loadModelAuthStatus(client, opts).then(
-        (result) => ({ ok: true as const, result }),
-        (error: unknown) => ({ ok: false as const, error }),
-      ),
-      modelsLoad,
-      catalogRefresh,
-      request<ConfigSnapshot>("config.get", {})
-        .then((snapshot) => resolveEditableSnapshotConfig(snapshot))
-        .catch(() => null),
-      requestProviderUsage(client, opts.signal ? { signal: opts.signal } : undefined),
-      requestSessionUsage(client, {
-        startDate: localDate(MODEL_PROVIDERS_COST_DAYS - 1),
-        endDate: localDate(0),
-        scope: "family",
-        timeZone: "local",
-        limit: 1,
-        includeContextWeight: false,
-      })
-        .then((result) => result?.aggregates?.byProvider ?? null)
-        .catch(() => null),
-    ]);
+  const [authStatus, models, catalogResult, config] = await Promise.all([
+    loadModelAuthStatus(client, opts).then(
+      (result) => ({ ok: true as const, result }),
+      (error: unknown) => ({ ok: false as const, error }),
+    ),
+    modelsLoad,
+    catalogRefresh,
+    request<ConfigSnapshot>("config.get", {})
+      .then((snapshot) => resolveEditableSnapshotConfig(snapshot))
+      .catch(() => null),
+  ]);
   return {
     authStatus:
       authStatus.ok && Array.isArray(authStatus.result?.providers) ? authStatus.result : null,
@@ -142,13 +130,31 @@ export async function loadModelProvidersData(
         ? errorMessage(models.error)
         : null,
     config,
-    providerUsage: providerUsageFetch,
-    costByProvider,
+    providerUsage: null,
+    costByProvider: null,
     updatedAt: Date.now(),
     // Auth status is the primary provider list; its failure is the only one
     // worth surfacing as a page-level error.
     error: authStatus.ok ? null : errorMessage(authStatus.error),
   };
+}
+
+export function loadModelProviderUsage(
+  client: GatewayBrowserClient,
+  signal?: AbortSignal,
+): Promise<ProviderUsageRequestResult> {
+  return requestProviderUsage(client, signal ? { signal } : undefined);
+}
+
+export function loadModelProviderCost(client: GatewayBrowserClient): Promise<SessionModelUsage[]> {
+  return requestSessionUsage(client, {
+    startDate: localDate(MODEL_PROVIDERS_COST_DAYS - 1),
+    endDate: localDate(0),
+    scope: "family",
+    timeZone: "local",
+    limit: 1,
+    includeContextWeight: false,
+  }).then((result) => result?.aggregates?.byProvider ?? []);
 }
 
 export function loadRouteData(

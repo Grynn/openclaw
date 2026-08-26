@@ -45,6 +45,9 @@ type ModelProvidersViewProps = {
   refreshing: boolean;
   error: string | null;
   providerUsageFailed: boolean;
+  providerUsageLoading: boolean;
+  localCostLoading: boolean;
+  localCostFailed: boolean;
   updatedAt: number | null;
   costDays: number;
   credentialAgentLabel: string;
@@ -74,6 +77,8 @@ type ModelProvidersViewProps = {
   addProviderId: string;
   addProviderKey: string;
   onRefresh: () => void;
+  onRefreshProviderUsage: () => void;
+  onRefreshLocalCost: () => void;
   onOpenKeyEditor: (provider: string) => void;
   onCloseKeyEditor: () => void;
   onKeyDraftChange: (value: string) => void;
@@ -213,7 +218,7 @@ function modelsText(card: ModelProviderCard): string | null {
       : t("modelProviders.models", { count: String(card.modelCount) });
 }
 
-function renderLocalCost(card: ModelProviderCard, costDays: number) {
+function renderLocalCost(card: ModelProviderCard) {
   const cost = card.localCost;
   if (!cost || (cost.totalTokens === 0 && cost.totalCost === 0)) {
     return nothing;
@@ -221,7 +226,7 @@ function renderLocalCost(card: ModelProviderCard, costDays: number) {
   return html`
     <div class="model-providers__local-cost">
       <div class="provider-usage-billing-row">
-        <span>${t("modelProviders.localCost", { days: String(costDays) })}</span>
+        <span>${card.displayName}</span>
         <strong>${formatCost(cost.totalCost)}</strong>
       </div>
       <div class="model-providers__local-cost-detail">
@@ -439,7 +444,7 @@ function renderProviderActions(card: ModelProviderCard, props: ModelProvidersVie
   `;
 }
 
-function renderProviderRow(card: ModelProviderCard, props: ModelProvidersViewProps) {
+function renderProviderAccessRow(card: ModelProviderCard, props: ModelProvidersViewProps) {
   const models = modelsText(card);
   const message = props.messages[`key:${card.id}`] ?? props.messages[card.id];
   return html`
@@ -457,21 +462,51 @@ function renderProviderRow(card: ModelProviderCard, props: ModelProvidersViewPro
             >
           </div>
         </div>
-        <div class="settings-row__control">
-          ${card.usage?.plan ? renderSettingsValue(card.usage.plan) : nothing}
-          ${renderProviderStatus(card)}
-        </div>
+        <div class="settings-row__control">${renderProviderStatus(card)}</div>
       </div>
       ${renderCredentialSummary(card, props.credentialAgentLabel)}
-      <div class="model-providers__global-metrics">
-        <div class="model-providers__global-metrics-title">${t("modelProviders.globalUsage")}</div>
-        ${card.usage
-          ? renderProviderUsageDetails(card.usage)
-          : html`<div class="model-providers__no-stats">${t("modelProviders.noStats")}</div>`}
-        ${renderLocalCost(card, props.costDays)}
-      </div>
       ${renderProviderActions(card, props)} ${renderKeyEditor(card, props)}
       ${renderProbeResult(props.probeResults[card.id])} ${renderMutationMessage(message)}
+    </div>
+  `;
+}
+
+function renderProviderUsageRow(card: ModelProviderCard) {
+  if (!card.usage) {
+    return nothing;
+  }
+  return html`
+    <div
+      class="settings-row settings-row--stacked model-providers__row"
+      data-provider-usage-id=${card.id}
+    >
+      <div class="model-providers__head">
+        <div class="model-providers__identity">
+          ${renderProviderBrandIcon(card.id, { className: "model-providers__icon" })}
+          <div class="settings-row__text">
+            <span class="settings-row__title">${card.displayName}</span>
+            <span class="settings-row__desc">${card.id}</span>
+          </div>
+        </div>
+        <div class="settings-row__control">
+          ${card.usage.plan ? renderSettingsValue(card.usage.plan) : nothing}
+        </div>
+      </div>
+      <div class="model-providers__global-metrics">${renderProviderUsageDetails(card.usage)}</div>
+    </div>
+  `;
+}
+
+function renderLocalCostRow(card: ModelProviderCard) {
+  if (!card.localCost || (card.localCost.totalTokens === 0 && card.localCost.totalCost === 0)) {
+    return nothing;
+  }
+  return html`
+    <div
+      class="settings-row settings-row--stacked model-providers__row"
+      data-provider-cost-id=${card.id}
+    >
+      ${renderLocalCost(card)}
     </div>
   `;
 }
@@ -599,18 +634,52 @@ export function renderModelProviders(props: ModelProvidersViewProps) {
       <div aria-busy="true">${renderSettingsGroup(renderSettingsEmpty(t("common.loading")))}</div>
     `);
   }
-  const providerRows = html`
+  const providerAccessRows = html`
     ${props.error ? renderProviderNoticeRow(props.error) : nothing}
-    ${props.providerUsageFailed
-      ? renderProviderNoticeRow(t("usage.providerUsage.unavailable"))
-      : nothing}
     ${props.cards.length === 0
       ? renderSettingsEmpty(
           html`<strong>${t("modelProviders.emptyTitle")}</strong><br />${t(
               "modelProviders.emptySubtitle",
             )}`,
         )
-      : props.cards.map((card) => renderProviderRow(card, props))}
+      : props.cards.map((card) => renderProviderAccessRow(card, props))}
+  `;
+  const usageCards = props.cards.filter((card) => Boolean(card.usage));
+  const providerUsageRows = html`
+    <div aria-busy=${props.providerUsageLoading ? "true" : "false"}>
+      ${props.providerUsageFailed
+        ? renderProviderNoticeRow(t("usage.providerUsage.unavailable"))
+        : nothing}
+      ${usageCards.map(renderProviderUsageRow)}
+      ${props.providerUsageLoading && usageCards.length === 0
+        ? renderSettingsEmpty(t("common.loading"))
+        : nothing}
+      ${!props.providerUsageLoading && !props.providerUsageFailed && usageCards.length === 0
+        ? renderSettingsEmpty(t("modelProviders.noStats"))
+        : nothing}
+      ${props.providerUsageStalled
+        ? html`<div class="callout warning" role="status">${t("usage.providerUsage.stalled")}</div>`
+        : nothing}
+    </div>
+  `;
+  const localCostCards = props.cards.filter(
+    (card) =>
+      Boolean(card.localCost) &&
+      ((card.localCost?.totalTokens ?? 0) > 0 || (card.localCost?.totalCost ?? 0) > 0),
+  );
+  const localCostRows = html`
+    <div aria-busy=${props.localCostLoading ? "true" : "false"}>
+      ${props.localCostFailed
+        ? renderProviderNoticeRow(t("modelProviders.requestFailed"))
+        : nothing}
+      ${localCostCards.map(renderLocalCostRow)}
+      ${props.localCostLoading && localCostCards.length === 0
+        ? renderSettingsEmpty(t("common.loading"))
+        : nothing}
+      ${!props.localCostLoading && !props.localCostFailed && localCostCards.length === 0
+        ? renderSettingsEmpty(t("usage.sessions.noneInRange"))
+        : nothing}
+    </div>
   `;
   const needsModelSetup = !props.configuredModels.some((model) => model.available !== false);
   return renderSettingsPage(html`
@@ -636,7 +705,9 @@ export function renderModelProviders(props: ModelProvidersViewProps) {
       {
         title: t("modelProviders.title"),
         description: props.updatedAt
-          ? t("modelProviders.updated", { time: formatTimeMs(props.updatedAt) })
+          ? `${t("modelProviders.subtitle")} · ${t("modelProviders.updated", {
+              time: formatTimeMs(props.updatedAt),
+            })}`
           : t("modelProviders.subtitle"),
         count: props.cards.length,
         actions: html`
@@ -649,12 +720,43 @@ export function renderModelProviders(props: ModelProvidersViewProps) {
           </button>
         `,
       },
-      providerRows,
+      providerAccessRows,
     )}
     ${props.quickAddSupported ? renderAddProvider(props) : nothing}
-    ${props.providerUsageStalled
-      ? html`<div class="callout warning" role="status">${t("usage.providerUsage.stalled")}</div>`
-      : nothing}
+    ${renderSettingsSection(
+      {
+        title: t("usage.providerUsage.title"),
+        description: t("usage.providerUsage.subtitle"),
+        count: usageCards.length,
+        actions: html`
+          <button
+            class="btn btn--sm"
+            ?disabled=${props.providerUsageLoading}
+            @click=${props.onRefreshProviderUsage}
+          >
+            ${props.providerUsageLoading ? t("modelProviders.refreshing") : t("common.refresh")}
+          </button>
+        `,
+      },
+      providerUsageRows,
+    )}
+    ${renderSettingsSection(
+      {
+        title: t("modelProviders.localCostTitle"),
+        description: t("modelProviders.localCost", { days: String(props.costDays) }),
+        count: localCostCards.length,
+        actions: html`
+          <button
+            class="btn btn--sm"
+            ?disabled=${props.localCostLoading}
+            @click=${props.onRefreshLocalCost}
+          >
+            ${props.localCostLoading ? t("modelProviders.refreshing") : t("common.refresh")}
+          </button>
+        `,
+      },
+      localCostRows,
+    )}
     ${props.mutationBlockedReason
       ? html`<div class="callout warning">${props.mutationBlockedReason}</div>`
       : nothing}

@@ -41,6 +41,7 @@ function hasProviderCredentials(card: ModelProviderCard): boolean {
 
 export function hasVerifiedProvider(card: ModelProviderCard): boolean {
   return (
+    card.availableModelCount > 0 &&
     card.catalogStatus === "ready" &&
     card.auth?.kind !== "expired" &&
     card.auth?.kind !== "missing" &&
@@ -49,6 +50,25 @@ export function hasVerifiedProvider(card: ModelProviderCard): boolean {
 }
 
 export function renderProviderStatus(card: ModelProviderCard) {
+  // The gateway evaluates availability for the exact model/runtime route. A
+  // provider-level auth or catalog rollup may still include an unused sibling
+  // route (for example direct Anthropic beside a working Claude CLI login).
+  // Keep that diagnostic available elsewhere, but do not present the whole
+  // provider as broken when at least one concrete route is usable.
+  if (card.availableModelCount > 0) {
+    if (card.auth?.kind === "expiring") {
+      return renderAuthStatus(card);
+    }
+    return hasVerifiedProvider(card)
+      ? renderSettingsStatus({
+          kind: "ok",
+          label: t("modelProviders.status.ready"),
+        })
+      : renderSettingsStatus({
+          kind: "muted",
+          label: t("modelProviders.status.configured"),
+        });
+  }
   if (
     card.auth?.kind === "expired" ||
     card.auth?.kind === "missing" ||
@@ -68,19 +88,8 @@ export function renderProviderStatus(card: ModelProviderCard) {
   if (!hasProviderCredentials(card)) {
     return renderAuthStatus(card);
   }
-  if (hasVerifiedProvider(card) && card.availableModelCount > 0) {
-    return renderSettingsStatus({
-      kind: "ok",
-      label: t("modelProviders.status.ready"),
-    });
-  }
-  return hasVerifiedProvider(card)
-    ? renderSettingsStatus({
-        kind: "muted",
-        label: t("modelProviders.status.ok"),
-      })
-    : renderSettingsStatus({
-        kind: "muted",
-        label: t("modelProviders.status.configured"),
-      });
+  return renderSettingsStatus({
+    kind: "muted",
+    label: t("modelProviders.status.configured"),
+  });
 }

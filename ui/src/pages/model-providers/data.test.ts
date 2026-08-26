@@ -196,6 +196,40 @@ describe("buildModelProviderCards", () => {
     expect(firstCard(cards).auth).toMatchObject({ kind: "missing", profileCount: 1 });
   });
 
+  it("uses the credential route resolved for configured models", () => {
+    const cards = buildModelProviderCards({
+      ...EMPTY_INPUT,
+      models: [
+        catalogEntry({
+          provider: "anthropic",
+          available: true,
+          agentRuntime: { id: "claude-cli", source: "model" },
+        }),
+      ],
+      authStatus: authStatus([
+        {
+          provider: "anthropic",
+          displayName: "Claude",
+          status: "missing",
+          profiles: [],
+        },
+        {
+          provider: "claude-cli",
+          displayName: "Claude",
+          status: "expiring",
+          expiry: { at: 2, remainingMs: 1, label: "4h" },
+          profiles: [{ profileId: "anthropic:claude-cli", type: "oauth", status: "expiring" }],
+        },
+      ]),
+    });
+
+    expect(firstCard(cards).auth).toEqual({
+      kind: "expiring",
+      profileCount: 1,
+      expiryLabel: "4h",
+    });
+  });
+
   it("preserves missing MiniMax OAuth beside a separate API key", () => {
     const cards = buildModelProviderCards({
       ...EMPTY_INPUT,

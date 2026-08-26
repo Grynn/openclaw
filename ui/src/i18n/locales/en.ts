@@ -4689,6 +4689,7 @@ export const en: TranslationMap = {
     noStats: "No live usage data reported by this provider.",
     localCost: "Global session spend · {days}d",
     localCostDetail: "{tokens} tokens · {sessions} sessions",
+    localCostTitle: "Local session spend",
     saving: "Saving…",
     requestFailed: "Request failed.",
     configUnavailable: "Configuration is unavailable. Refresh and try again.",

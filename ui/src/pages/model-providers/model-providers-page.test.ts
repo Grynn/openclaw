@@ -240,6 +240,92 @@ describe("ModelProvidersPage agent scope", () => {
     expect(link?.href).toBe("https://docs.openclaw.ai/concepts/model-providers");
   });
 
+  it("renders core sections while usage and local cost settle independently", async () => {
+    const { context, request } = createHarness("main");
+    const providerUsage = deferred<unknown>();
+    const localCost = deferred<unknown>();
+    request.mockImplementation(async (method: string) => {
+      switch (method) {
+        case "models.authStatus":
+          return {
+            ts: 1,
+            providers: [
+              {
+                provider: "openai",
+                displayName: "OpenAI",
+                status: "static",
+                profiles: [],
+                apiKey: { source: "env", envVar: "OPENAI_API_KEY" },
+              },
+            ],
+          };
+        case "models.list":
+          return {
+            models: [
+              { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", provider: "openai", available: true },
+            ],
+          };
+        case "config.get":
+          return {
+            config: { agents: { defaults: { model: "openai/gpt-5.6-luna" } } },
+            hash: "hash",
+          };
+        case "usage.status":
+          return providerUsage.promise;
+        case "sessions.usage":
+          return localCost.promise;
+        default:
+          return {};
+      }
+    });
+    const page = appendPage(context);
+
+    await waitForFast(() =>
+      expect(page.querySelector('[data-provider-id="openai"]')).not.toBeNull(),
+    );
+    expect(page.querySelector('[data-provider-usage-id="openai"]')).toBeNull();
+    expect(page.querySelector('[data-provider-cost-id="openai"]')).toBeNull();
+    expect(page.textContent).toContain("Default models");
+    expect(page.textContent).toContain("Provider plans & billing");
+    expect(page.textContent).toContain("Local session spend");
+
+    providerUsage.resolve({
+      updatedAt: 2,
+      providers: [{ provider: "openai", displayName: "OpenAI", windows: [] }],
+    });
+    await waitForFast(() =>
+      expect(page.querySelector('[data-provider-usage-id="openai"]')).not.toBeNull(),
+    );
+    expect(page.querySelector('[data-provider-cost-id="openai"]')).toBeNull();
+
+    localCost.resolve({
+      aggregates: {
+        byProvider: [
+          {
+            provider: "openai",
+            count: 1,
+            totals: {
+              input: 10,
+              output: 5,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 15,
+              totalCost: 0.01,
+              inputCost: 0.006,
+              outputCost: 0.004,
+              cacheReadCost: 0,
+              cacheWriteCost: 0,
+              missingCostEntries: 0,
+            },
+          },
+        ],
+      },
+    });
+    await waitForFast(() =>
+      expect(page.querySelector('[data-provider-cost-id="openai"]')).not.toBeNull(),
+    );
+  });
+
   it("patches thinking and fast mode through the shared config draft", async () => {
     const { context, runtimeConfig } = createHarness("main");
     const page = appendPage(context);

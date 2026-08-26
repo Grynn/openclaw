@@ -35,6 +35,8 @@ import {
 } from "./data.ts";
 import {
   EMPTY_MODEL_PROVIDERS_DATA,
+  loadModelProviderCost,
+  loadModelProviderUsage,
   loadModelProvidersData,
   MODEL_PROVIDERS_COST_DAYS,
   type ModelProvidersData,
@@ -70,10 +72,13 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
   @state() private addProviderKey = "";
   @state() private defaultsDraft: DefaultModelSelection | null = null;
   @state() private selectedAgentId = "";
+  @state() private localCostFailed = false;
   /** Client the current data was loaded from; a new client means stale data. */
   private dataClient: GatewayBrowserClient | null = null;
   // Null Task runs supersede stale work without counting as a real load.
   private loadClient: GatewayBrowserClient | null = null;
+  private providerUsageClient: GatewayBrowserClient | null = null;
+  private localCostClient: GatewayBrowserClient | null = null;
   private routeDataObserved = false;
   // Global config writes survive agent switches; their card state does not.
   private agentEpoch = 0;
@@ -87,7 +92,6 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       if (!client || !agentId) {
         return initialState;
       }
-      this.refreshPolicy.beginLoad();
       return loadModelProvidersData(client, {
         agentId,
         ...(force ? { refresh: true } : {}),
@@ -97,16 +101,58 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     onComplete: ({ client, data }) => {
       this.loadClient = null;
       this.adoptLoadedData(client, data);
-      this.refreshPolicy.flushPending();
     },
     onError: () => {
       this.loadClient = null;
+    },
+  });
+  private readonly providerUsageTask = new Task(this, {
+    autoRun: false,
+    task: ([client, epoch]: [GatewayBrowserClient | null, number], { signal }) => {
+      if (!client) {
+        return initialState;
+      }
+      this.refreshPolicy.beginLoad();
+      return loadModelProviderUsage(client, signal).then((providerUsage) => ({
+        client,
+        epoch,
+        providerUsage,
+      }));
+    },
+    onComplete: ({ client, epoch, providerUsage }) => {
+      this.providerUsageClient = null;
+      if (this.data && client === this.dataClient) {
+        this.data = { ...this.data, providerUsage };
+      }
+      this.refreshPolicy.markProviderUsage(providerUsage, Date.now(), epoch);
+      this.refreshPolicy.flushPending();
+    },
+    onError: () => {
+      this.providerUsageClient = null;
       this.refreshPolicy.flushPending();
     },
   });
+  private readonly localCostTask = new Task(this, {
+    autoRun: false,
+    task: ([client]: [GatewayBrowserClient | null]) =>
+      client
+        ? loadModelProviderCost(client).then((costByProvider) => ({ client, costByProvider }))
+        : initialState,
+    onComplete: ({ client, costByProvider }) => {
+      this.localCostClient = null;
+      this.localCostFailed = false;
+      if (this.data && client === this.dataClient) {
+        this.data = { ...this.data, costByProvider };
+      }
+    },
+    onError: () => {
+      this.localCostClient = null;
+      this.localCostFailed = true;
+    },
+  });
   private readonly refreshPolicy = new UsageRefreshPolicy({
-    isLoading: () => this.loadClient !== null,
-    reload: () => void this.refresh({ force: false }),
+    isLoading: () => this.providerUsageClient !== null,
+    reload: () => void this.refreshProviderUsage(),
     onIncompleteUsageExhausted: () => this.requestUpdate(),
   });
   private readonly gateway = new GatewayPageController(this, {
@@ -122,7 +168,9 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
         this.resetConnectionState({ preserveVisibleData: true });
       }
       if (change.becameConnected && !change.initial) {
+        void this.refresh({ force: false });
         this.refreshPolicy.request("reconnect");
+        void this.refreshLocalCost();
       }
     },
     onPageActivation: () => this.refreshPolicy.request("focus"),
@@ -201,15 +249,29 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
   }
 
   private adoptLoadedData(client: GatewayBrowserClient | null, data: ModelProvidersData) {
-    this.data = data;
+    const previous = client === this.dataClient ? this.data : null;
+    this.data = {
+      ...data,
+      providerUsage: previous?.providerUsage ?? data.providerUsage,
+      costByProvider: previous?.costByProvider ?? data.costByProvider,
+    };
     this.dataClient = client;
-    this.refreshPolicy.markProviderUsage(data.providerUsage, data.updatedAt, this.gateway.epoch);
+    if (data.providerUsage) {
+      this.refreshPolicy.markProviderUsage(data.providerUsage, data.updatedAt, this.gateway.epoch);
+    }
+    if (client) {
+      this.ensureSupplementalData(client);
+    }
   }
 
   private invalidateRequests() {
     this.refreshPolicy.interrupt();
     this.loadClient = null;
+    this.providerUsageClient = null;
+    this.localCostClient = null;
     void this.refreshTask.run([null, this.selectedAgentId, false]);
+    void this.providerUsageTask.run([null, this.gateway.epoch]);
+    void this.localCostTask.run([null]);
   }
 
   private resetConnectionState(options: { preserveVisibleData?: boolean } = {}) {
@@ -222,6 +284,7 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     this.probeEpochs = new Map();
     this.probeUnsupported = false;
     this.defaultsDraft = null;
+    this.localCostFailed = false;
   }
 
   private resetAgentScopeState() {
@@ -281,9 +344,44 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     }
     if (opts.force) {
       this.refreshPolicy.resetPayload();
+      this.refreshSupplementalData();
     }
     this.loadClient = client;
     return this.refreshTask.run([client, this.selectedAgentId, opts.force]);
+  }
+
+  private ensureSupplementalData(client: GatewayBrowserClient) {
+    if (!this.data?.providerUsage && !this.providerUsageClient) {
+      void this.refreshProviderUsage(client);
+    }
+    if (!this.data?.costByProvider && !this.localCostClient && !this.localCostFailed) {
+      void this.refreshLocalCost(client);
+    }
+  }
+
+  private refreshSupplementalData() {
+    void this.refreshProviderUsage();
+    void this.refreshLocalCost();
+  }
+
+  private refreshProviderUsage(explicitClient?: GatewayBrowserClient): Promise<void> {
+    const client = explicitClient ?? this.gateway.client;
+    if (!this.gateway.connected || !client) {
+      this.refreshPolicy.markLoadDeferred();
+      return Promise.resolve();
+    }
+    this.providerUsageClient = client;
+    return this.providerUsageTask.run([client, this.gateway.epoch]);
+  }
+
+  private refreshLocalCost(explicitClient?: GatewayBrowserClient): Promise<void> {
+    const client = explicitClient ?? this.gateway.client;
+    if (!this.gateway.connected || !client) {
+      return Promise.resolve();
+    }
+    this.localCostFailed = false;
+    this.localCostClient = client;
+    return this.localCostTask.run([client]);
   }
 
   private mutationBlockedReason(): string | null {
@@ -627,6 +725,9 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       refreshing: this.loadClient !== null,
       error: rosterError ?? data.error ?? data.catalogError,
       providerUsageFailed: data.providerUsage?.ok === false,
+      providerUsageLoading: this.providerUsageClient !== null,
+      localCostLoading: this.localCostClient !== null,
+      localCostFailed: this.localCostFailed,
       updatedAt: data.updatedAt,
       costDays: MODEL_PROVIDERS_COST_DAYS,
       credentialAgentLabel: selectedAgentLabel,
@@ -656,6 +757,8 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       addProviderKey: this.addProviderKey,
       onRefresh: () =>
         void (rosterError ? this.context.agents.refreshList() : this.refresh({ force: true })),
+      onRefreshProviderUsage: () => void this.refreshProviderUsage(),
+      onRefreshLocalCost: () => void this.refreshLocalCost(),
       onOpenKeyEditor: (provider) => this.openKeyEditor(provider),
       onCloseKeyEditor: () => this.closeKeyEditor(),
       onKeyDraftChange: (value) => (this.keyDraft = value),

@@ -121,7 +121,7 @@ describe("ModelProvidersPage usage convergence", () => {
     expect(page.textContent ?? "").not.toContain("did not finish loading");
   });
 
-  it("replaces a pending pre-disconnect load before it can publish", async () => {
+  it("does not start supplemental reads for a core load superseded by disconnect", async () => {
     const harness = createHarness("main");
     harness.setUsageStatus({ updatedAt: 1, providers: [] });
     const releaseOldLoad = harness.deferNextAuthStatus();
@@ -137,7 +137,7 @@ describe("ModelProvidersPage usage convergence", () => {
     await vi.waitFor(() =>
       expect(
         harness.request.mock.calls.filter(([method]) => method === "usage.status").length,
-      ).toBe(2),
+      ).toBe(1),
     );
     releaseOldLoad();
     await vi.waitFor(() =>

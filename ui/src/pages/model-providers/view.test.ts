@@ -31,6 +31,9 @@ function props(overrides: Partial<ModelProvidersViewProps> = {}): ModelProviders
     refreshing: false,
     error: null,
     providerUsageFailed: false,
+    providerUsageLoading: false,
+    localCostLoading: false,
+    localCostFailed: false,
     updatedAt: 1,
     costDays: 30,
     credentialAgentLabel: "Writer",
@@ -59,6 +62,8 @@ function props(overrides: Partial<ModelProvidersViewProps> = {}): ModelProviders
     addProviderId: "",
     addProviderKey: "",
     onRefresh: () => undefined,
+    onRefreshProviderUsage: () => undefined,
+    onRefreshLocalCost: () => undefined,
     onOpenKeyEditor: () => undefined,
     onCloseKeyEditor: () => undefined,
     onKeyDraftChange: () => undefined,
@@ -526,7 +531,6 @@ describe("renderModelProviders", () => {
     );
     const provider = container.querySelector('[data-provider-id="openai"]');
     expect(text(provider)).toContain("Credentials for Writer");
-    expect(text(provider)).toContain("Global usage and cost");
     expect(text(provider)).toContain("API key from environment (OPENAI_API_KEY)");
     expect(text(provider)).toContain("Connected");
     expect(text(provider)).toContain("145 ms");
@@ -583,6 +587,42 @@ describe("renderModelProviders", () => {
     const provider = container.querySelector('[data-provider-id="openai"]');
     expect(text(provider)).toContain("Credentials rejected");
     expect(text(provider)).not.toContain("Signed in");
+  });
+
+  it("does not let an unused sibling credential route poison a usable provider", () => {
+    const container = mount(
+      props({
+        cards: [
+          card({
+            auth: { kind: "missing", profileCount: 0 },
+            catalogStatus: "auth-rejected",
+            modelCount: 1,
+            availableModelCount: 1,
+          }),
+        ],
+      }),
+    );
+
+    const provider = container.querySelector('[data-provider-id="openai"]');
+    expect(text(provider)).toContain("Credentials configured");
+    expect(text(provider)).not.toContain("Not signed in");
+    expect(text(provider)).not.toContain("Credentials rejected");
+  });
+
+  it("keeps a missing credential error when the provider has no usable route", () => {
+    const container = mount(
+      props({
+        cards: [
+          card({
+            auth: { kind: "missing", profileCount: 0 },
+            modelCount: 1,
+            availableModelCount: 0,
+          }),
+        ],
+      }),
+    );
+
+    expect(text(container.querySelector('[data-provider-id="openai"]'))).toContain("Not signed in");
   });
 
   it("does not report an unverified API key as ready", () => {
@@ -647,11 +687,12 @@ describe("renderModelProviders", () => {
     expect(container.querySelector(".model-providers__defaults")).not.toBeNull();
   });
 
-  it("labels provider usage and session cost as global", () => {
+  it("renders provider usage and local cost in independent sections", () => {
     const container = mount(
       props({
         cards: [
           card({
+            usage: { provider: "openai", displayName: "OpenAI", windows: [] },
             localCost: { totalCost: 12, totalTokens: 1_000, sessionCount: 2 },
           }),
         ],
@@ -660,8 +701,11 @@ describe("renderModelProviders", () => {
 
     const provider = container.querySelector('[data-provider-id="openai"]');
     expect(text(provider)).toContain("Credentials for Writer");
-    expect(text(provider)).toContain("Global usage and cost");
-    expect(text(provider)).toContain("Global session spend · 30d");
+    expect(provider?.querySelector(".model-providers__global-metrics")).toBeNull();
+    expect(container.querySelector('[data-provider-usage-id="openai"]')).not.toBeNull();
+    expect(text(container.querySelector('[data-provider-cost-id="openai"]'))).toContain("$12.00");
+    expect(text(container)).toContain("Provider plans & billing");
+    expect(text(container)).toContain("Local session spend");
   });
 
   it("preserves complete graphemes in custom provider fallback icons", () => {
