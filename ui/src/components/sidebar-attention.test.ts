@@ -136,7 +136,8 @@ function mountCronEventAttention(
     gateway,
     overlays,
     agentSelection,
-  } as ApplicationContext);
+    scopeUpgrade: hiddenScopeUpgradeCapability,
+  } as unknown as ApplicationContext);
   const element = document.createElement("openclaw-sidebar-attention") as SidebarAttentionElement;
   provider.append(element);
   document.body.append(provider);

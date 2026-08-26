@@ -109,7 +109,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     [];
   private approvalBadges: ApprovalBadgeSnapshot = deriveApprovalBadgeSnapshot([]);
 
-  constructor(private readonly host: SessionDataControllerHost) {
+  constructor(readonly host: SessionDataControllerHost) {
     host.addController(this);
     // The element used to enter subscriptions before connecting catalog listeners,
     // then tear subscriptions down after all session cleanup. Keep that ordering.
@@ -165,10 +165,6 @@ export class SessionDataController implements ReactiveController, SessionCatalog
 
   get sessionDataHostConnected(): boolean {
     return this.host.connected;
-  }
-
-  get sessionCatalogSurfaceVisible(): boolean {
-    return this.host.sessionCatalogSurfaceVisible;
   }
 
   expandedAgentId(): string {

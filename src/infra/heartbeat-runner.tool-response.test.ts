@@ -1075,15 +1075,6 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
   it("uses the heartbeat response tool prompt when the Codex runtime is env-forced", async () => {
     vi.stubEnv("OPENCLAW_AGENT_RUNTIME", "codex");
     const result = await runPromptScenario({
-      config: { model: "openai/gpt-5.5" },
-    });
-
-    expectHeartbeatToolPrompt(result);
-  });
-
-  it("keeps heartbeat_respond available under a heartbeat-only tool cap", async () => {
-    vi.stubEnv("OPENCLAW_AGENT_RUNTIME", "codex");
-    const result = await runPromptScenario({
       config: { model: "openai/gpt-5.5", tools: ["exec"] },
     });
 

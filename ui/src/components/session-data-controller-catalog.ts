@@ -41,9 +41,9 @@ export interface SessionDataControllerHost extends ReactiveControllerHost {
 
 export interface SessionCatalogDataOwner {
   readonly context: ApplicationContext<RouteId> | undefined;
+  readonly host: SessionDataControllerHost;
   readonly isSessionDataHostConnected: boolean;
   readonly sessionDataHostConnected: boolean;
-  readonly sessionCatalogSurfaceVisible: boolean;
   sessionCatalogs: SessionCatalog[];
   sessionCatalogRefreshStatus: PanelRefreshStatus;
   loadingMoreSessionCatalogIds: ReadonlySet<string>;
@@ -61,7 +61,7 @@ export interface SessionCatalogDataOwner {
 }
 
 function sessionCatalogSurfaceIsVisible(owner: SessionCatalogDataOwner): boolean {
-  return owner.sessionCatalogSurfaceVisible && document.visibilityState !== "hidden";
+  return owner.host.sessionCatalogSurfaceVisible && document.visibilityState !== "hidden";
 }
 
 function visibleSessionCatalogClient(owner: SessionCatalogDataOwner): GatewayBrowserClient | null {
@@ -194,7 +194,7 @@ export function applySessionCatalogHostEvent(
   ) {
     owner.sessionCatalogLive.schedule(
       SESSION_CATALOG_CHANGED_REFRESH_MS,
-      owner.isSessionDataHostConnected && owner.sessionCatalogSurfaceVisible,
+      owner.isSessionDataHostConnected && owner.host.sessionCatalogSurfaceVisible,
       () => void owner.refreshSessionCatalogs(),
     );
   }
@@ -222,7 +222,7 @@ export async function refreshSessionCatalogs(owner: SessionCatalogDataOwner): Pr
     currentClient: () => owner.sessionCatalogGatewayClient(),
     catalogs: () => owner.sessionCatalogs,
     pageDepths: owner.sessionCatalogPageDepths,
-    connected: () => owner.isSessionDataHostConnected && owner.sessionCatalogSurfaceVisible,
+    connected: () => owner.isSessionDataHostConnected && owner.host.sessionCatalogSurfaceVisible,
     applyFinal: (catalogs, revisedCatalogIds) => {
       owner.sessionCatalogs = catalogs;
       owner.sessionCatalogRefreshStatus = completePanelRefresh();

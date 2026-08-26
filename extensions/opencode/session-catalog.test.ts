@@ -594,7 +594,12 @@ describe("OpenCode session catalog", () => {
       return await new Promise<never>((_resolve, reject) => {
         signal.addEventListener(
           "abort",
-          () => reject(signal.reason ?? new Error("OpenCode subprocess aborted")),
+          () =>
+            reject(
+              signal.reason instanceof Error
+                ? signal.reason
+                : new Error("OpenCode subprocess aborted"),
+            ),
           { once: true },
         );
       });
