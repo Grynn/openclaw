@@ -19,6 +19,7 @@ export function createBoundedTranscriptRewritePlanner(
     header?.cwd ?? process.cwd(),
     undefined,
     fileEntries,
+    undefined,
     generateFullSessionEntryId,
   );
 }
