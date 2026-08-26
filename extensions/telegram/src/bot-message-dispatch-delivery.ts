@@ -149,15 +149,19 @@ function createTranscriptMirror(turn: Turn) {
   const sessionKey = turn.context.ctxPayload.SessionKey;
   return sessionKey
     ? async (payload: TelegramTranscriptMirrorPayload) => {
-        const idempotencyKey = `telegram-final:${sessionKey}:${turn.transcriptMirrorTurnId}:${turn.transcriptMirrorSequence++}`;
-        await mirrorTelegramAssistantReplyToTranscript({
-          cfg: turn.cfg,
-          idempotencyKey,
-          loadFreshSessionEntry: turn.loadFreshSessionEntry,
-          route: turn.context.route,
-          sessionKey,
-          payload,
-        });
+        try {
+          const idempotencyKey = `telegram-final:${sessionKey}:${turn.transcriptMirrorTurnId}:${turn.transcriptMirrorSequence++}`;
+          await mirrorTelegramAssistantReplyToTranscript({
+            cfg: turn.cfg,
+            idempotencyKey,
+            loadFreshSessionEntry: turn.loadFreshSessionEntry,
+            route: turn.context.route,
+            sessionKey,
+            payload,
+          });
+        } catch (err: unknown) {
+          logVerbose(`telegram transcriptMirror failed: ${formatErrorMessage(err)}`);
+        }
       }
     : undefined;
 }
@@ -297,6 +301,16 @@ export async function sendPayload(
     }
     if (durable.status === "handled_visible") {
       turn.deliveryState.markDelivered();
+      if (effectivePayload.isError === true && options?.mirrorTranscript !== false) {
+        await createTranscriptMirror(turn)?.({
+          text: durable.delivery.content ?? effectivePayload.text,
+          mediaUrls: effectivePayload.mediaUrls?.length
+            ? effectivePayload.mediaUrls
+            : effectivePayload.mediaUrl
+              ? [effectivePayload.mediaUrl]
+              : undefined,
+        });
+      }
       return true;
     }
     if (durable.status === "handled_no_send") {
@@ -353,9 +367,7 @@ async function emitPreviewFinalizedHook(turn: Turn, result: LaneDeliveryResult):
   });
   const transcriptMirror = createTranscriptMirror(turn);
   if (transcriptMirror && result.delivery.content) {
-    void transcriptMirror({ text: result.delivery.content }).catch((err: unknown) => {
-      logVerbose(`telegram preview-finalized transcriptMirror failed: ${formatErrorMessage(err)}`);
-    });
+    void transcriptMirror({ text: result.delivery.content });
   }
 }
 
