@@ -141,4 +141,36 @@ describe("dispatchReplyFromConfig terminal visible admission recovery", () => {
       expect.objectContaining({ text: expect.stringContaining("Something went wrong") }),
     );
   });
+
+  it("reports a raw reply operation failure carried by a visible final", async () => {
+    const resolverError = new Error("provider returned a terminal error payload");
+    let replyOperation: ReturnType<typeof createReplyOperation> | undefined;
+    const replyResolver: NonNullable<DispatchFromConfigParams["replyResolver"]> = async (
+      _ctx,
+      options,
+    ) => {
+      replyOperation = options?.replyOperation;
+      options?.onAgentRunStart?.("raw-failed-run");
+      replyOperation?.fail("run_failed", resolverError);
+      return { text: "Provider failed", isError: true } satisfies ReplyPayload;
+    };
+
+    const dispatchParams = createVisibleDispatchParams(replyResolver);
+    const result = await dispatchReplyFromConfig(dispatchParams);
+
+    expect(replyOperation?.result).toEqual({
+      kind: "failed",
+      code: "run_failed",
+      cause: resolverError,
+    });
+    expect(result).toMatchObject({
+      queuedFinal: true,
+      counts: { tool: 0, block: 0, final: 0 },
+    });
+    expect(readAgentRunTerminalOutcome(result)).toBe("failed");
+    expect(dispatchParams.dispatcher.sendFinalReply).toHaveBeenCalledWith({
+      text: "Provider failed",
+      isError: true,
+    });
+  });
 });
