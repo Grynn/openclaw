@@ -18,6 +18,7 @@ import { isSessionCostUsageRefreshRunning } from "./session-cost-usage-cache.sql
 import {
   listUsageCountedTranscriptStats,
   resolveUsageCostTranscriptFile,
+  type UsageCostTranscriptFile,
   USAGE_COST_TRANSCRIPT_STAT_CONCURRENCY,
 } from "./session-cost-usage-collection.js";
 import {
@@ -132,7 +133,11 @@ export async function loadCostUsageSummaryFromCache(params: {
 }
 
 export async function loadSessionCostSummariesFromCache(params: {
-  sessions: Array<{ sessionId?: string; sessionFile: string }>;
+  sessions: Array<{
+    sessionId?: string;
+    sessionFile: string;
+    usageCostTranscriptFile?: UsageCostTranscriptFile;
+  }>;
   config?: OpenClawConfig;
   agentId: string;
   startMs?: number;
@@ -146,7 +151,10 @@ export async function loadSessionCostSummariesFromCache(params: {
   const pricingFingerprint = resolveUsageCostPricingFingerprint(params.config, agentDir);
   const rollups = readUsageCostRollups(params.agentId, pricingFingerprint, databasePath);
   const fileTasks = params.sessions.map(
-    (session) => async () => await resolveUsageCostTranscriptFile(session.sessionFile),
+    (session) => async () =>
+      session.usageCostTranscriptFile?.filePath === session.sessionFile
+        ? session.usageCostTranscriptFile
+        : await resolveUsageCostTranscriptFile(session.sessionFile),
   );
   const { results: files } = await runTasksWithConcurrency({
     tasks: fileTasks,

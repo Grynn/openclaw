@@ -156,11 +156,31 @@ export type SessionCostSummary = CostUsageTotals & {
   latency?: SessionLatencyStats;
 };
 
+export type UsageCostTranscriptFile =
+  | {
+      filePath: string;
+      kind: "jsonl";
+      size: number;
+      mtimeMs: number;
+      device: number;
+      inode: number;
+    }
+  | {
+      filePath: string;
+      kind: "sqlite";
+      mtimeMs: number;
+      sessionId: string;
+      generation: string | null;
+      maxSeq: number;
+    };
+
 export type DiscoveredSession = {
   sessionId: string;
   sessionFile: string;
   mtime: number;
   firstUserMessage?: string;
+  /** Discovery snapshot reused by the bulk summary path to avoid probing the transcript twice. */
+  usageCostTranscriptFile?: UsageCostTranscriptFile;
 };
 
 export type SessionUsageTimePoint = SharedSessionUsageTimePoint;

@@ -26,7 +26,7 @@ import {
   listSessionTranscriptInstances,
   loadSessionEntry,
   loadTranscriptEventsSync,
-  readTranscriptStatsSync,
+  readSessionTranscriptWatermarkBatch,
 } from "../config/sessions/session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import { streamSessionTranscriptLines } from "../config/sessions/transcript-stream.js";
@@ -35,20 +35,11 @@ import type { SessionEntry } from "../config/sessions/types.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.js";
 import { runTasksWithConcurrency } from "../utils/run-with-concurrency.js";
+import type { UsageCostTranscriptFile } from "./session-cost-usage.types.js";
 
 export const USAGE_COST_TRANSCRIPT_STAT_CONCURRENCY = 32;
 
-export type UsageCostTranscriptFile = {
-  filePath: string;
-  kind: "jsonl" | "sqlite";
-  size: number;
-  mtimeMs: number;
-  sessionId?: string;
-  device?: number;
-  inode?: number;
-  eventCount?: number;
-  maxSeq?: number;
-};
+export type { UsageCostTranscriptFile } from "./session-cost-usage.types.js";
 
 function resolveUsageCostSessionStorePath(params: {
   agentId: string;
@@ -134,38 +125,34 @@ async function listUsageCountedTranscriptFileStats(
 function listUsageCountedSqliteTranscriptStats(
   agentId: string,
   params?: { minMtimeMs?: number; sessionsDir?: string },
-): UsageCostTranscriptFile[] {
+): Array<Extract<UsageCostTranscriptFile, { kind: "sqlite" }>> {
   const storePath = resolveUsageCostSessionStorePath({
     agentId,
     ...(params?.sessionsDir ? { sessionsDir: params.sessionsDir } : {}),
   });
-  const files: UsageCostTranscriptFile[] = [];
   // This scan reads transcript identity/timestamps only; clone:false avoids
   // cloning every current entry before the history projection and SQL rollups.
-  for (const instance of listSessionTranscriptInstances({ agentId, storePath, clone: false })) {
-    const marker = { agentId, sessionId: instance.sessionId, storePath };
-    const mtimeMs = instance.updatedAtMs;
-    if (params?.minMtimeMs !== undefined && mtimeMs < params.minMtimeMs) {
-      continue;
-    }
-    // Usage scans run across every session on hot paths; byte sizes come from
-    // a SQL aggregate so no transcript row is materialized (#86718 class).
-    const stats = readTranscriptStatsSync({
-      agentId: marker.agentId,
-      sessionId: marker.sessionId,
-      storePath: marker.storePath,
-    });
-    files.push({
+  const instances = listSessionTranscriptInstances({ agentId, storePath, clone: false }).filter(
+    (instance) => params?.minMtimeMs === undefined || instance.updatedAtMs >= params.minMtimeMs,
+  );
+  const scopes = instances.map((instance) => ({
+    agentId,
+    sessionId: instance.sessionId,
+    storePath,
+  }));
+  const watermarks = readSessionTranscriptWatermarkBatch(scopes);
+  return instances.map((instance, index) => {
+    const marker = scopes[index]!;
+    const watermark = watermarks[index]!;
+    return {
       filePath: formatCanonicalUsageCostSqliteMarker(marker),
       kind: "sqlite",
-      mtimeMs,
-      sessionId: marker.sessionId,
-      size: stats.sizeBytes,
-      eventCount: stats.eventCount,
-      maxSeq: stats.maxSeq,
-    });
-  }
-  return files;
+      mtimeMs: instance.updatedAtMs,
+      sessionId: instance.sessionId,
+      generation: watermark.generation,
+      maxSeq: watermark.maxSeq ?? 0,
+    };
+  });
 }
 
 function formatCanonicalUsageCostSqliteMarker(marker: SqliteSessionFileMarker): string {
@@ -194,19 +181,14 @@ export async function resolveUsageCostTranscriptFile(
 ): Promise<UsageCostTranscriptFile | undefined> {
   const marker = parseSqliteSessionFileMarker(sessionFile);
   if (marker) {
-    const stats = readTranscriptStatsSync({
-      agentId: marker.agentId,
-      sessionId: marker.sessionId,
-      storePath: marker.storePath,
-    });
+    const [watermark] = readSessionTranscriptWatermarkBatch([marker]);
     return {
       filePath: formatCanonicalUsageCostSqliteMarker(marker),
       kind: "sqlite",
-      mtimeMs: stats.lastMutationAtMs ?? 0,
+      mtimeMs: 0,
       sessionId: marker.sessionId,
-      size: stats.sizeBytes,
-      eventCount: stats.eventCount,
-      maxSeq: stats.maxSeq,
+      generation: watermark?.generation ?? null,
+      maxSeq: watermark?.maxSeq ?? 0,
     };
   }
   if (sessionFile.endsWith(SESSION_ARCHIVE_ZSTD_SUFFIX)) {

@@ -324,6 +324,40 @@ describe("sessions.usage", () => {
     expect(expectDefined(sessions[0], "sessions[0] test invariant").agentId).toBe("opus");
   });
 
+  it("reuses the SQLite watermark captured during discovery when loading usage summaries", async () => {
+    const sessionFile = "sqlite:main:s-watermark:/tmp/agents/main/openclaw-agent.sqlite";
+    const usageCostTranscriptFile = {
+      filePath: sessionFile,
+      kind: "sqlite" as const,
+      mtimeMs: 123,
+      sessionId: "s-watermark",
+      generation: "generation-1",
+      maxSeq: 42,
+    };
+    vi.mocked(discoverAllSessions).mockResolvedValueOnce([
+      {
+        sessionId: "s-watermark",
+        sessionFile,
+        mtime: 123,
+        usageCostTranscriptFile,
+      },
+    ]);
+
+    await runSessionsUsage(BASE_USAGE_RANGE);
+
+    expect(vi.mocked(loadSessionCostSummariesFromCache)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessions: [
+          expect.objectContaining({
+            sessionId: "s-watermark",
+            sessionFile,
+            usageCostTranscriptFile,
+          }),
+        ],
+      }),
+    );
+  });
+
   it("returns pending cache rows with null usage while refresh runs", async () => {
     vi.mocked(discoverAllSessions).mockResolvedValueOnce([
       {

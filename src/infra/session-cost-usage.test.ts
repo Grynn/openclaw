@@ -2,13 +2,16 @@
 import nodeFs from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { constants as sqliteConstants } from "node:sqlite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { markInboundContextLabel } from "../auto-reply/reply/inbound-context-marker.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { encodeSessionArchiveContent } from "../config/sessions/archive-compression.js";
 import {
   appendTranscriptMessage,
+  loadTranscriptEventsSync,
   persistSessionTranscriptTurn,
+  replaceTranscriptEvents,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -16,16 +19,19 @@ import {
   resetRemoteModelCatalogOverlayForTest,
   setRemoteModelCatalogOverlaySourcesForTest,
 } from "../model-catalog/remote-overlay.test-support.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import * as usageFormat from "../utils/usage-format.js";
 import * as formatDatetime from "./format-time/format-datetime.js";
+import { isPlainObject } from "./plain-object.js";
 import { refreshCostUsageCacheForAgent } from "./session-cost-usage-aggregation.js";
 import {
   acquireSessionCostUsageRefreshLock,
   readSessionCostUsageRollupRows,
   writeSessionCostUsageRollup,
 } from "./session-cost-usage-cache.sqlite.js";
+import { listUsageCountedTranscriptStats } from "./session-cost-usage-collection.js";
 import {
   discoverAllSessions as discoverAllSessionsForAgent,
   loadCostUsageSummary as loadCostUsageSummaryForAgent,
@@ -601,6 +607,208 @@ describe("session cost usage", () => {
           row.key.startsWith(`sqlite:main:${sessionId}:`),
         ),
       ).toBe(true);
+    });
+  });
+
+  it("discovers SQLite usage through cache watermarks without scanning event payload lengths", async () => {
+    const root = await makeSessionCostRoot("sqlite-watermark-discovery");
+    const storePath = path.join(root, "agents", "main", "sessions", "sessions.json");
+    const sessionId = "sqlite-watermark-discovery-session";
+    const scope = {
+      agentId: "main",
+      sessionId,
+      sessionKey: "agent:main:sqlite-watermark-discovery",
+      storePath,
+    };
+
+    await withStateDir(root, async () => {
+      await appendTranscriptMessage(scope, {
+        message: { role: "assistant", content: "watermark discovery", timestamp: 1 },
+      });
+      const database = openOpenClawAgentDatabase({ agentId: "main" });
+      const compiledFunctions: string[] = [];
+      database.db.setAuthorizer((actionCode, _first, second) => {
+        if (actionCode === sqliteConstants.SQLITE_FUNCTION && typeof second === "string") {
+          compiledFunctions.push(second);
+        }
+        return sqliteConstants.SQLITE_OK;
+      });
+      try {
+        const files = await listUsageCountedTranscriptStats("main");
+        const file = files.find((candidate) => candidate.filePath.includes(sessionId));
+        expect(compiledFunctions).not.toContain("length");
+        expect(file).toMatchObject({
+          kind: "sqlite",
+          sessionId,
+          generation: expect.any(String),
+          maxSeq: 1,
+        });
+      } finally {
+        database.db.setAuthorizer(null);
+      }
+    });
+  });
+
+  it("reuses a supplied SQLite discovery watermark without querying the transcript again", async () => {
+    const root = await makeSessionCostRoot("sqlite-watermark-reuse");
+    const storePath = path.join(root, "agents", "main", "sessions", "sessions.json");
+    const sessionId = "sqlite-watermark-reuse-session";
+    const scope = {
+      agentId: "main",
+      sessionId,
+      sessionKey: "agent:main:sqlite-watermark-reuse",
+      storePath,
+    };
+
+    await withStateDir(root, async () => {
+      await appendTranscriptMessage(scope, {
+        message: {
+          role: "assistant",
+          content: "reuse watermark",
+          timestamp: 1,
+          usage: { input: 3, output: 5, totalTokens: 8, cost: { total: 0.008 } },
+        },
+      });
+      const discovered = requireValue(
+        (await listUsageCountedTranscriptStats("main")).find(
+          (candidate) => candidate.kind === "sqlite" && candidate.sessionId === sessionId,
+        ),
+        "expected SQLite usage discovery token",
+      );
+      await refreshCostUsageCacheForAgent({
+        agentId: "main",
+        sessionFiles: [discovered.filePath],
+      });
+
+      const database = openOpenClawAgentDatabase({ agentId: "main" });
+      const readTables: string[] = [];
+      database.db.setAuthorizer((actionCode, first) => {
+        if (actionCode === sqliteConstants.SQLITE_READ && typeof first === "string") {
+          readTables.push(first);
+        }
+        return sqliteConstants.SQLITE_OK;
+      });
+      try {
+        const probed = await loadSessionCostSummariesFromCache({
+          agentId: "main",
+          sessions: [{ sessionId, sessionFile: discovered.filePath }],
+          requestRefresh: false,
+        });
+        expect(probed.cacheStatus.status).toBe("fresh");
+        expect(readTables).toContain("transcript_events");
+        readTables.length = 0;
+
+        const result = await loadSessionCostSummariesFromCache({
+          agentId: "main",
+          sessions: [
+            {
+              sessionId,
+              sessionFile: discovered.filePath,
+              usageCostTranscriptFile: discovered,
+            },
+          ],
+          requestRefresh: false,
+        });
+        expect(result.cacheStatus.status).toBe("fresh");
+        expect(result.summaries[0]?.totalTokens).toBe(8);
+        expect(readTables).not.toContain("transcript_events");
+        expect(readTables).not.toContain("transcript_rewrite_watermarks");
+      } finally {
+        database.db.setAuthorizer(null);
+      }
+    });
+  });
+
+  it("rebuilds a SQLite rollup when a rewrite rotates generation before an append", async () => {
+    const root = await makeSessionCostRoot("sqlite-generation-rollup");
+    const storePath = path.join(root, "agents", "main", "sessions", "sessions.json");
+    const sessionId = "sqlite-generation-rollup-session";
+    const sessionFile = `sqlite:main:${sessionId}:${storePath}`;
+    const scope = {
+      agentId: "main",
+      sessionId,
+      sessionKey: "agent:main:sqlite-generation-rollup",
+      storePath,
+    };
+    const timestamp = Date.UTC(2026, 7, 26, 8, 0, 0);
+
+    await withStateDir(root, async () => {
+      await persistSessionTranscriptTurn(scope, {
+        messages: [
+          { message: { role: "user", content: "initial prompt", timestamp } },
+          {
+            message: {
+              role: "assistant",
+              content: "initial answer",
+              timestamp: timestamp + 1,
+              usage: { input: 7, output: 11, totalTokens: 18, cost: { total: 0.018 } },
+            },
+          },
+        ],
+        touchSessionEntry: false,
+      });
+      await refreshCostUsageCacheForAgent({ agentId: "main", sessionFiles: [sessionFile] });
+
+      const originalEvents = loadTranscriptEventsSync(scope);
+      expect(originalEvents).toHaveLength(3);
+      const header = requireValue(originalEvents[0], "expected transcript header");
+      const first = requireValue(originalEvents[1], "expected first transcript message");
+      const leaf = requireValue(originalEvents[2], "expected transcript leaf");
+      if (!isPlainObject(first) || !isPlainObject(leaf)) {
+        throw new Error("expected object transcript events");
+      }
+      const leafId = typeof leaf.id === "string" ? leaf.id : null;
+      await replaceTranscriptEvents(scope, [
+        header,
+        {
+          ...first,
+          message: {
+            role: "assistant",
+            content: "rewritten early answer",
+            timestamp,
+            usage: { input: 20, output: 30, totalTokens: 50, cost: { total: 0.05 } },
+          },
+        },
+        leaf,
+        {
+          type: "message",
+          id: "sqlite-generation-rollup-appended",
+          parentId: leafId,
+          timestamp: new Date(timestamp + 2).toISOString(),
+          message: {
+            role: "assistant",
+            content: "appended answer",
+            timestamp: timestamp + 2,
+            usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0.002 } },
+          },
+        },
+      ]);
+
+      await refreshCostUsageCacheForAgent({ agentId: "main", sessionFiles: [sessionFile] });
+      const current = await loadSessionCostSummariesFromCache({
+        agentId: "main",
+        sessions: [{ sessionId, sessionFile }],
+        requestRefresh: false,
+      });
+      expect(current.cacheStatus.status).toBe("fresh");
+      expect(current.summaries[0]?.totalTokens).toBe(70);
+
+      const row = requireValue(
+        readSessionCostUsageRollupRows("main").find((candidate) =>
+          candidate.key.startsWith(`sqlite:main:${sessionId}:`),
+        ),
+        "expected generation-aware usage rollup",
+      );
+      const checkpoint = (JSON.parse(row.valueJson) as { checkpoint?: Record<string, unknown> })
+        .checkpoint;
+      expect(checkpoint).toMatchObject({
+        kind: "sqlite",
+        generation: expect.any(String),
+        maxSeq: 3,
+      });
+      expect(checkpoint).not.toHaveProperty("eventCount");
+      expect(checkpoint).not.toHaveProperty("size");
+      expect(checkpoint).not.toHaveProperty("mtimeMs");
     });
   });
 

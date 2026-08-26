@@ -129,6 +129,7 @@ export async function discoverAllSessions(params: {
         sessionFile: filePath,
         mtime: file.mtimeMs,
         firstUserMessage: firstUserMessage ?? existing?.firstUserMessage,
+        usageCostTranscriptFile: file,
       });
       continue;
     }

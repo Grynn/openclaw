@@ -61,10 +61,9 @@ type UsageCostJsonlCheckpoint = {
 
 type UsageCostSqliteCheckpoint = {
   kind: "sqlite";
+  /** Undefined only on legacy v2 rows written before generation-based freshness. */
+  generation?: string | null;
   maxSeq: number;
-  eventCount: number;
-  size: number;
-  mtimeMs: number;
   anchorHash: string;
   visibleLeafId?: string;
 };
@@ -155,6 +154,9 @@ export function isUsageCostRollupFresh(params: {
     return false;
   }
   if (checkpoint.kind === "jsonl") {
+    if (params.file.kind !== "jsonl") {
+      return false;
+    }
     return (
       checkpoint.observedSize === params.file.size &&
       checkpoint.observedMtimeMs === params.file.mtimeMs &&
@@ -163,9 +165,8 @@ export function isUsageCostRollupFresh(params: {
     );
   }
   return (
-    checkpoint.size === params.file.size &&
-    checkpoint.mtimeMs === params.file.mtimeMs &&
-    checkpoint.eventCount === params.file.eventCount &&
+    params.file.kind === "sqlite" &&
+    checkpoint.generation === params.file.generation &&
     checkpoint.maxSeq === params.file.maxSeq
   );
 }
@@ -179,13 +180,20 @@ export function canUseUsageCostRollupForPartial(params: {
     return false;
   }
   if (checkpoint.kind === "jsonl") {
+    if (params.file.kind !== "jsonl") {
+      return false;
+    }
     return (
       checkpoint.parsedOffset <= params.file.size &&
       checkpoint.device === params.file.device &&
       checkpoint.inode === params.file.inode
     );
   }
-  return checkpoint.maxSeq <= (params.file.maxSeq ?? 0);
+  return (
+    params.file.kind === "sqlite" &&
+    (checkpoint.generation === undefined || checkpoint.generation === params.file.generation) &&
+    checkpoint.maxSeq <= params.file.maxSeq
+  );
 }
 
 export function getUsageCostStaleRollupFiles(params: {
@@ -385,7 +393,7 @@ function createUsageRollupScan(params: {
 }
 
 async function scanJsonlUsageRollup(params: {
-  file: UsageCostTranscriptFile;
+  file: Extract<UsageCostTranscriptFile, { kind: "jsonl" }>;
   previous?: UsageCostStoredRollup;
   pricingFingerprint: string;
   resolveCost: UsageCostResolver;
@@ -471,7 +479,7 @@ function sqliteCheckpointAnchorHash(event: unknown): string {
 }
 
 async function scanSqliteUsageRollup(params: {
-  file: UsageCostTranscriptFile;
+  file: Extract<UsageCostTranscriptFile, { kind: "sqlite" }>;
   previous?: UsageCostStoredRollup;
   pricingFingerprint: string;
   resolveCost: UsageCostResolver;
@@ -480,8 +488,7 @@ async function scanSqliteUsageRollup(params: {
   if (!marker) {
     throw new Error(`invalid SQLite transcript marker: ${params.file.filePath}`);
   }
-  const maxSeq = params.file.maxSeq ?? 0;
-  const eventCount = params.file.eventCount ?? 0;
+  const maxSeq = params.file.maxSeq;
   const scope = {
     agentId: marker.agentId,
     sessionId: marker.sessionId,
@@ -505,11 +512,13 @@ async function scanSqliteUsageRollup(params: {
     previousCheckpoint?.maxSeq === 0 ||
     (previousAnchor &&
       sqliteCheckpointAnchorHash(previousAnchor.event) === previousCheckpoint?.anchorHash);
+  // maxSeq can advance after earlier rows were rewritten. Generation equality
+  // fences incremental reuse across that rewrite-then-append sequence.
   const appendCandidate = Boolean(
     params.previous &&
     previousCheckpoint &&
+    previousCheckpoint.generation === params.file.generation &&
     previousCheckpoint.maxSeq < maxSeq &&
-    previousCheckpoint.eventCount < eventCount &&
     anchorMatches,
   );
   const afterSeq = appendCandidate ? (previousCheckpoint?.maxSeq ?? 0) : 0;
@@ -534,7 +543,12 @@ async function scanSqliteUsageRollup(params: {
   const scan = createUsageRollupScan({ ...params, appendOnly });
   scan.addRecords(allRecords);
   const postFile = await resolveUsageCostTranscriptFile(params.file.filePath);
-  if (!postFile || (postFile.maxSeq ?? 0) < maxSeq || (postFile.eventCount ?? 0) < eventCount) {
+  if (
+    !postFile ||
+    postFile.kind !== "sqlite" ||
+    postFile.generation !== params.file.generation ||
+    postFile.maxSeq < maxSeq
+  ) {
     throw new Error(`SQLite transcript changed while scanning: ${params.file.filePath}`);
   }
   const currentLastRow = maxSeq > 0 ? readTranscriptEventAtSeqSync(scope, maxSeq) : undefined;
@@ -549,10 +563,8 @@ async function scanSqliteUsageRollup(params: {
     : (scanSessionTranscriptTree(allRows.map((row) => row.event)).leafId ?? undefined);
   return scan.finish({
     kind: "sqlite",
+    generation: params.file.generation,
     maxSeq,
-    eventCount,
-    size: params.file.size,
-    mtimeMs: params.file.mtimeMs,
     anchorHash: snapshotAnchorHash,
     ...(visibleLeafId ? { visibleLeafId } : {}),
   });
@@ -565,8 +577,12 @@ async function scanUsageFileForRollup(params: {
   resolveCost: UsageCostResolver;
 }): Promise<UsageCostRollupEntry> {
   return params.file.kind === "sqlite"
-    ? await scanSqliteUsageRollup(params)
-    : await scanJsonlUsageRollup(params);
+    ? await scanSqliteUsageRollup({ ...params, file: params.file })
+    : await scanJsonlUsageRollup({ ...params, file: params.file });
+}
+
+function usageCostRefreshOrder(file: UsageCostTranscriptFile): number {
+  return file.kind === "jsonl" ? file.size : file.maxSeq;
 }
 
 export async function refreshCostUsageCacheForAgent(params: {
@@ -628,7 +644,11 @@ export async function refreshCostUsageCacheForAgent(params: {
         ? Math.floor(params.maxFiles)
         : undefined;
     const staleFiles = getUsageCostStaleRollupFiles({ rollups, files: refreshFiles })
-      .toSorted((a, b) => a.size - b.size || a.filePath.localeCompare(b.filePath))
+      .toSorted(
+        (a, b) =>
+          usageCostRefreshOrder(a) - usageCostRefreshOrder(b) ||
+          a.filePath.localeCompare(b.filePath),
+      )
       .slice(0, maxFiles);
     const resolveCost = createUsageCostResolver({ config: params.config, agentDir });
 

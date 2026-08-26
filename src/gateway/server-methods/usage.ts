@@ -699,7 +699,12 @@ type MergedEntry = {
   sessionFamilyKey?: string;
   currentSessionId?: string;
   includedSessionIds?: string[];
+  usageCostTranscriptFile?: NonNullable<DiscoveredSession["usageCostTranscriptFile"]>;
 };
+
+function usageCostTranscriptIdentity(agentId: string, sessionId: string): string {
+  return `${agentId}\0${sessionId}`;
+}
 
 function buildStoreBySessionId(
   store: Record<string, SessionEntry>,
@@ -1293,6 +1298,10 @@ export const usageHandlers: GatewayRequestHandlers = {
           const now = Date.now();
 
           const mergedEntries: MergedEntry[] = [];
+          const discoveredUsageCostFiles = new Map<
+            string,
+            NonNullable<DiscoveredSession["usageCostTranscriptFile"]>
+          >();
 
           // Optimization: If a specific key is requested, skip full directory scan
           if (specificKey) {
@@ -1391,6 +1400,14 @@ export const usageHandlers: GatewayRequestHandlers = {
             // Build a map of sessionId -> store entry for quick lookup
             const storeBySessionId = buildStoreBySessionId(scopedStore);
             const storeFamilySessionIds = new Set<string>();
+            for (const discovered of discoveredSessions) {
+              if (discovered.usageCostTranscriptFile) {
+                discoveredUsageCostFiles.set(
+                  usageCostTranscriptIdentity(discovered.agentId, discovered.sessionId),
+                  discovered.usageCostTranscriptFile,
+                );
+              }
+            }
             if (groupingMode === "family") {
               for (const entry of Object.values(scopedStore)) {
                 for (const sessionId of entry?.usageFamilySessionIds ?? []) {
@@ -1417,6 +1434,7 @@ export const usageHandlers: GatewayRequestHandlers = {
                     label: storeMatch.entry.label,
                     updatedAt: storeMatch.entry.updatedAt ?? discovered.mtime,
                     storeEntry: storeMatch.entry,
+                    usageCostTranscriptFile: discovered.usageCostTranscriptFile,
                   },
                 });
               } else {
@@ -1434,6 +1452,7 @@ export const usageHandlers: GatewayRequestHandlers = {
                   label: undefined, // No label for unnamed sessions
                   updatedAt: discovered.mtime,
                   scope: "instance",
+                  usageCostTranscriptFile: discovered.usageCostTranscriptFile,
                 });
               }
             }
@@ -1494,7 +1513,12 @@ export const usageHandlers: GatewayRequestHandlers = {
           // in proportion to `limit` on every dashboard connect (issue #100041).
           const sessionsByAgent = new Map<
             string,
-            Array<{ entryIndex: number; sessionId: string; sessionFile: string }>
+            Array<{
+              entryIndex: number;
+              sessionId: string;
+              sessionFile: string;
+              usageCostTranscriptFile?: NonNullable<DiscoveredSession["usageCostTranscriptFile"]>;
+            }>
           >();
           for (const [entryIndex, merged] of mergedEntries.entries()) {
             for (const includedSessionId of merged.includedSessionIds ?? [merged.sessionId]) {
@@ -1508,11 +1532,20 @@ export const usageHandlers: GatewayRequestHandlers = {
               if (!includedSessionFile) {
                 continue;
               }
+              const usageCostTranscriptFile =
+                includedSessionId === merged.sessionId
+                  ? merged.usageCostTranscriptFile
+                  : discoveredUsageCostFiles.get(
+                      usageCostTranscriptIdentity(merged.agentId, includedSessionId),
+                    );
               const agentSessions = sessionsByAgent.get(merged.agentId) ?? [];
               agentSessions.push({
                 entryIndex,
                 sessionId: includedSessionId,
                 sessionFile: includedSessionFile,
+                ...(usageCostTranscriptFile?.filePath === includedSessionFile
+                  ? { usageCostTranscriptFile }
+                  : {}),
               });
               sessionsByAgent.set(merged.agentId, agentSessions);
             }
