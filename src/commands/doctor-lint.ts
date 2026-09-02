@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { withSuppressedNotes } from "../../packages/terminal-core/src/note.js";
 import { resolveAgentWorkspaceDir, tryResolveDefaultAgentId } from "../agents/agent-scope.js";
 import { createConfigIO, readConfigFileSnapshot } from "../config/config.js";
 import { maybeLoadDotEnvForConfig } from "../config/io.read-helpers.js";
@@ -93,7 +94,11 @@ export async function runDoctorLintCli(
   runtime: RuntimeEnv,
   opts: DoctorLintCliOptions,
 ): Promise<number> {
-  const execution = await prepareDoctorLintExecution(runtime, opts);
+  // JSON mode owns stdout: health checks reached from preparation still emit terminal
+  // notes there, and any stray note makes the payload unparseable for automated consumers.
+  const prepare = async () => await prepareDoctorLintExecution(runtime, opts);
+  const execution =
+    detectMode(opts) === "json" ? await withSuppressedNotes(prepare) : await prepare();
   execution.writeOutput();
   return execution.exitCode;
 }
