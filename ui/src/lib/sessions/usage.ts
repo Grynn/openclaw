@@ -33,14 +33,18 @@ export function buildSessionUsageDateParams(timeZone: "local" | "utc") {
       };
 }
 
-function buildSessionUsageParams(query: SessionUsageQuery, key?: string): Record<string, unknown> {
+function buildSessionUsageParams(
+  query: SessionUsageQuery,
+  key?: string,
+  limit?: number,
+): Record<string, unknown> {
   return {
     startDate: query.startDate,
     endDate: query.endDate,
     ...(query.agentId ? { agentId: query.agentId } : key ? {} : { agentScope: "all" }),
     ...buildSessionUsageDateParams(query.timeZone),
     groupBy: query.scope,
-    ...(key ? { key, limit: 1 } : { limit: 1000 }),
+    ...(key ? { key, limit: 1 } : { limit: limit ?? 1000 }),
     includeContextWeight: false,
   };
 }
@@ -48,10 +52,10 @@ function buildSessionUsageParams(query: SessionUsageQuery, key?: string): Record
 export function requestSessionUsage(
   client: SessionRequestClient,
   query: SessionUsageQuery,
-  options?: { key?: string; includeContextWeight?: boolean; signal?: AbortSignal },
+  options?: { key?: string; limit?: number; includeContextWeight?: boolean; signal?: AbortSignal },
 ): Promise<SessionsUsageResult> {
   const params = {
-    ...buildSessionUsageParams(query, options?.key),
+    ...buildSessionUsageParams(query, options?.key, options?.limit),
     includeContextWeight: options?.includeContextWeight === true,
   };
   return options?.signal

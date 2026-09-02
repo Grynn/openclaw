@@ -141,7 +141,11 @@ export function loadModelProviderCost(
       scope: "family",
       timeZone: "local",
     },
-    { signal },
+    // This card only consumes aggregates.byProvider, which the Gateway
+    // computes over every matched row before applying `limit` (schema
+    // minimum 1) — request the smallest legal row set. The shared Usage
+    // page keeps its detailed 1000-row default untouched.
+    { signal, limit: 1 },
   )
     .then((result) => result?.aggregates?.byProvider ?? null)
     .catch((error: unknown) => {

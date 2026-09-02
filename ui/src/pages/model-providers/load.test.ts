@@ -295,7 +295,15 @@ describe("loadModelProvidersData", () => {
         if (when === "while pending") {
           expect(sent.map(({ method }) => method)).toEqual(["usage.status", "sessions.usage"]);
           expect(sent[0]?.params).toBeUndefined();
-          expect(sent[1]?.params).toMatchObject({ agentScope: "all", groupBy: "family" });
+          expect(sent[1]?.params).toMatchObject({
+            agentScope: "all",
+            groupBy: "family",
+            // Cost card consumes only aggregates.byProvider; request the
+            // smallest legal row set (schema minimum) instead of the
+            // shared Usage page's detailed 1000-row default.
+            limit: 1,
+            includeContextWeight: false,
+          });
           expect(sent[1]?.params).not.toHaveProperty("agentId");
           expect(pending.hasPending).toBe(true);
           controller.abort();
