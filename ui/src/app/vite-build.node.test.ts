@@ -39,7 +39,7 @@ describe("Control UI Vite build", () => {
     captureLogs("silent");
     await fs.writeFile(
       path.join(root, "index.html"),
-      '<button>Load</button><script type="module" src="./main.js"></script>',
+      '<script>globalThis.fixtureBooted = true;</script><button>Load</button><script type="module" src="./main.js"></script>',
     );
     await fs.writeFile(
       path.join(root, "main.js"),
@@ -242,7 +242,7 @@ describe("Control UI Vite build", () => {
     const scriptTags = html.match(/<script\b[^>]*>/gu) ?? [];
     expect(scriptTags.length).toBeGreaterThan(0);
     for (const tag of scriptTags) {
-      expect(tag).toContain('data-cfasync="false"');
+      expect(tag).toMatch(/^<script data-cfasync="false"(?:\s|>)/u);
     }
   });
 

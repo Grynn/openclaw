@@ -85,14 +85,6 @@ describe("Control UI document shell", () => {
 
     expect(manifest?.getAttribute("crossorigin")).toBe("use-credentials");
   });
-
-  it("keeps boot scripts out of Cloudflare Rocket Loader", async () => {
-    const parsed = new DOMParser().parseFromString(await readIndexHtml(), "text/html");
-    const scripts = Array.from(parsed.querySelectorAll<HTMLScriptElement>("script"));
-
-    expect(scripts.length).toBeGreaterThan(0);
-    expect(scripts.every((script) => script.dataset.cfasync === "false")).toBe(true);
-  });
 });
 
 describe("Control UI mount fallback", () => {
