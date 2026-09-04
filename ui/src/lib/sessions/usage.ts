@@ -11,6 +11,7 @@ export type SessionUsageQuery = {
   timeZone: "local" | "utc";
   agentId?: string;
   creatorKey?: string;
+  limit?: number;
 };
 
 function formatUtcOffset(timezoneOffsetMinutes: number): string {
@@ -37,7 +38,7 @@ function buildSessionUsageDateParams(timeZone: "local" | "utc") {
 export function requestSessionUsage(
   client: SessionRequestClient,
   query: SessionUsageQuery,
-  options?: { key?: string; limit?: number; includeContextWeight?: boolean; signal?: AbortSignal },
+  options?: { key?: string; includeContextWeight?: boolean; signal?: AbortSignal },
 ): Promise<SessionsUsageResult> {
   const key = options?.key;
   const params = {
@@ -47,7 +48,7 @@ export function requestSessionUsage(
     ...buildSessionUsageDateParams(query.timeZone),
     ...(query.creatorKey ? { creatorKey: query.creatorKey } : {}),
     groupBy: query.scope,
-    ...(key ? { key, limit: 1 } : { limit: options?.limit ?? 1000 }),
+    ...(key ? { key, limit: 1 } : { limit: query.limit ?? 1000 }),
     includeContextWeight: options?.includeContextWeight === true,
   };
   return options?.signal
