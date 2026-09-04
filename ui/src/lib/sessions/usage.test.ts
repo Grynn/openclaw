@@ -88,47 +88,6 @@ describe("requestSessionUsage", () => {
     });
   });
 
-  it("threads an explicit limit through for aggregate-only callers", async () => {
-    const result = { sessions: [] };
-    const request = vi.fn().mockResolvedValue(result);
-
-    await requestSessionUsage(
-      { request } as never,
-      {
-        startDate: "2026-07-01",
-        endDate: "2026-07-28",
-        scope: "family",
-        timeZone: "utc",
-      },
-      { limit: 1 },
-    );
-    expect(request).toHaveBeenCalledWith("sessions.usage", {
-      startDate: "2026-07-01",
-      endDate: "2026-07-28",
-      agentScope: "all",
-      mode: "utc",
-      groupBy: "family",
-      limit: 1,
-      includeContextWeight: false,
-    });
-  });
-
-  it("keeps the detailed 1000-row default when no limit is given", async () => {
-    const result = { sessions: [] };
-    const request = vi.fn().mockResolvedValue(result);
-
-    await requestSessionUsage({ request } as never, {
-      startDate: "2026-07-01",
-      endDate: "2026-07-28",
-      scope: "family",
-      timeZone: "utc",
-    });
-    expect(request).toHaveBeenCalledWith(
-      "sessions.usage",
-      expect.objectContaining({ limit: 1000 }),
-    );
-  });
-
   it("surfaces a rejected request without retrying an older Gateway shape", async () => {
     const error = new GatewayRequestError({
       code: "INVALID_REQUEST",

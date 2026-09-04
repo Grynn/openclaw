@@ -266,6 +266,28 @@ describe("loadModelProvidersData", () => {
     });
   });
 
+  it("requests one detail row and returns complete provider cost aggregates", async () => {
+    const byProvider = [
+      { provider: "openai", count: 3, totals: { totalCost: 4.2, totalTokens: 1_500_000 } },
+    ];
+    const request = vi.fn().mockResolvedValue({ aggregates: { byProvider } });
+    const signal = new AbortController().signal;
+
+    await expect(
+      loadModelProviderCost({ request } as unknown as GatewayBrowserClient, signal),
+    ).resolves.toBe(byProvider);
+    expect(request).toHaveBeenCalledWith(
+      "sessions.usage",
+      expect.objectContaining({
+        agentScope: "all",
+        groupBy: "family",
+        limit: 1,
+        includeContextWeight: false,
+      }),
+      { signal },
+    );
+  });
+
   it.each(["before dispatch", "while pending"] as const)(
     "retires both supplemental requests when aborted %s",
     async (when) => {
@@ -295,15 +317,7 @@ describe("loadModelProvidersData", () => {
         if (when === "while pending") {
           expect(sent.map(({ method }) => method)).toEqual(["usage.status", "sessions.usage"]);
           expect(sent[0]?.params).toBeUndefined();
-          expect(sent[1]?.params).toMatchObject({
-            agentScope: "all",
-            groupBy: "family",
-            // Cost card consumes only aggregates.byProvider; request the
-            // smallest legal row set (schema minimum) instead of the
-            // shared Usage page's detailed 1000-row default.
-            limit: 1,
-            includeContextWeight: false,
-          });
+          expect(sent[1]?.params).toMatchObject({ agentScope: "all", groupBy: "family" });
           expect(sent[1]?.params).not.toHaveProperty("agentId");
           expect(pending.hasPending).toBe(true);
           controller.abort();
