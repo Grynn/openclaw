@@ -400,7 +400,7 @@ describe("markAuthProfileFailure", () => {
   });
 
   it.each(["rate_limit", "auth", "billing"] as const)(
-    "reports %s to the auth failure subscriber after persistence",
+    "reports %s to the auth failure subscriber",
     async (reason) => {
       await withAuthProfileStore(async ({ agentDir, store }) => {
         const hook = vi.fn();
