@@ -58,6 +58,31 @@ describe("resolveGatewayScopedTools", () => {
     expect(messageTool?.description).toContain("This turn visible reply");
   });
 
+  it.each(["profile", "gateway-deny", "surface-exclusion"] as const)(
+    "rejects collector mode after %s removes its reader",
+    async (restriction) => {
+      const result = resolveGatewayScopedTools({
+        cfg: {
+          agents: { entries: { main: { default: true } } },
+          tools: { profile: restriction === "profile" ? "messaging" : "coding" },
+          ...(restriction === "gateway-deny"
+            ? { gateway: { tools: { deny: ["agents_wait"] } } }
+            : {}),
+        },
+        sessionKey: "agent:main:main",
+        surface: "loopback",
+        ...(restriction === "surface-exclusion" ? { excludeToolNames: ["agents_wait"] } : {}),
+      });
+      const spawn = result.tools.find((tool) => tool.name === "sessions_spawn");
+      expect(spawn).toBeDefined();
+      expect(result.tools.some((tool) => tool.name === "agents_wait")).toBe(false);
+      expect(spawn?.parameters).not.toHaveProperty("properties.collect");
+      await expect(
+        spawn!.execute("uncollectable", { task: "inspect", collect: true }),
+      ).rejects.toThrow("Collector results are unavailable");
+    },
+  );
+
   it("keeps ordinary loopback turns under the configured profile", () => {
     const result = resolveGatewayScopedTools({
       cfg: { tools: { profile: "minimal" } } as OpenClawConfig,
@@ -226,29 +251,43 @@ describe("resolveGatewayScopedTools", () => {
   });
 
   it("passes loopback yield context into sessions_yield", async () => {
+    const registry = await import("../agents/subagents/registry/subagent-registry.js");
+    const markRequesterTurnYielded = vi
+      .spyOn(registry, "markRequesterTurnYielded")
+      .mockReturnValue(1);
     const onYield = vi.fn();
-    const result = resolveGatewayScopedTools({
-      cfg: { tools: { profile: "minimal", alsoAllow: ["sessions_yield"] } } as OpenClawConfig,
-      sessionKey: "agent:main:telegram:group:-100123",
-      sessionId: "session-123",
-      onYield,
-      surface: "loopback",
-    });
-    const yieldTool = result.tools.find((tool) => tool.name === "sessions_yield");
-    if (!yieldTool) {
-      throw new Error("expected sessions_yield tool");
+    try {
+      const result = resolveGatewayScopedTools({
+        cfg: { tools: { profile: "minimal", alsoAllow: ["sessions_yield"] } } as OpenClawConfig,
+        sessionKey: "agent:main:telegram:group:-100123",
+        sessionId: "session-123",
+        runId: "run-123",
+        onYield,
+        surface: "loopback",
+      });
+      const yieldTool = result.tools.find((tool) => tool.name === "sessions_yield");
+      if (!yieldTool) {
+        throw new Error("expected sessions_yield tool");
+      }
+
+      const toolResult = await yieldTool.execute("tool-call-1", {
+        message: "waiting on subagents",
+        acknowledgment: "I’m waiting on the subagents.",
+      });
+
+      expect(markRequesterTurnYielded).toHaveBeenCalledExactlyOnceWith({
+        requesterAgentId: "main",
+        requesterSessionKey: "agent:main:telegram:group:-100123",
+        requesterTurnRunId: "run-123",
+      });
+      expect(onYield).toHaveBeenCalledWith("waiting on subagents", "I’m waiting on the subagents.");
+      expect(toolResult.details).toEqual({
+        status: "yielded",
+        message: "waiting on subagents",
+        acknowledgment: "I’m waiting on the subagents.",
+      });
+    } finally {
+      markRequesterTurnYielded.mockRestore();
     }
-
-    const toolResult = await yieldTool.execute("tool-call-1", {
-      message: "waiting on subagents",
-      acknowledgment: "I’m waiting on the subagents.",
-    });
-
-    expect(onYield).toHaveBeenCalledWith("waiting on subagents", "I’m waiting on the subagents.");
-    expect(toolResult.details).toEqual({
-      status: "yielded",
-      message: "waiting on subagents",
-      acknowledgment: "I’m waiting on the subagents.",
-    });
   });
 });

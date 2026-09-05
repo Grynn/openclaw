@@ -20,13 +20,9 @@ import { buildTestCtx } from "./test-ctx.js";
 
 const selectAgentHarnessMock = vi.hoisted(() => vi.fn());
 
-vi.mock("../../agents/harness/selection.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../agents/harness/selection.js")>();
-  return {
-    ...actual,
-    selectAgentHarness: (...args: unknown[]) => selectAgentHarnessMock(...args),
-  };
-});
+vi.mock("../../agents/harness/selection.js", () => ({
+  selectAgentHarness: (...args: unknown[]) => selectAgentHarnessMock(...args),
+}));
 
 const { resolveVisibleRepliesPolicy } = await import("./dispatch-from-config.harness-defaults.js");
 
@@ -102,5 +98,78 @@ describe("turn model selection harness-path differential", () => {
 
   it.each(TURN_MODEL_DIFFERENTIAL_FIXTURES)("pins observed $name behavior", (fixture) => {
     expect(observeHarnessSelection(fixture)).toEqual(fixture.expected.harness);
+  });
+
+  it.each([
+    { pluginOwnerId: "model-owner", expectedPin: undefined, expectedOverride: "openclaw" },
+    { pluginOwnerId: undefined, expectedPin: "codex", expectedOverride: "codex" },
+  ])(
+    "preserves the delivery-policy owner with pluginOwnerId=$pluginOwnerId",
+    ({ pluginOwnerId, expectedPin, expectedOverride }) => {
+      selectAgentHarnessMock.mockClear();
+      resolveVisibleRepliesPolicy({
+        cfg: {
+          agents: { defaults: { model: { primary: "openai/dispatch-model" } } },
+        },
+        chatType: "direct",
+        ctx: buildTestCtx({ Provider: "openai" }),
+        entry: {
+          sessionId: "owned-session",
+          updatedAt: 100,
+          agentHarnessId: "codex",
+          agentRuntimeOverride: "openclaw",
+          modelSelectionLocked: true,
+          pluginOwnerId,
+        },
+        sessionAgentId: "main",
+      });
+
+      expect(selectAgentHarnessMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          agentHarnessId: expectedPin,
+          agentHarnessRuntimeOverride: expectedOverride,
+        }),
+      );
+    },
+  );
+
+  it("resolves turn aliases in the session agent scope", () => {
+    const sessionKey = "agent:worker:telegram:group:selection";
+    const cfg = {
+      agents: {
+        defaults: {
+          model: "openai/global-model",
+          models: {
+            "openai/global-model": { alias: "fast" },
+          },
+        },
+        entries: {
+          worker: {
+            models: {
+              "anthropic/worker-model": { alias: "fast" },
+            },
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    selectAgentHarnessMock.mockClear();
+    resolveVisibleRepliesPolicy({
+      cfg,
+      chatType: "direct",
+      ctx: buildTestCtx({ SessionKey: sessionKey }),
+      entry: { sessionId: "worker-session", updatedAt: Date.now() },
+      sessionAgentId: "worker",
+      sessionKey,
+      turnModelOverride: "fast",
+    });
+
+    expect(selectAgentHarnessMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        provider: "anthropic",
+        modelId: "worker-model",
+        agentId: "worker",
+      }),
+    );
   });
 });

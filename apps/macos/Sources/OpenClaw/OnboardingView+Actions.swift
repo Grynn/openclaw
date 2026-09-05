@@ -26,6 +26,12 @@ extension OnboardingView {
         GatewayDiscoveryPreferences.setPreferredStableID(nil)
     }
 
+    func handleRemoteSelection() {
+        defaultsToLocalGateway = false
+        state.connectionMode = .remote
+        showRemoteChoices.toggle()
+    }
+
     func selectRemoteGateway(_ gateway: GatewayDiscoveryModel.DiscoveredGateway) {
         let shouldResetGatewayState = Self.shouldResetGatewayBoundAIState(
             connectionMode: state.connectionMode,
@@ -116,13 +122,13 @@ extension OnboardingView {
     }
 
     @discardableResult
-    func finish() -> Bool {
+    func finish(openPrimaryDashboard: Bool = true) -> Bool {
         guard !finishState.didFinish else { return false }
         finishState.didFinish = true
         aiSetup.clearCompletedHandoffIfOwned()
         OnboardingController.markComplete()
         OnboardingController.shared.close()
-        guard state.connectionMode != .unconfigured else { return true }
+        guard openPrimaryDashboard, state.connectionMode != .unconfigured else { return true }
         // Fresh activation hands off to the dashboard's custodian onboarding, which
         // owns the remaining first-run steps (memory import, channels, permissions,
         // hatch). A live-verified pre-existing setup reopens the normal dashboard.

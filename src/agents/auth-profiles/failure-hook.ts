@@ -1,13 +1,5 @@
-import type { AuthProfileFailureReason } from "./types.js";
-
-/** Details needed by auth-state consumers to avoid unnecessary repair work. */
-type AuthProfileFailureEvent = {
-  reason: AuthProfileFailureReason;
-  source: "profile" | "inline-provider-api-key";
-};
-
 /** Hook invoked when auth profile failure state changes. */
-type AuthProfileFailureHook = (event?: AuthProfileFailureEvent) => void;
+type AuthProfileFailureHook = () => void;
 
 let authProfileFailureHook: AuthProfileFailureHook | undefined;
 
@@ -17,6 +9,6 @@ export function setAuthProfileFailureHook(hook: AuthProfileFailureHook | undefin
 }
 
 /** Notifies the process-local auth profile failure hook. */
-export function notifyAuthProfileFailureHook(event?: AuthProfileFailureEvent): void {
-  authProfileFailureHook?.(event);
+export function notifyAuthProfileFailureHook(): void {
+  authProfileFailureHook?.();
 }

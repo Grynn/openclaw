@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { sha256Hex } from "../../infra/crypto-digest.js";
+import { formatErrorMessage } from "../../infra/errors.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import {
-  executeSqliteQuerySync,
-  executeSqliteQueryTakeFirstSync,
-  getNodeSqliteKysely,
-} from "../../infra/kysely-sync.js";
+  readConfigMachineState,
+  updateConfigMachineState,
+} from "../../state/config-machine-state.js";
 import type { DB as OpenClawStateDatabase } from "../../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -18,19 +19,21 @@ import type { SkillCollectionReconcileResult } from "./collection-contracts.js";
 import {
   databaseOptions,
   ensureSkillWorkshopSchema,
+  openSkillWorkshopStore,
   type SkillWorkshopStoreOptions,
 } from "./store-sqlite-schema.js";
 
-const CURATOR_STATE_ID = 1;
-const REVIEW_INTERVAL_MS = 24 * 60 * 60_000;
 const REVIEW_CLAIM_MS = 11 * 60_000;
-// Bound per-workspace history so unattended daily maintenance cannot grow state forever.
+// Bound history so unattended weekly maintenance cannot grow state forever.
 const SKILL_COLLECTION_REVIEW_RETENTION_COUNT = 90;
 const SKILL_COLLECTION_REVIEW_HISTORY_LIMIT = 20;
-type CollectionReviewDatabase = Pick<
-  OpenClawStateDatabase,
-  "skill_curator_state" | "skill_workshop_collection_reviews"
->;
+type CollectionReviewDatabase = Pick<OpenClawStateDatabase, "skill_workshop_collection_reviews">;
+type SkillCuratorState = {
+  lastAttemptAtMs: number;
+  lastSuccessAtMs: number | null;
+  lastError: string | null;
+  lastResult: Record<string, unknown>;
+};
 
 type SkillCollectionReviewOutcome = {
   createTime: number;
@@ -40,19 +43,33 @@ type SkillCollectionReviewOutcome = {
   dropped: SkillCollectionReconcileResult["dropped"];
 };
 
-function workspaceKey(workspaceDir: string): string {
-  return sha256Hex(path.resolve(workspaceDir));
+export type SkillCollectionReviewStatus = {
+  attemptedAtMs: number;
+  succeededAtMs?: number;
+  error?: string;
+};
+
+export type SkillExperienceReviewStatus = {
+  attemptedAtMs: number;
+  outcome: "applied" | "proposed" | "nothing" | "failed";
+  proposalId?: string;
+  error?: string;
+  usage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number };
+};
+
+function experienceReviewKey(agentId: string, workspaceDir: string): string {
+  return sha256Hex(`${agentId}\0${path.resolve(workspaceDir)}`);
 }
 
 export async function withSkillCollectionReviewClaim<T>(
-  workspaceDir: string,
+  agentId: string,
   run: () => Promise<T>,
   options: OpenClawStateDatabaseOptions = {},
 ): Promise<T> {
   return await withOpenClawStateLease(
     {
       scope: "skill-collection-review",
-      key: workspaceKey(workspaceDir),
+      key: agentId,
       database: { scope: "shared", options },
       leaseMs: REVIEW_CLAIM_MS,
       waitMs: 0,
@@ -63,43 +80,91 @@ export async function withSkillCollectionReviewClaim<T>(
   );
 }
 
-function parseReviewTimes(value: string | null | undefined): Record<string, number> {
-  if (!value) {
-    return {};
-  }
-  try {
-    const reviews = asNullableRecord(JSON.parse(value))?.collectionReviewSuccess;
-    const record = asNullableRecord(reviews);
-    if (!record) {
-      return {};
-    }
-    return Object.fromEntries(
-      Object.entries(record).filter(
-        (entry): entry is [string, number] =>
-          typeof entry[1] === "number" && Number.isFinite(entry[1]),
-      ),
-    );
-  } catch {
-    return {};
-  }
+function reviewMap<T>(state: Record<string, unknown>, field: string): Record<string, T> {
+  // SAFETY: cache-class state is written only by recordReviewEntry below.
+  return (asNullableRecord(state[field]) ?? {}) as Record<string, T>;
 }
 
-export function isSkillCollectionReviewDue(
-  workspaceDir: string,
-  nowMs: number,
-  options: OpenClawStateDatabaseOptions = {},
-): boolean {
-  const database = openOpenClawStateDatabase(options);
-  const kysely = getNodeSqliteKysely<CollectionReviewDatabase>(database.db);
-  const state = executeSqliteQueryTakeFirstSync(
-    database.db,
-    kysely
-      .selectFrom("skill_curator_state")
-      .select("last_result_json")
-      .where("id", "=", CURATOR_STATE_ID),
+function readReviewState(options: OpenClawStateDatabaseOptions): Record<string, unknown> {
+  return (
+    asNullableRecord(
+      readConfigMachineState<SkillCuratorState>("skills.curatorState", options)?.lastResult,
+    ) ?? {}
   );
-  const lastSuccess = parseReviewTimes(state?.last_result_json)[workspaceKey(workspaceDir)];
-  return lastSuccess === undefined || nowMs - lastSuccess >= REVIEW_INTERVAL_MS;
+}
+
+export function readSkillReviewOutcomes(options: OpenClawStateDatabaseOptions = {}) {
+  const state = readReviewState(options);
+  return {
+    collectionReviews: reviewMap<SkillCollectionReviewStatus>(state, "collectionReviews"),
+    experienceReviews: reviewMap<SkillExperienceReviewStatus>(state, "experienceReviews"),
+  };
+}
+
+export function recordSkillCollectionReviewStatus(
+  agentId: string,
+  review: { attemptedAtMs: number; succeededAtMs?: number; error?: unknown },
+  options: OpenClawStateDatabaseOptions = {},
+): void {
+  const status: SkillCollectionReviewStatus =
+    review.error !== undefined
+      ? {
+          attemptedAtMs: review.attemptedAtMs,
+          error: formatErrorMessage(review.error).slice(0, 300),
+        }
+      : {
+          attemptedAtMs: review.attemptedAtMs,
+          ...(review.succeededAtMs !== undefined ? { succeededAtMs: review.succeededAtMs } : {}),
+        };
+  recordReviewEntry("collectionReviews", agentId, status, options, {
+    lastAttemptAtMs: status.attemptedAtMs,
+    ...(status.succeededAtMs !== undefined ? { lastSuccessAtMs: status.succeededAtMs } : {}),
+    lastError: status.error ?? null,
+  });
+}
+
+export function recordSkillExperienceReviewOutcome(
+  agentId: string,
+  workspaceDir: string,
+  review: SkillExperienceReviewStatus,
+  options: OpenClawStateDatabaseOptions = {},
+): void {
+  recordReviewEntry(
+    "experienceReviews",
+    experienceReviewKey(agentId, workspaceDir),
+    review,
+    options,
+  );
+}
+
+function recordReviewEntry(
+  field: "collectionReviews" | "experienceReviews",
+  entryKey: string,
+  review: SkillCollectionReviewStatus | SkillExperienceReviewStatus,
+  options: OpenClawStateDatabaseOptions,
+  summary: Partial<Omit<SkillCuratorState, "lastResult">> = {},
+): void {
+  updateConfigMachineState<SkillCuratorState>(
+    "skills.curatorState",
+    (current) => {
+      const state = asNullableRecord(current?.lastResult) ?? {};
+      return {
+        lastAttemptAtMs: 0,
+        lastSuccessAtMs: null,
+        lastError: null,
+        ...current,
+        ...summary,
+        lastResult: {
+          ...state,
+          [field]: {
+            ...asNullableRecord(state[field]),
+            [entryKey]: review,
+          },
+        },
+      };
+    },
+    options,
+  );
 }
 
 function parseStoredNames(value: string, field: string): string[] {
@@ -127,8 +192,27 @@ function parseStoredDrops(value: string): SkillCollectionReconcileResult["droppe
   });
 }
 
+export function readSkillCollectionBackupDrops(
+  agentId: string,
+  backupId: string,
+  options: SkillWorkshopStoreOptions = {},
+): Set<string> {
+  const { database, kysely } = openSkillWorkshopStore(options);
+  const rows = executeSqliteQuerySync(
+    database.db,
+    kysely
+      .selectFrom("skill_workshop_collection_reviews")
+      .select("dropped_json")
+      .where("owner_agent_id", "=", agentId)
+      .where("backup_id", "=", backupId),
+  ).rows;
+  return new Set(
+    rows.flatMap((row) => parseStoredDrops(row.dropped_json).map((drop) => drop.name)),
+  );
+}
+
 export function listSkillCollectionReviewOutcomes(
-  workspaceDir: string,
+  agentId: string,
   options: SkillWorkshopStoreOptions = {},
 ): SkillCollectionReviewOutcome[] {
   ensureSkillWorkshopSchema(options);
@@ -139,7 +223,7 @@ export function listSkillCollectionReviewOutcomes(
     kysely
       .selectFrom("skill_workshop_collection_reviews")
       .select(["backup_id", "create_time", "kept_names_json", "written_names_json", "dropped_json"])
-      .where("workspace_dir", "=", path.resolve(workspaceDir))
+      .where("owner_agent_id", "=", agentId)
       .orderBy("create_time", "desc")
       .orderBy("review_id", "desc")
       .limit(SKILL_COLLECTION_REVIEW_HISTORY_LIMIT),
@@ -152,8 +236,8 @@ export function listSkillCollectionReviewOutcomes(
   }));
 }
 
-export function recordSkillCollectionReviewSuccess(
-  workspaceDir: string,
+export function recordSkillCollectionReviewHistory(
+  agentId: string,
   nowMs: number,
   result: SkillCollectionReconcileResult,
   options: SkillWorkshopStoreOptions = {},
@@ -161,42 +245,11 @@ export function recordSkillCollectionReviewSuccess(
   ensureSkillWorkshopSchema(options);
   runOpenClawStateWriteTransaction(({ db }) => {
     const kysely = getNodeSqliteKysely<CollectionReviewDatabase>(db);
-    const current = executeSqliteQueryTakeFirstSync(
-      db,
-      kysely
-        .selectFrom("skill_curator_state")
-        .select("last_result_json")
-        .where("id", "=", CURATOR_STATE_ID),
-    );
-    const reviews = parseReviewTimes(current?.last_result_json);
-    reviews[workspaceKey(workspaceDir)] = nowMs;
-    const lastResultJson = JSON.stringify({ collectionReviewSuccess: reviews });
-    executeSqliteQuerySync(
-      db,
-      kysely
-        .insertInto("skill_curator_state")
-        .values({
-          id: CURATOR_STATE_ID,
-          last_attempt_at_ms: nowMs,
-          last_success_at_ms: nowMs,
-          last_error: null,
-          last_result_json: lastResultJson,
-        })
-        .onConflict((conflict) =>
-          conflict.column("id").doUpdateSet({
-            last_attempt_at_ms: nowMs,
-            last_success_at_ms: nowMs,
-            last_error: null,
-            last_result_json: lastResultJson,
-          }),
-        ),
-    );
-    const resolvedWorkspaceDir = path.resolve(workspaceDir);
     executeSqliteQuerySync(
       db,
       kysely.insertInto("skill_workshop_collection_reviews").values({
         review_id: randomUUID(),
-        workspace_dir: resolvedWorkspaceDir,
+        owner_agent_id: agentId,
         backup_id: result.backupId,
         create_time: nowMs,
         kept_names_json: JSON.stringify(result.kept),
@@ -207,7 +260,7 @@ export function recordSkillCollectionReviewSuccess(
     const retainedReviewIds = kysely
       .selectFrom("skill_workshop_collection_reviews")
       .select("review_id")
-      .where("workspace_dir", "=", resolvedWorkspaceDir)
+      .where("owner_agent_id", "=", agentId)
       .orderBy("create_time", "desc")
       .orderBy("review_id", "desc")
       .limit(SKILL_COLLECTION_REVIEW_RETENTION_COUNT);
@@ -215,7 +268,7 @@ export function recordSkillCollectionReviewSuccess(
       db,
       kysely
         .deleteFrom("skill_workshop_collection_reviews")
-        .where("workspace_dir", "=", resolvedWorkspaceDir)
+        .where("owner_agent_id", "=", agentId)
         .where("review_id", "not in", retainedReviewIds),
     );
   }, databaseOptions(options));

@@ -8,6 +8,8 @@ import { resolveGatewayBindHost, resolveGatewayRequiredListenHosts } from "../..
 import { loadExecApprovalsReadOnly } from "../../infra/exec-approvals.js";
 import { inspectPortUsage } from "../../infra/ports-inspect.js";
 import { readRestartSentinelReadOnly } from "../../infra/restart-sentinel.js";
+import { findActiveUpdateRun, listUpdateRuns } from "../../infra/update-run-ledger.js";
+import { renderUpdateRunReport } from "../../infra/update-run-report.js";
 import { resolvePluginControlPlaneWorkspace } from "../../plugins/control-plane-workspace.js";
 import { buildPluginCompatibilityNotices } from "../../plugins/status.js";
 import { buildWorkspaceSkillStatus } from "../../skills/discovery/status.js";
@@ -20,12 +22,16 @@ import {
 import {
   resolveStatusGatewayDiagnosticsSafe,
   resolveStatusGatewayHealthSafe,
+  type StatusGatewayDiagnosticsResult,
   type resolveStatusServiceSummaries,
 } from "../status-runtime-shared.ts";
 import { formatUpdateRestartStatusValue } from "../status-update-restart.ts";
 import { resolveStatusAllConnectionDetails } from "../status.gateway-connection.ts";
 import type { NodeOnlyGatewayInfo } from "../status.node-mode.js";
-import type { StatusScanOverviewResult } from "../status.scan-overview.ts";
+import {
+  resolveStatusSummaryFromOverview,
+  type StatusScanOverviewResult,
+} from "../status.scan-overview.ts";
 
 type StatusServiceSummaries = Awaited<ReturnType<typeof resolveStatusServiceSummaries>>;
 type StatusGatewayServiceSummary = StatusServiceSummaries[0];
@@ -78,8 +84,8 @@ async function resolveStatusAllLocalDiagnosis(params: {
     agentStatus: StatusScanOverviewResult["agentStatus"];
     gatewayReachable: boolean;
     health: StatusGatewayHealthSafe | undefined;
-    deliveryDiagnostics: unknown;
-    exporterDiagnostics: unknown;
+    deliveryDiagnostics: StatusGatewayDiagnosticsResult | null;
+    exporterDiagnostics: StatusGatewayDiagnosticsResult | null;
     nodeOnlyGateway: NodeOnlyGatewayInfo | null;
   };
 }> {
@@ -141,6 +147,7 @@ async function resolveStatusAllLocalDiagnosis(params: {
             });
             return buildWorkspaceSkillStatus(defaultWorkspace, {
               config: overview.cfg,
+              agentId: controlPlaneWorkspace.agentId,
               eligibility: {
                 nodeSkills,
                 remote: getRemoteSkillEligibility({
@@ -198,15 +205,19 @@ export async function buildStatusAllReportData(params: {
   timeoutMs?: number;
 }) {
   const gatewaySnapshot = params.overview.gatewaySnapshot;
-  const { configPath, health, diagnosis } = await resolveStatusAllLocalDiagnosis({
-    overview: params.overview,
-    progress: params.progress,
-    gatewayReachable: gatewaySnapshot.gatewayReachable,
-    gatewayProbe: gatewaySnapshot.gatewayProbe,
-    gatewayCallOverrides: gatewaySnapshot.gatewayCallOverrides,
-    nodeOnlyGateway: params.nodeOnlyGateway,
-    timeoutMs: params.timeoutMs,
-  });
+  const [{ configPath, health, diagnosis }, summary] = await Promise.all([
+    resolveStatusAllLocalDiagnosis({
+      overview: params.overview,
+      progress: params.progress,
+      gatewayReachable: gatewaySnapshot.gatewayReachable,
+      gatewayProbe: gatewaySnapshot.gatewayProbe,
+      gatewayCallOverrides: gatewaySnapshot.gatewayCallOverrides,
+      nodeOnlyGateway: params.nodeOnlyGateway,
+      timeoutMs: params.timeoutMs,
+    }),
+    params.overview.runtimeDegradation ??
+      resolveStatusSummaryFromOverview({ overview: params.overview }),
+  ]);
 
   const overviewSurface: StatusOverviewSurface = buildStatusOverviewSurfaceFromOverview({
     overview: params.overview,
@@ -214,17 +225,21 @@ export async function buildStatusAllReportData(params: {
     nodeService: params.nodeService,
     nodeOnlyGateway: params.nodeOnlyGateway,
   });
+  const updateRun = findActiveUpdateRun() ?? listUpdateRuns({ limit: 1 })[0];
   const overviewRows = buildStatusAllOverviewRows({
     surface: overviewSurface,
     osLabel: params.overview.osSummary.label,
     configPath,
+    summary,
     secretDiagnosticsCount: params.overview.secretDiagnostics.length,
+    updateValue: updateRun ? renderUpdateRunReport(updateRun).headline : undefined,
     updateRestartValue: formatUpdateRestartStatusValue(diagnosis.sentinel?.payload),
     agentStatus: params.overview.agentStatus,
     tailscaleBackendState: diagnosis.tailscale.backendState,
   });
 
   return {
+    configDiagnostics: params.overview.configDiagnostics,
     overviewRows,
     channels: params.overview.channels,
     channelIssues: params.overview.channelIssues.map((issue) => ({

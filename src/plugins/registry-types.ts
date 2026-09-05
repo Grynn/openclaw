@@ -11,6 +11,7 @@ import type {
   AgentToolResultMiddlewareRuntime,
   AgentToolResultMiddlewareScope,
 } from "./agent-tool-result-middleware-types.js";
+import type { PluginBoardWidgetContentKind } from "./board-widget-content-kind.types.js";
 import type { CodexAppServerExtensionFactory } from "./codex-app-server-extension-types.js";
 import type { PluginCompatCode } from "./compat/registry.js";
 import type { PluginActivationSource } from "./config-state.js";
@@ -34,6 +35,7 @@ import type {
 } from "./manifest-types.js";
 import type {
   PluginManifestContracts,
+  PluginManifestControlUi,
   PluginManifestDashboard,
   PluginManifestDashboardActionVerb,
   PluginManifestDashboardDataBinding,
@@ -124,6 +126,8 @@ type PluginCliRegistration = {
 
 /** Gateway HTTP route registered by a plugin runtime. */
 export type PluginHttpRouteRegistration = {
+  /** Retired ingress awaiting a lifecycle replacement; responds with Retry-After. */
+  handoff?: true;
   pluginId?: string;
   path: string;
   handler: OpenClawPluginHttpRouteHandler;
@@ -204,6 +208,12 @@ export type PluginDashboardActionVerbRegistration = PluginManifestDashboardActio
   pluginId: string;
   capabilityId: string;
   handler: GatewayRequestHandlers[string];
+};
+
+export type PluginBoardWidgetContentKindRegistration = {
+  pluginId: string;
+  pluginKind: string;
+  definition: PluginBoardWidgetContentKind;
 };
 
 type PluginCliBackendRegistration = {
@@ -335,6 +345,14 @@ type PluginNodeInvokePolicyRegistration = {
   rootDir?: string;
 };
 
+export type PluginWidgetPresenterRegistration = {
+  pluginId: string;
+  pluginName?: string;
+  presenter: import("./plugin-registration.types.js").WidgetPresenter;
+  source: string;
+  rootDir?: string;
+};
+
 type PluginSecurityAuditCollectorRegistration = {
   pluginId: string;
   pluginName?: string;
@@ -462,10 +480,13 @@ export type PluginRecord = {
   origin: PluginOrigin;
   workspaceDir?: string;
   trustedOfficialInstall?: boolean;
+  trust?: import("./plugin-trust.js").PluginTrust;
   enabled: boolean;
   explicitlyEnabled?: boolean;
   activated?: boolean;
   imported?: boolean;
+  /** Families authoritatively supplied by a descriptor entry, including empty collections. */
+  capabilityCatalog?: Array<keyof import("./capability-catalog.types.js").PluginCapabilityCatalog>;
   compat?: readonly PluginCompatCode[];
   activationSource?: PluginActivationSource;
   activationReason?: string;
@@ -497,6 +518,7 @@ export type PluginRecord = {
   services: string[];
   gatewayDiscoveryServiceIds: string[];
   commands: string[];
+  commandAliases?: PluginManifestRecord["commandAliases"];
   httpRoutes: number;
   hookCount: number;
   configSchema: boolean;
@@ -504,6 +526,7 @@ export type PluginRecord = {
   configJsonSchema?: JsonSchemaObject;
   contracts?: PluginManifestContracts;
   dashboard?: PluginManifestDashboard;
+  controlUi?: PluginManifestControlUi;
   mcpServers?: Record<string, PluginManifestMcpServer>;
   memorySlotSelected?: boolean;
   dependencyStatus?: PluginDependencyStatus;
@@ -552,9 +575,11 @@ export type PluginRegistry = {
   gatewayMethodDescriptors: GatewayMethodDescriptor[];
   dashboardDataBindings: Map<string, PluginDashboardDataBindingRegistration>;
   dashboardActionVerbs: Map<string, PluginDashboardActionVerbRegistration>;
+  boardWidgetContentKinds: Map<string, PluginBoardWidgetContentKindRegistration>;
   coreGatewayMethodNames: string[];
   httpRoutes: PluginHttpRouteRegistration[];
   hostedMediaResolvers: PluginHostedMediaResolverRegistration[];
+  widgetPresenters: PluginWidgetPresenterRegistration[];
   mcpServerConnectionResolvers: PluginMcpServerConnectionResolverRegistration[];
   cliRegistrars: PluginCliRegistration[];
   reloads: PluginReloadRegistration[];

@@ -185,6 +185,23 @@ function seedTestAuthProfile(params: {
 }
 
 vi.mock("../agents/auth-profiles.js", () => ({
+  persistAuthProfileBatch: async (params: {
+    profiles: readonly {
+      profileId: string;
+      credential: StoredAuthProfile;
+      replaceExisting?: boolean;
+    }[];
+    agentDir?: string;
+  }) => {
+    for (const profile of params.profiles) {
+      const existing = readTestAuthProfileStore(params.agentDir).profiles[profile.profileId];
+      if (profile.replaceExisting === false && existing) {
+        continue;
+      }
+      seedTestAuthProfile({ ...profile, agentDir: params.agentDir });
+    }
+    return { rollback() {} };
+  },
   upsertAuthProfile: (params: {
     profileId: string;
     credential: StoredAuthProfile;
@@ -719,21 +736,19 @@ describe("applyAuthChoice", () => {
           id: "setup-token",
           label: "Anthropic setup-token",
           kind: "token",
-          run: vi.fn(
-            async (): Promise<ProviderAuthResult> => ({
-              profiles: [
-                {
-                  profileId: "anthropic:default",
-                  credential: {
-                    type: "token",
-                    provider: "anthropic",
-                    token: `sk-ant-oat01-${"a".repeat(80)}`,
-                  },
+          run: vi.fn(async (): Promise<ProviderAuthResult> => ({
+            profiles: [
+              {
+                profileId: "anthropic:default",
+                credential: {
+                  type: "token",
+                  provider: "anthropic",
+                  token: `sk-ant-oat01-${"a".repeat(80)}`,
                 },
-              ],
-              defaultModel: "anthropic/claude-sonnet-4-6",
-            }),
-          ),
+              },
+            ],
+            defaultModel: "anthropic/claude-sonnet-4-6",
+          })),
         },
       }),
     ]);

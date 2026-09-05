@@ -1,5 +1,8 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { QuestionAnswerUnconfirmedError } from "../../agents/harness/gateway-question-dispatch.js";
+import { hasPromptImageInput } from "../../media/prompt-image-input.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { createMessageInjectionAuthority } from "./message-injection-authority.js";
 import {
   replyMessageInjectionTargetOperation,
   type ReplyBackendHandle,
@@ -28,7 +31,6 @@ type ReplyMessageInjectionRejectionReason =
   | "no_active_run"
   | "not_running"
   | "stale_run"
-  | "run_mismatch"
   | "injection_unavailable"
   | ReplyBackendQueueMessageMismatch
   | "runtime_rejected";
@@ -53,7 +55,7 @@ export function resolveReplyBackendQueueMessageMismatch(
       return "tool_authority_mismatch";
     }
   }
-  if (options?.images?.length && backend.supportsQueueMessageImages !== true) {
+  if (hasPromptImageInput(options) && backend.supportsQueueMessageImages !== true) {
     return "image_input_unsupported";
   }
   if (
@@ -76,14 +78,41 @@ export function resolveReplyBackendQueueMessageMismatch(
 
 function resolveReplyBackendMessageInjection(
   backend: ReplyBackendHandle,
-): ReplyBackendMessageInjection | undefined {
+  canInject: () => boolean,
+):
+  | (ReplyBackendMessageInjection &
+      Pick<ReplyBackendHandle, "claimPendingUserInputAnswer" | "cancelPendingUserInput">)
+  | undefined {
+  const guarded = backend.messageInjectionV2;
+  if (guarded?.version === 2) {
+    const assertCurrent = createMessageInjectionAuthority(canInject);
+    return {
+      isAvailable: () => guarded.isAvailable(),
+      queueMessage: (text, options) => guarded.queueMessage(text, options, assertCurrent, "run"),
+      claimPendingUserInputAnswer: guarded.claimPendingUserInputAnswer
+        ? (text, options) =>
+            guarded.claimPendingUserInputAnswer!(text, options, assertCurrent, "run")
+        : undefined,
+      cancelPendingUserInput: guarded.cancelPendingUserInput
+        ? (resolvedBy) => guarded.cancelPendingUserInput!(resolvedBy, assertCurrent, "run")
+        : undefined,
+    };
+  }
   if (backend.messageInjection) {
-    return backend.messageInjection;
+    const injection = backend.messageInjection;
+    return {
+      isAvailable: () => injection.isAvailable(),
+      queueMessage: (text, options) => injection.queueMessage(text, options),
+      claimPendingUserInputAnswer: backend.claimPendingUserInputAnswer?.bind(backend),
+      cancelPendingUserInput: backend.cancelPendingUserInput?.bind(backend),
+    };
   }
   if (!backend.queueMessage) {
     return undefined;
   }
   return {
+    claimPendingUserInputAnswer: backend.claimPendingUserInputAnswer?.bind(backend),
+    cancelPendingUserInput: backend.cancelPendingUserInput?.bind(backend),
     isAvailable: () => {
       if (backend.isStopped) {
         return !backend.isStopped();
@@ -100,13 +129,13 @@ function resolveReplyBackendMessageInjection(
 
 export function resolveReplyMessageInjectionRejection(params: {
   operation: ReplyOperation | undefined;
-  expectedRunId?: string;
   options?: ReplyBackendQueueMessageOptions;
 }):
   | {
       reason: ReplyMessageInjectionRejectionReason;
       errorMessage?: string;
       backend?: ReplyBackendHandle;
+      cancelPendingUserInput?: ReplyBackendHandle["cancelPendingUserInput"];
     }
   | { backend: ReplyBackendHandle; injection: ReplyBackendMessageInjection } {
   const { operation } = params;
@@ -116,19 +145,18 @@ export function resolveReplyMessageInjectionRejection(params: {
   if (operation.result || operation.phase !== "running") {
     return { reason: "not_running" };
   }
-  const expectedRunId = normalizeOptionalString(params.expectedRunId);
-  // Exact run identity supersedes the operation's immutable origin leaf. The
-  // same run advances its transcript leaf during ordinary tool/output progress.
   if (isReplyRunEvidenceStale(operation)) {
     return { reason: "stale_run" };
   }
   const backend = getAttachedBackend(operation);
-  const injection = backend ? resolveReplyBackendMessageInjection(backend) : undefined;
+  const canInject = () =>
+    replyRunState.activeRunsByKey.get(operation.key) === operation &&
+    !operation.result &&
+    operation.phase === "running" &&
+    getAttachedBackend(operation) === backend;
+  const injection = backend ? resolveReplyBackendMessageInjection(backend, canInject) : undefined;
   if (!backend || !injection) {
     return { reason: "injection_unavailable" };
-  }
-  if (expectedRunId && normalizeOptionalString(backend.runId) !== expectedRunId) {
-    return { reason: "run_mismatch" };
   }
   try {
     if (!injection.isAvailable()) {
@@ -147,22 +175,24 @@ export function resolveReplyMessageInjectionRejection(params: {
   if (
     mismatch === "tool_authority_mismatch" &&
     pendingInputAuthorityProven &&
-    !params.options?.images?.length &&
-    backend.claimPendingUserInputAnswer
+    !hasPromptImageInput(params.options) &&
+    injection.claimPendingUserInputAnswer
   ) {
     return {
       backend,
       injection: {
         isAvailable: () => true,
         queueMessage: async (text, options) => {
-          if (!(await backend.claimPendingUserInputAnswer?.(text, options))) {
+          if (!(await injection.claimPendingUserInputAnswer?.(text, options))) {
             throw new Error("pending user input was not accepted");
           }
         },
       },
     };
   }
-  return mismatch ? { reason: mismatch, backend } : { backend, injection };
+  return mismatch
+    ? { reason: mismatch, backend, cancelPendingUserInput: injection.cancelPendingUserInput }
+    : { backend, injection };
 }
 
 export function beginReplyMessageInjectionTarget(
@@ -185,7 +215,6 @@ export function beginReplyMessageInjectionTarget(
     : undefined;
   const resolved = resolveReplyMessageInjectionRejection({
     operation,
-    expectedRunId: target.identity === "run" ? target.runId : undefined,
     options: queueOptions,
   });
   if (!("injection" in resolved)) {
@@ -196,10 +225,10 @@ export function beginReplyMessageInjectionTarget(
     };
     const cancelPendingImage =
       options?.isInboundUserMessage === true &&
-      Boolean(options.images?.length) &&
+      hasPromptImageInput(options) &&
       (resolved.reason === "tool_authority_mismatch" ||
         resolved.reason === "image_input_unsupported")
-        ? resolved.backend?.cancelPendingUserInput
+        ? resolved.cancelPendingUserInput
         : undefined;
     return {
       targetRunId: target.runId,
@@ -226,52 +255,47 @@ export function beginReplyMessageInjectionTarget(
     }
     acceptanceSettled = true;
     acceptance.resolve(accepted);
+    queueOptions?.onQueueAccepted?.(accepted);
   };
-  const callerOnQueueAccepted = queueOptions?.onQueueAccepted;
   const runtimeQueueOptions: ReplyBackendQueueMessageOptions = {
     ...queueOptions,
     onQueueAccepted: (accepted) => {
-      settleAcceptance(accepted);
-      callerOnQueueAccepted?.(accepted);
+      // Rejection is provisional until the outcome rules out an uncertain question
+      // dispatch. Forwarding false early would release the parked input for replay.
+      if (accepted) {
+        settleAcceptance(true);
+      }
     },
+  };
+  const failed = (error: unknown): ReplyMessageInjectionOutcome => {
+    if (error instanceof QuestionAnswerUnconfirmedError) {
+      settleAcceptance(true);
+      return { status: "indeterminate", errorMessage: error.message };
+    }
+    settleAcceptance(false);
+    return { status: "rejected", reason: "runtime_rejected", errorMessage: String(error) };
   };
   let queued: Promise<void | ReplyBackendQueueMessageResult>;
   try {
     queued = resolved.injection.queueMessage(text, runtimeQueueOptions);
   } catch (error) {
-    settleAcceptance(false);
-    const immediateRejection = {
-      status: "rejected" as const,
-      reason: "runtime_rejected" as const,
-      errorMessage: String(error),
-    };
     return {
       targetRunId,
       acceptance: acceptance.promise,
-      outcome: Promise.resolve(immediateRejection),
+      outcome: Promise.resolve(failed(error)),
     };
   }
-  const outcome = queued.then(
-    async (result): Promise<ReplyMessageInjectionOutcome> => {
-      settleAcceptance(true);
-      if (
-        targetRunId &&
-        queueOptions?.waitForTranscriptCommit === true &&
-        result?.transcriptCommit !== "unconfirmed"
-      ) {
-        await userTurnTranscriptRecorder?.confirmSteerTargetRunIdForPersistence?.(targetRunId);
-      }
-      return result ? { status: "accepted", result } : { status: "accepted" };
-    },
-    (error: unknown): ReplyMessageInjectionOutcome => {
-      settleAcceptance(false);
-      return {
-        status: "rejected",
-        reason: "runtime_rejected",
-        errorMessage: String(error),
-      };
-    },
-  );
+  const outcome = queued.then(async (result): Promise<ReplyMessageInjectionOutcome> => {
+    settleAcceptance(true);
+    if (
+      targetRunId &&
+      queueOptions?.waitForTranscriptCommit === true &&
+      result?.transcriptCommit !== "unconfirmed"
+    ) {
+      await userTurnTranscriptRecorder?.confirmSteerTargetRunIdForPersistence?.(targetRunId);
+    }
+    return result ? { status: "accepted", result } : { status: "accepted" };
+  }, failed);
   return {
     targetRunId,
     acceptance: acceptance.promise,
@@ -284,7 +308,7 @@ export async function finalizeReplyMessageInjectionAttempt(params: {
   attempt: ReplyMessageInjectionAttempt;
   target: ReplyMessageInjectionTarget;
   inboundAudio?: boolean;
-  onAccepted?: () => void;
+  onOutcome?: (outcome: "accepted" | "indeterminate") => void;
   onAdopted?: () => void | Promise<void>;
   shouldAbortOnAdoptionError?: (error: unknown) => boolean;
 }) {
@@ -292,10 +316,27 @@ export async function finalizeReplyMessageInjectionAttempt(params: {
   if (outcome.status === "rejected") {
     return { status: "rejected" as const, outcome, targetRunId: params.attempt.targetRunId };
   }
+  // Retained input custody must be visible before fallible source adoption.
+  params.onOutcome?.(outcome.status);
+  if (outcome.status === "indeterminate") {
+    let adoptionError: unknown;
+    try {
+      await params.onAdopted?.();
+    } catch (error) {
+      adoptionError = error;
+    }
+    // Unknown input retains custody but has no authority to abort independent
+    // backing work, including when the source's later adoption fails.
+    return {
+      status: "indeterminate" as const,
+      outcome,
+      targetRunId: params.attempt.targetRunId,
+      adoptionError,
+    };
+  }
   recordAcceptedReplyMessageInjectionTarget(params.target, {
     inboundAudio: params.inboundAudio,
   });
-  params.onAccepted?.();
   let aborted = outcome.result?.transcriptCommit === "unconfirmed";
   if (aborted) {
     abortReplyMessageInjectionTarget(params.target);

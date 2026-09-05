@@ -1,11 +1,19 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { recordSkillCollectionReviewSuccess } from "../../skills/workshop/collection-review-state.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { recordSkillCollectionReviewHistory } from "../../skills/workshop/collection-review-state.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createTrackedTempDirs } from "../../test-utils/tracked-temp-dirs.js";
-import { createSkillWorkshopTool } from "./skill-workshop-tool.js";
+import { createSkillWorkshopTool as createSkillWorkshopToolImpl } from "./skill-workshop-tool.js";
 
 const tempDirs = createTrackedTempDirs();
 const cleanups: Array<() => Promise<void>> = [];
+
+const createSkillWorkshopTool = (
+  options: Omit<Parameters<typeof createSkillWorkshopToolImpl>[0], "config" | "agentId"> & {
+    config?: OpenClawConfig;
+    agentId?: string;
+  },
+) => createSkillWorkshopToolImpl({ config: {}, agentId: "main", ...options });
 
 afterEach(async () => {
   await Promise.all(cleanups.splice(0).map(async (cleanup) => await cleanup()));
@@ -20,7 +28,12 @@ describe("skill_workshop collection history", () => {
     });
     cleanups.push(async () => await testState.cleanup());
     const workspaceDir = await tempDirs.make("openclaw-skill-collection-history-");
-    const tool = createSkillWorkshopTool({ workspaceDir, env: testState.env });
+    const tool = createSkillWorkshopTool({
+      workspaceDir,
+      config: {},
+      agentId: "main",
+      env: testState.env,
+    });
 
     await expect(tool.execute("empty-history", { action: "history" })).resolves.toMatchObject({
       content: [{ type: "text", text: "No recorded collection reviews." }],
@@ -28,8 +41,8 @@ describe("skill_workshop collection history", () => {
     });
 
     const createTime = Date.UTC(2026, 7, 18, 12, 34, 56);
-    recordSkillCollectionReviewSuccess(
-      workspaceDir,
+    recordSkillCollectionReviewHistory(
+      "main",
       createTime,
       {
         backupId: "backup-42",
@@ -71,8 +84,8 @@ describe("skill_workshop collection history", () => {
         (_, index) => `${kind}-${review}-${index}-long-enough-to-fill-the-history-budget`,
       );
     for (let review = 0; review < 20; review += 1) {
-      recordSkillCollectionReviewSuccess(
-        workspaceDir,
+      recordSkillCollectionReviewHistory(
+        "main",
         review,
         {
           backupId: `backup-${review}`,
@@ -84,10 +97,11 @@ describe("skill_workshop collection history", () => {
       );
     }
 
-    const result = await createSkillWorkshopTool({ workspaceDir, env: testState.env }).execute(
-      "history",
-      { action: "history" },
-    );
+    const result = await createSkillWorkshopTool({
+      workspaceDir,
+      env: testState.env,
+      modelContextWindowTokens: 200_000,
+    }).execute("history", { action: "history" });
     const text = result.content[0]?.type === "text" ? result.content[0].text : "";
     const firstTenKept = names("kept", 19).slice(0, 10);
 
@@ -109,6 +123,16 @@ describe("skill_workshop collection history", () => {
     const boundedReviews = (result.details as { reviews: unknown[] }).reviews;
     expect(boundedReviews.length).toBeGreaterThan(0);
     expect(boundedReviews.length).toBeLessThan(20);
+
+    const smallContextResult = await createSkillWorkshopTool({
+      workspaceDir,
+      env: testState.env,
+      modelContextWindowTokens: 8_192,
+    }).execute("history-small", { action: "history" });
+    const smallContextText =
+      smallContextResult.content[0]?.type === "text" ? smallContextResult.content[0].text : "";
+    expect(smallContextText.length).toBeLessThanOrEqual(2_867);
+    expect(smallContextText).toMatch(/\(history truncated\)$/u);
   });
 
   it("keeps isolated collection reviews limited to read and reconcile", () => {
@@ -118,7 +142,7 @@ describe("skill_workshop collection history", () => {
     const restrictedSchema = JSON.stringify(
       createSkillWorkshopTool({
         workspaceDir: "/tmp/openclaw",
-        collectionReconcile: { approvedSkillNames: new Set() },
+        collectionReconcile: { approvedSkillKeys: new Set() },
       }).parameters,
     );
 

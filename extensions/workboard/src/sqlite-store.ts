@@ -20,8 +20,15 @@ import {
   configureSqliteConnectionPragmas,
   migrateSqliteSchemaToStrict,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
-import { openNodeSqliteDatabase } from "openclaw/plugin-sdk/sqlite-runtime";
+import {
+  executeSqliteQueryTakeFirstSync,
+  getNodeSqliteKysely,
+  iterateSqliteQuerySync,
+  openNodeSqliteDatabase,
+  runSqliteImmediateTransactionSync,
+} from "openclaw/plugin-sdk/sqlite-runtime";
 import { resolveStateDir } from "openclaw/plugin-sdk/state-paths";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type {
   PersistedWorkboardAttachment,
   PersistedWorkboardBoard,
@@ -29,7 +36,9 @@ import type {
   PersistedWorkboardNotificationSubscription,
   WorkboardCardStore,
   WorkboardKeyedStore,
+  WorkboardOwnerClaimResult,
 } from "./persistence-types.js";
+import { workboardCardConsumesOwnerSlot, workboardCardSlotOwner } from "./store-constants.js";
 const WORKBOARD_DB_RELATIVE_PATH = ["plugins", "workboard", "workboard.sqlite"] as const;
 const SCHEMA_VERSION = 3;
 const WORKBOARD_SQLITE_BUSY_TIMEOUT_MS = 5000;
@@ -108,18 +117,6 @@ function blobToBase64(value: unknown): string {
     return Buffer.from(value).toString("base64");
   }
   return "";
-}
-
-function runTransaction<T>(db: DatabaseSync, run: () => T): T {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const result = run();
-    db.exec("COMMIT");
-    return result;
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
 }
 
 function tableColumns(db: DatabaseSync, tableName: string): Set<string> {
@@ -215,6 +212,8 @@ const WORKBOARD_SCHEMA_SQL = `
       session_key TEXT,
       run_id TEXT
     ) STRICT;
+    CREATE INDEX IF NOT EXISTS workboard_card_events_card_idx
+      ON workboard_card_events(card_id, ordinal);
 
     CREATE TABLE IF NOT EXISTS workboard_card_attempts (
       id TEXT PRIMARY KEY,
@@ -230,6 +229,8 @@ const WORKBOARD_SCHEMA_SQL = `
       run_id TEXT,
       error TEXT
     ) STRICT;
+    CREATE INDEX IF NOT EXISTS workboard_card_attempts_card_idx
+      ON workboard_card_attempts(card_id, ordinal);
 
     CREATE TABLE IF NOT EXISTS workboard_card_comments (
       id TEXT PRIMARY KEY,
@@ -239,6 +240,8 @@ const WORKBOARD_SCHEMA_SQL = `
       created_at INTEGER NOT NULL,
       updated_at INTEGER
     ) STRICT;
+    CREATE INDEX IF NOT EXISTS workboard_card_comments_card_idx
+      ON workboard_card_comments(card_id, ordinal);
 
     CREATE TABLE IF NOT EXISTS workboard_card_links (
       id TEXT PRIMARY KEY,
@@ -250,6 +253,8 @@ const WORKBOARD_SCHEMA_SQL = `
       url TEXT,
       created_at INTEGER NOT NULL
     ) STRICT;
+    CREATE INDEX IF NOT EXISTS workboard_card_links_card_idx
+      ON workboard_card_links(card_id, ordinal);
 
     CREATE TABLE IF NOT EXISTS workboard_card_proof (
       id TEXT PRIMARY KEY,
@@ -262,6 +267,8 @@ const WORKBOARD_SCHEMA_SQL = `
       note TEXT,
       created_at INTEGER NOT NULL
     ) STRICT;
+    CREATE INDEX IF NOT EXISTS workboard_card_proof_card_idx
+      ON workboard_card_proof(card_id, ordinal);
 
     CREATE TABLE IF NOT EXISTS workboard_card_artifacts (
       id TEXT PRIMARY KEY,
@@ -273,6 +280,8 @@ const WORKBOARD_SCHEMA_SQL = `
       mime_type TEXT,
       created_at INTEGER NOT NULL
     ) STRICT;
+    CREATE INDEX IF NOT EXISTS workboard_card_artifacts_card_idx
+      ON workboard_card_artifacts(card_id, ordinal);
 
     CREATE TABLE IF NOT EXISTS workboard_card_diagnostics (
       card_id TEXT NOT NULL REFERENCES workboard_cards(id) ON DELETE CASCADE,
@@ -299,6 +308,8 @@ const WORKBOARD_SCHEMA_SQL = `
       session_key TEXT,
       run_id TEXT
     ) STRICT;
+    CREATE INDEX IF NOT EXISTS workboard_card_notifications_card_idx
+      ON workboard_card_notifications(card_id, ordinal);
 
     CREATE TABLE IF NOT EXISTS workboard_worker_logs (
       id TEXT PRIMARY KEY,
@@ -310,6 +321,8 @@ const WORKBOARD_SCHEMA_SQL = `
       session_key TEXT,
       run_id TEXT
     ) STRICT;
+    CREATE INDEX IF NOT EXISTS workboard_worker_logs_card_idx
+      ON workboard_worker_logs(card_id, ordinal);
 
     CREATE TABLE IF NOT EXISTS workboard_worker_protocol (
       card_id TEXT PRIMARY KEY REFERENCES workboard_cards(id) ON DELETE CASCADE,
@@ -591,6 +604,18 @@ function readExecution(row: Row): WorkboardExecution | undefined {
   };
 }
 
+function readAttachment(row: Row): WorkboardAttachment {
+  return {
+    id: requiredString(row, "id"),
+    cardId: requiredString(row, "card_id"),
+    createdAt: requiredNumber(row, "created_at"),
+    fileName: requiredString(row, "file_name"),
+    byteSize: requiredNumber(row, "byte_size"),
+    ...(stringValue(row, "mime_type") ? { mimeType: stringValue(row, "mime_type") } : {}),
+    ...(stringValue(row, "note") ? { note: stringValue(row, "note") } : {}),
+  };
+}
+
 function readMetadata(
   db: DatabaseSync,
   row: Row,
@@ -713,24 +738,7 @@ function readMetadata(
     return entry;
   });
   const attachments = childRows(db, "workboard_card_attachments", cardId, preloaded).map(
-    (child) => {
-      const entry: WorkboardAttachment = {
-        id: requiredString(child, "id"),
-        cardId: requiredString(child, "card_id"),
-        createdAt: requiredNumber(child, "created_at"),
-        fileName: requiredString(child, "file_name"),
-        byteSize: requiredNumber(child, "byte_size"),
-      };
-      const mimeType = stringValue(child, "mime_type");
-      const note = stringValue(child, "note");
-      if (mimeType) {
-        entry.mimeType = mimeType;
-      }
-      if (note) {
-        entry.note = note;
-      }
-      return entry;
-    },
+    readAttachment,
   );
   const workerLogs = childRows(db, "workboard_worker_logs", cardId, preloaded).map((child) => {
     const entry: WorkboardWorkerLog = {
@@ -1201,11 +1209,85 @@ function insertCard(db: DatabaseSync, card: WorkboardCard): void {
 class WorkboardSqliteCardStore implements WorkboardCardStore {
   constructor(private readonly db: DatabaseSync) {}
 
-  async register(key: string, value: PersistedWorkboardCard): Promise<void> {
+  private validatePayload(key: string, value: PersistedWorkboardCard): void {
     if (value.version !== 1 || value.card.id !== key) {
       throw new Error("invalid workboard card payload");
     }
-    runTransaction(this.db, () => insertCard(this.db, value.card));
+  }
+
+  async register(key: string, value: PersistedWorkboardCard): Promise<void> {
+    this.validatePayload(key, value);
+    runSqliteImmediateTransactionSync(this.db, () => insertCard(this.db, value.card));
+  }
+
+  async registerIfAbsent(key: string, value: PersistedWorkboardCard): Promise<boolean> {
+    this.validatePayload(key, value);
+    return runSqliteImmediateTransactionSync(this.db, () => {
+      if (this.db.prepare("SELECT 1 FROM workboard_cards WHERE id = ?").get(key)) {
+        return false;
+      }
+      insertCard(this.db, value.card);
+      return true;
+    });
+  }
+
+  async registerIfUpdatedAt(
+    key: string,
+    value: PersistedWorkboardCard,
+    expectedUpdatedAt: number,
+  ): Promise<boolean> {
+    this.validatePayload(key, value);
+    return runSqliteImmediateTransactionSync(this.db, () => {
+      const current = this.db
+        .prepare("SELECT updated_at FROM workboard_cards WHERE id = ?")
+        .get(key);
+      if (!isRecord(current) || numberValue(current, "updated_at") !== expectedUpdatedAt) {
+        return false;
+      }
+      insertCard(this.db, value.card);
+      return true;
+    });
+  }
+
+  async claimIfOwnerAvailable(
+    key: string,
+    value: PersistedWorkboardCard,
+    expectedUpdatedAt: number,
+    ownerId: string,
+    now: number,
+  ): Promise<WorkboardOwnerClaimResult> {
+    this.validatePayload(key, value);
+    return runSqliteImmediateTransactionSync(this.db, () => {
+      const current = this.db
+        .prepare("SELECT updated_at FROM workboard_cards WHERE id = ?")
+        .get(key);
+      if (!isRecord(current) || numberValue(current, "updated_at") !== expectedUpdatedAt) {
+        return "conflict";
+      }
+      const rows: Row[] = this.db.prepare("SELECT * FROM workboard_cards WHERE id <> ?").all(key);
+      const preloaded = loadCardChildRows(this.db);
+      for (const row of rows) {
+        const card = readCard(this.db, row, preloaded);
+        if (workboardCardConsumesOwnerSlot(card, now) && workboardCardSlotOwner(card) === ownerId) {
+          return "owner_busy";
+        }
+      }
+      insertCard(this.db, value.card);
+      return "updated";
+    });
+  }
+
+  async deleteIfUpdatedAt(key: string, expectedUpdatedAt: number): Promise<boolean> {
+    return runSqliteImmediateTransactionSync(this.db, () => {
+      const current = this.db
+        .prepare("SELECT updated_at FROM workboard_cards WHERE id = ?")
+        .get(key);
+      if (!isRecord(current) || numberValue(current, "updated_at") !== expectedUpdatedAt) {
+        return false;
+      }
+      this.deleteCard(key);
+      return true;
+    });
   }
 
   async lookup(key: string): Promise<PersistedWorkboardCard | undefined> {
@@ -1216,20 +1298,22 @@ class WorkboardSqliteCardStore implements WorkboardCardStore {
   }
 
   async delete(key: string): Promise<boolean> {
-    const result = runTransaction(this.db, () => {
-      this.db
-        .prepare(
-          `
-            DELETE FROM workboard_attachment_blobs
-            WHERE attachment_id IN (
-              SELECT id FROM workboard_card_attachments WHERE card_id = ?
-            )
-          `,
-        )
-        .run(key);
-      return this.db.prepare("DELETE FROM workboard_cards WHERE id = ?").run(key);
-    });
+    const result = runSqliteImmediateTransactionSync(this.db, () => this.deleteCard(key));
     return result.changes > 0;
+  }
+
+  private deleteCard(key: string) {
+    this.db
+      .prepare(
+        `
+          DELETE FROM workboard_attachment_blobs
+          WHERE attachment_id IN (
+            SELECT id FROM workboard_card_attachments WHERE card_id = ?
+          )
+        `,
+      )
+      .run(key);
+    return this.db.prepare("DELETE FROM workboard_cards WHERE id = ?").run(key);
   }
 
   async entries(): Promise<Array<{ key: string; value: PersistedWorkboardCard }>> {
@@ -1271,8 +1355,43 @@ class WorkboardSqliteCardStore implements WorkboardCardStore {
   }
 }
 
+function readBoard(row: Row): PersistedWorkboardBoard {
+  const defaultWorkspace = parseJson(row.default_workspace_json) as
+    | PersistedWorkboardBoard["board"]["defaultWorkspace"]
+    | undefined;
+  const orchestration = parseJson(row.orchestration_json) as
+    | PersistedWorkboardBoard["board"]["orchestration"]
+    | undefined;
+  return {
+    version: 1,
+    board: {
+      id: requiredString(row, "id"),
+      ...(stringValue(row, "name") ? { name: stringValue(row, "name") } : {}),
+      ...(stringValue(row, "description") ? { description: stringValue(row, "description") } : {}),
+      ...(stringValue(row, "icon") ? { icon: stringValue(row, "icon") } : {}),
+      ...(stringValue(row, "color") ? { color: stringValue(row, "color") } : {}),
+      ...(stringValue(row, "automation_job_id")
+        ? { automationJobId: stringValue(row, "automation_job_id") }
+        : {}),
+      ...(defaultWorkspace ? { defaultWorkspace } : {}),
+      ...(orchestration ? { orchestration } : {}),
+      createdAt: requiredNumber(row, "created_at"),
+      updatedAt: requiredNumber(row, "updated_at"),
+      ...(numberValue(row, "archived_at") !== undefined
+        ? { archivedAt: numberValue(row, "archived_at") }
+        : {}),
+    },
+  };
+}
+
 class WorkboardSqliteBoardStore implements WorkboardKeyedStore<PersistedWorkboardBoard> {
-  constructor(private readonly db: DatabaseSync) {}
+  private readonly rowsQuery;
+
+  constructor(private readonly db: DatabaseSync) {
+    this.rowsQuery = getNodeSqliteKysely<{ workboard_boards: Row }>(db)
+      .selectFrom("workboard_boards")
+      .selectAll();
+  }
 
   async register(key: string, value: PersistedWorkboardBoard): Promise<void> {
     if (value.version !== 1 || value.board.id !== key) {
@@ -1315,40 +1434,8 @@ class WorkboardSqliteBoardStore implements WorkboardKeyedStore<PersistedWorkboar
   }
 
   async lookup(key: string): Promise<PersistedWorkboardBoard | undefined> {
-    const row = this.db.prepare("SELECT * FROM workboard_boards WHERE id = ?").get(key) as
-      | Row
-      | undefined;
-    if (!row) {
-      return undefined;
-    }
-    const defaultWorkspace = parseJson(row.default_workspace_json) as
-      | PersistedWorkboardBoard["board"]["defaultWorkspace"]
-      | undefined;
-    const orchestration = parseJson(row.orchestration_json) as
-      | PersistedWorkboardBoard["board"]["orchestration"]
-      | undefined;
-    return {
-      version: 1,
-      board: {
-        id: requiredString(row, "id"),
-        ...(stringValue(row, "name") ? { name: stringValue(row, "name") } : {}),
-        ...(stringValue(row, "description")
-          ? { description: stringValue(row, "description") }
-          : {}),
-        ...(stringValue(row, "icon") ? { icon: stringValue(row, "icon") } : {}),
-        ...(stringValue(row, "color") ? { color: stringValue(row, "color") } : {}),
-        ...(stringValue(row, "automation_job_id")
-          ? { automationJobId: stringValue(row, "automation_job_id") }
-          : {}),
-        ...(defaultWorkspace ? { defaultWorkspace } : {}),
-        ...(orchestration ? { orchestration } : {}),
-        createdAt: requiredNumber(row, "created_at"),
-        updatedAt: requiredNumber(row, "updated_at"),
-        ...(numberValue(row, "archived_at") !== undefined
-          ? { archivedAt: numberValue(row, "archived_at") }
-          : {}),
-      },
-    };
+    const row = executeSqliteQueryTakeFirstSync(this.db, this.rowsQuery.where("id", "=", key));
+    return row ? readBoard(row) : undefined;
   }
 
   async delete(key: string): Promise<boolean> {
@@ -1357,21 +1444,57 @@ class WorkboardSqliteBoardStore implements WorkboardKeyedStore<PersistedWorkboar
   }
 
   async entries(): Promise<Array<{ key: string; value: PersistedWorkboardBoard }>> {
-    const rows = this.db.prepare("SELECT id FROM workboard_boards ORDER BY id ASC").all() as Row[];
-    const entries: Array<{ key: string; value: PersistedWorkboardBoard }> = [];
-    for (const row of rows) {
-      const key = requiredString(row, "id");
-      const value = await this.lookup(key);
-      if (value) {
-        entries.push({ key, value });
-      }
-    }
-    return entries;
+    return Array.from(
+      iterateSqliteQuerySync(this.db, this.rowsQuery.orderBy("id", "asc")),
+      (row) => ({
+        key: requiredString(row, "id"),
+        value: readBoard(row),
+      }),
+    );
   }
 }
 
+function readSubscription(row: Row): PersistedWorkboardNotificationSubscription {
+  const eventKinds = parseJson(row.event_kinds_json) as
+    | PersistedWorkboardNotificationSubscription["subscription"]["eventKinds"]
+    | undefined;
+  const deliveredEventIds = parseJson(row.delivered_event_ids_json) as
+    | PersistedWorkboardNotificationSubscription["subscription"]["deliveredEventIds"]
+    | undefined;
+  return {
+    version: 1,
+    subscription: {
+      id: requiredString(row, "id"),
+      boardId: requiredString(row, "board_id"),
+      ...(stringValue(row, "card_id") ? { cardId: stringValue(row, "card_id") } : {}),
+      ...(stringValue(row, "session_key") ? { sessionKey: stringValue(row, "session_key") } : {}),
+      ...(stringValue(row, "run_id") ? { runId: stringValue(row, "run_id") } : {}),
+      ...(stringValue(row, "target") ? { target: stringValue(row, "target") } : {}),
+      ...(eventKinds ? { eventKinds } : {}),
+      ...(numberValue(row, "last_event_at") !== undefined
+        ? { lastEventAt: numberValue(row, "last_event_at") }
+        : {}),
+      ...(stringValue(row, "last_event_id")
+        ? { lastEventId: stringValue(row, "last_event_id") }
+        : {}),
+      ...(numberValue(row, "last_event_sequence") !== undefined
+        ? { lastEventSequence: numberValue(row, "last_event_sequence") }
+        : {}),
+      ...(deliveredEventIds ? { deliveredEventIds } : {}),
+      createdAt: requiredNumber(row, "created_at"),
+      updatedAt: requiredNumber(row, "updated_at"),
+    },
+  };
+}
+
 class WorkboardSqliteSubscriptionStore implements WorkboardKeyedStore<PersistedWorkboardNotificationSubscription> {
-  constructor(private readonly db: DatabaseSync) {}
+  private readonly rowsQuery;
+
+  constructor(private readonly db: DatabaseSync) {
+    this.rowsQuery = getNodeSqliteKysely<{ workboard_notification_subscriptions: Row }>(db)
+      .selectFrom("workboard_notification_subscriptions")
+      .selectAll();
+  }
 
   async register(key: string, value: PersistedWorkboardNotificationSubscription): Promise<void> {
     if (value.version !== 1 || value.subscription.id !== key) {
@@ -1419,42 +1542,8 @@ class WorkboardSqliteSubscriptionStore implements WorkboardKeyedStore<PersistedW
   }
 
   async lookup(key: string): Promise<PersistedWorkboardNotificationSubscription | undefined> {
-    const row = this.db
-      .prepare("SELECT * FROM workboard_notification_subscriptions WHERE id = ?")
-      .get(key) as Row | undefined;
-    if (!row) {
-      return undefined;
-    }
-    const eventKinds = parseJson(row.event_kinds_json) as
-      | PersistedWorkboardNotificationSubscription["subscription"]["eventKinds"]
-      | undefined;
-    const deliveredEventIds = parseJson(row.delivered_event_ids_json) as
-      | PersistedWorkboardNotificationSubscription["subscription"]["deliveredEventIds"]
-      | undefined;
-    return {
-      version: 1,
-      subscription: {
-        id: requiredString(row, "id"),
-        boardId: requiredString(row, "board_id"),
-        ...(stringValue(row, "card_id") ? { cardId: stringValue(row, "card_id") } : {}),
-        ...(stringValue(row, "session_key") ? { sessionKey: stringValue(row, "session_key") } : {}),
-        ...(stringValue(row, "run_id") ? { runId: stringValue(row, "run_id") } : {}),
-        ...(stringValue(row, "target") ? { target: stringValue(row, "target") } : {}),
-        ...(eventKinds ? { eventKinds } : {}),
-        ...(numberValue(row, "last_event_at") !== undefined
-          ? { lastEventAt: numberValue(row, "last_event_at") }
-          : {}),
-        ...(stringValue(row, "last_event_id")
-          ? { lastEventId: stringValue(row, "last_event_id") }
-          : {}),
-        ...(numberValue(row, "last_event_sequence") !== undefined
-          ? { lastEventSequence: numberValue(row, "last_event_sequence") }
-          : {}),
-        ...(deliveredEventIds ? { deliveredEventIds } : {}),
-        createdAt: requiredNumber(row, "created_at"),
-        updatedAt: requiredNumber(row, "updated_at"),
-      },
-    };
+    const row = executeSqliteQueryTakeFirstSync(this.db, this.rowsQuery.where("id", "=", key));
+    return row ? readSubscription(row) : undefined;
   }
 
   async delete(key: string): Promise<boolean> {
@@ -1467,25 +1556,40 @@ class WorkboardSqliteSubscriptionStore implements WorkboardKeyedStore<PersistedW
   async entries(): Promise<
     Array<{ key: string; value: PersistedWorkboardNotificationSubscription }>
   > {
-    const rows = this.db
-      .prepare(
-        "SELECT id FROM workboard_notification_subscriptions ORDER BY created_at ASC, id ASC",
-      )
-      .all() as Row[];
-    const entries: Array<{ key: string; value: PersistedWorkboardNotificationSubscription }> = [];
-    for (const row of rows) {
-      const key = requiredString(row, "id");
-      const value = await this.lookup(key);
-      if (value) {
-        entries.push({ key, value });
-      }
-    }
-    return entries;
+    return Array.from(
+      iterateSqliteQuerySync(
+        this.db,
+        this.rowsQuery.orderBy("created_at", "asc").orderBy("id", "asc"),
+      ),
+      (row) => ({
+        key: requiredString(row, "id"),
+        value: readSubscription(row),
+      }),
+    );
   }
 }
 
+function readPersistedAttachment(row: Row): PersistedWorkboardAttachment {
+  return {
+    version: 1,
+    attachment: readAttachment(row),
+    contentBase64: blobToBase64(row.content),
+  };
+}
+
 class WorkboardSqliteAttachmentStore implements WorkboardKeyedStore<PersistedWorkboardAttachment> {
-  constructor(private readonly db: DatabaseSync) {}
+  private readonly rowsQuery;
+
+  constructor(private readonly db: DatabaseSync) {
+    this.rowsQuery = getNodeSqliteKysely<{
+      workboard_card_attachments: Row;
+      workboard_attachment_blobs: Row;
+    }>(db)
+      .selectFrom("workboard_card_attachments as a")
+      .innerJoin("workboard_attachment_blobs as b", "b.attachment_id", "a.id")
+      .selectAll("a")
+      .select("b.content");
+  }
 
   async register(key: string, value: PersistedWorkboardAttachment): Promise<void> {
     if (value.version !== 1 || value.attachment.id !== key) {
@@ -1504,36 +1608,12 @@ class WorkboardSqliteAttachmentStore implements WorkboardKeyedStore<PersistedWor
   }
 
   async lookup(key: string): Promise<PersistedWorkboardAttachment | undefined> {
-    const row = this.db
-      .prepare(
-        `
-          SELECT a.*, b.content
-          FROM workboard_card_attachments a
-          JOIN workboard_attachment_blobs b ON b.attachment_id = a.id
-          WHERE a.id = ?
-        `,
-      )
-      .get(key) as Row | undefined;
-    if (!row) {
-      return undefined;
-    }
-    return {
-      version: 1,
-      attachment: {
-        id: requiredString(row, "id"),
-        cardId: requiredString(row, "card_id"),
-        createdAt: requiredNumber(row, "created_at"),
-        fileName: requiredString(row, "file_name"),
-        byteSize: requiredNumber(row, "byte_size"),
-        ...(stringValue(row, "mime_type") ? { mimeType: stringValue(row, "mime_type") } : {}),
-        ...(stringValue(row, "note") ? { note: stringValue(row, "note") } : {}),
-      },
-      contentBase64: blobToBase64(row.content),
-    };
+    const row = executeSqliteQueryTakeFirstSync(this.db, this.rowsQuery.where("a.id", "=", key));
+    return row ? readPersistedAttachment(row) : undefined;
   }
 
   async delete(key: string): Promise<boolean> {
-    const deleted = runTransaction(this.db, () => {
+    const deleted = runSqliteImmediateTransactionSync(this.db, () => {
       this.db.prepare("DELETE FROM workboard_attachment_blobs WHERE attachment_id = ?").run(key);
       return this.db.prepare("DELETE FROM workboard_card_attachments WHERE id = ?").run(key);
     });
@@ -1541,25 +1621,17 @@ class WorkboardSqliteAttachmentStore implements WorkboardKeyedStore<PersistedWor
   }
 
   async entries(): Promise<Array<{ key: string; value: PersistedWorkboardAttachment }>> {
-    const rows = this.db
-      .prepare(
-        `
-          SELECT a.id
-          FROM workboard_card_attachments a
-          JOIN workboard_attachment_blobs b ON b.attachment_id = a.id
-          ORDER BY a.created_at ASC, a.id ASC
-        `,
-      )
-      .all() as Row[];
-    const entries: Array<{ key: string; value: PersistedWorkboardAttachment }> = [];
-    for (const row of rows) {
-      const key = requiredString(row, "id");
-      const value = await this.lookup(key);
-      if (value) {
-        entries.push({ key, value });
-      }
-    }
-    return entries;
+    // Decode each BLOB before advancing so the list never retains a second full raw payload copy.
+    return Array.from(
+      iterateSqliteQuerySync(
+        this.db,
+        this.rowsQuery.orderBy("a.created_at", "asc").orderBy("a.id", "asc"),
+      ),
+      (row) => ({
+        key: requiredString(row, "id"),
+        value: readPersistedAttachment(row),
+      }),
+    );
   }
 }
 
