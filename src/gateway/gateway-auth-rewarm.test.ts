@@ -108,6 +108,7 @@ describe("Gateway profile failure recovery", () => {
             },
             hooks: { enabled: false },
             agents: {
+              ownership: "explicit",
               defaults: {
                 workspace: gateway.state.workspaceDir,
                 skipBootstrap: true,
@@ -242,9 +243,9 @@ describe("Gateway profile failure recovery", () => {
         },
         async () => {
           providerServer.closeAllConnections();
-          await new Promise<void>((resolve, reject) =>
-            providerServer.close((error) => (error ? reject(error) : resolve())),
-          );
+          await new Promise<void>((resolve, reject) => {
+            providerServer.close((error) => (error ? reject(error) : resolve()));
+          });
         },
       );
     },
