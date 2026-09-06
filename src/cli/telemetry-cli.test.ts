@@ -175,4 +175,22 @@ describe("telemetry cli", () => {
       );
     },
   );
+
+  it("prints parent help with a successful exit when no subcommand is given", async () => {
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    const program = new Command().exitOverride();
+    registerTelemetryCli(program);
+    const telemetry = program.commands.find((command) => command.name() === "telemetry");
+    const helpSpy = vi.spyOn(telemetry!, "outputHelp").mockImplementation(() => {});
+
+    try {
+      await program.parseAsync(["telemetry"], { from: "user" });
+
+      expect(helpSpy).toHaveBeenCalledTimes(1);
+      expect(process.exitCode).toBe(0);
+    } finally {
+      process.exitCode = previousExitCode;
+    }
+  });
 });

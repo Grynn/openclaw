@@ -7,6 +7,7 @@ import {
 } from "../infra/telemetry.js";
 import { defaultRuntime } from "../runtime.js";
 import { runCommandWithRuntime } from "./cli-utils.js";
+import { applyParentDefaultHelpAction } from "./program/parent-default-help.js";
 
 const TELEMETRY_REASON_LABELS = {
   enabled: "enabled in configuration",
@@ -101,4 +102,6 @@ export function registerTelemetryCli(program: Command): void {
     .command("off")
     .description("Disable anonymous feature statistics")
     .action(async () => runCommandWithRuntime(defaultRuntime, () => setTelemetryEnabled(false)));
+
+  applyParentDefaultHelpAction(telemetry);
 }
