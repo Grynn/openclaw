@@ -10,6 +10,8 @@ export type TranscriptEntryAnchor = Readonly<{
   effectiveParentId: string | null;
   activeMessagePosition: number;
   idempotencyKey?: string;
+  /** SHA-256 of the exact persisted message payload, when issued by a current SQLite writer. */
+  messageFingerprint?: string;
 }>;
 
 /** Current user row bound to one recorder-owned logical turn. */

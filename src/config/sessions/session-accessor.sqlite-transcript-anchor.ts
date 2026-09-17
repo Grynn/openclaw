@@ -1,24 +1,42 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { sha256Hex } from "../../infra/crypto-digest.js";
 import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
-import {
-  openOpenClawAgentDatabase,
-  type OpenClawAgentDatabase,
-} from "../../state/openclaw-agent-db.js";
+import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
+import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import {
   getSessionKysely,
   resolveSqliteTranscriptScope,
   toDatabaseOptions,
   type ResolvedTranscriptScope,
 } from "./session-accessor.sqlite-scope.js";
-import { readMessageIdempotencyKey } from "./session-accessor.sqlite-transcript-store.js";
+import {
+  readMessageIdempotencyKey,
+  readTranscriptMessageByEventId,
+} from "./session-accessor.sqlite-transcript-store.js";
 import { sessionTranscriptIndexNeedsReconcile } from "./session-transcript-index.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 
+// Only user rows are ever re-anchored after a rewrite, so hashing assistant/tool payloads would
+// charge every append a full serialization for a fingerprint no consumer reads.
+function fingerprintPersistedUserMessage(message: unknown): string | undefined {
+  if (!isRecord(message) || message.role !== "user") {
+    return undefined;
+  }
+  const serialized = JSON.stringify(message);
+  return serialized === undefined ? undefined : sha256Hex(serialized);
+}
+
 /** Reads one active message identity from the caller's current SQLite transaction. */
 export function readActiveTranscriptEntryAnchorInTransaction(params: {
-  database: Pick<OpenClawAgentDatabase, "db" | "path">;
+  database: Pick<OpenClawAgentDatabase, "agentId" | "db" | "path">;
   resolved: ResolvedTranscriptScope;
   entryId: string;
-  message?: unknown;
+  /**
+   * Exact canonical payload this writer persisted (or just read back) for the row. Supplying it
+   * keeps the append and mirror paths from re-selecting and re-parsing `event_json` they hold;
+   * omitting it makes the reader fetch the authoritative row before minting a fingerprint.
+   */
+  persistedMessage?: unknown;
 }): TranscriptEntryAnchor | undefined {
   // Branch changes retain old projection rows until deferred reconciliation.
   // An anchor must never certify those rows as the current active path.
@@ -49,12 +67,18 @@ export function readActiveTranscriptEntryAnchorInTransaction(params: {
       .where("identity.event_id", "=", params.entryId)
       .limit(1),
   );
-  return createTranscriptEntryAnchor({ ...params, row });
+  return createTranscriptEntryAnchor({
+    ...params,
+    message:
+      params.persistedMessage ??
+      readTranscriptMessageByEventId(params.database, params.resolved, params.entryId)?.message,
+    row,
+  });
 }
 
 /** Projects anchor fields after the caller verifies readiness in the same snapshot. */
 export function createTranscriptEntryAnchor(params: {
-  database: Pick<OpenClawAgentDatabase, "path">;
+  database: Pick<OpenClawAgentDatabase, "db" | "path">;
   resolved: ResolvedTranscriptScope;
   entryId: string;
   message?: unknown;
@@ -76,7 +100,12 @@ export function createTranscriptEntryAnchor(params: {
   ) {
     return undefined;
   }
-  const idempotencyKey = row.message_idempotency_key ?? readMessageIdempotencyKey(params.message);
+  // Never select the payload here: mirror-fact batches mint anchors per row and a
+  // read would reintroduce the per-message selections this projection removed.
+  const message = params.message;
+  const idempotencyKey = row.message_idempotency_key ?? readMessageIdempotencyKey(message);
+  const messageFingerprint =
+    message === undefined ? undefined : fingerprintPersistedUserMessage(message);
   return Object.freeze({
     agentId: params.resolved.agentId,
     sessionId: params.resolved.sessionId,
@@ -88,6 +117,7 @@ export function createTranscriptEntryAnchor(params: {
     effectiveParentId: row.parent_id,
     activeMessagePosition: row.message_position,
     ...(idempotencyKey ? { idempotencyKey } : {}),
+    ...(messageFingerprint ? { messageFingerprint } : {}),
   });
 }
 
@@ -100,10 +130,14 @@ export function readActiveTranscriptEntryAnchor(params: {
   entryId: string;
 }): TranscriptEntryAnchor | undefined {
   const resolved = resolveSqliteTranscriptScope(params);
-  const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
-  return readActiveTranscriptEntryAnchorInTransaction({
-    database,
-    resolved,
-    entryId: params.entryId,
-  });
+  const result = withOpenClawAgentDatabaseReadOnly(
+    (database) =>
+      readActiveTranscriptEntryAnchorInTransaction({
+        database,
+        resolved,
+        entryId: params.entryId,
+      }),
+    toDatabaseOptions(resolved),
+  );
+  return result.found ? result.value : undefined;
 }

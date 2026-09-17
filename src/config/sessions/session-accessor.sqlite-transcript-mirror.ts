@@ -139,6 +139,7 @@ function readTranscriptMirrorFactsInSnapshot(
         continue;
       }
       facts.existingIdempotencyKeys.add(idempotencyKey);
+      const message = readTranscriptEventMessage(JSON.parse(row.event_json) as TranscriptEvent);
       anchorsReady ??= !sessionTranscriptIndexNeedsReconcile(database.db, resolved.sessionId);
       const anchor = anchorsReady
         ? createTranscriptEntryAnchor({
@@ -151,7 +152,6 @@ function readTranscriptMirrorFactsInSnapshot(
       if (anchor) {
         facts.anchorsByIdempotencyKey.set(idempotencyKey, anchor);
       }
-      const message = readTranscriptEventMessage(JSON.parse(row.event_json) as TranscriptEvent);
       if (message !== undefined) {
         facts.messagesByIdempotencyKey.set(idempotencyKey, message);
       }

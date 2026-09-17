@@ -550,6 +550,7 @@ describe("user turn transcript persistence", () => {
       expect(persisted).toBeDefined();
       recorder.markRuntimePersisted(persisted?.message, persisted?.admission);
       const initialGeneration = recorder.getAdmissionReceipt()?.generation;
+      const initialFingerprint = recorder.getAdmissionReceipt()?.messageFingerprint;
 
       const admission = recorder.getAdmissionReceipt();
       if (!admission) {
@@ -574,6 +575,7 @@ describe("user turn transcript persistence", () => {
       expect(work.counts).toEqual({ fts: 0, size: 0 });
 
       expect(recorder.getAdmissionReceipt()?.generation).not.toBe(initialGeneration);
+      expect(recorder.getAdmissionReceipt()?.messageFingerprint).not.toBe(initialFingerprint);
       expect(recorder.getPersistedMessage?.()).toMatchObject({
         __openclaw: {
           senderId: "operator-1",

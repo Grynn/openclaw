@@ -1,5 +1,9 @@
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
-import type { SessionTranscriptContextVersion } from "openclaw/plugin-sdk/codex-session-transcript-runtime";
+import {
+  readCodexSessionTranscriptMessagesBetweenAdmissions,
+  type CodexSessionTranscriptAdmissionDeltaResult,
+  type SessionTranscriptContextVersion,
+} from "openclaw/plugin-sdk/codex-session-transcript-runtime";
 import { serveWorkerTasks } from "openclaw/plugin-sdk/process-runtime";
 import type { TranscriptTurnAdmission } from "openclaw/plugin-sdk/session-transcript-runtime";
 import type { CodexHistoryReadResult } from "./src/app-server/history-rejection.js";
@@ -18,11 +22,17 @@ type ReadInput = {
   sessionId: string;
   admission?: TranscriptTurnAdmission;
 };
-export type CodexHistoryWorkerInput = ReadInput &
-  ({ kind: "messages" } | { kind: "settled"; evidence: SettledTurnMessages });
+export type CodexHistoryWorkerInput =
+  | (ReadInput & ({ kind: "messages" } | { kind: "settled"; evidence: SettledTurnMessages }))
+  | {
+      kind: "admission-delta";
+      covered: TranscriptTurnAdmission;
+      current: TranscriptTurnAdmission;
+    };
 export type CodexHistoryWorkerResult = (
   | { kind: "messages"; result: CodexHistoryReadResult<AgentMessage[]> }
   | { kind: "settled"; result: CodexHistoryReadResult<JsonValue[]> }
+  | { kind: "admission-delta"; delta: CodexSessionTranscriptAdmissionDeltaResult }
 ) & { version?: SessionTranscriptContextVersion };
 
 export async function runCodexHistoryWorkerInput(
@@ -34,6 +44,15 @@ export async function runCodexHistoryWorkerInput(
   const onSnapshot = (value: SessionTranscriptContextVersion | undefined) => {
     version = value;
   };
+  if (request.kind === "admission-delta") {
+    return {
+      kind: request.kind,
+      delta: await readCodexSessionTranscriptMessagesBetweenAdmissions(
+        request.covered,
+        request.current,
+      ),
+    };
+  }
   if (request.kind === "messages") {
     const result = await readCodexNativeHistory(
       request.target,

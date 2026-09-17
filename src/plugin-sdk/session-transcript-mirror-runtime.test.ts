@@ -1,7 +1,11 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
+import {
+  readActiveTranscriptEntryAnchor,
+  rewriteTranscriptMessageAtAnchor,
+  upsertSessionEntryCore,
+} from "../config/sessions/session-accessor.js";
 import {
   runExclusiveSqliteSessionWrite,
   resolveSqliteTranscriptScope,
@@ -12,6 +16,8 @@ import { waitForSessionTranscriptProjection } from "../config/sessions/session-t
 import { runOpenClawAgentWriteTransaction } from "../state/openclaw-agent-db.js";
 import {
   readCodexSessionTranscriptEventsBeforeAdmission,
+  readCodexSessionTranscriptMessagesBetweenAdmissions,
+  refreshCodexSessionTranscriptAdmission,
   withCodexSessionTranscriptMirrorWriteLock,
 } from "./codex-session-transcript-runtime.js";
 import {
@@ -203,5 +209,250 @@ describe("private session transcript mirror runtime", () => {
         role: "user",
       }),
     ).rejects.toBeInstanceOf(SessionTranscriptReadFenceError);
+  });
+
+  it("fingerprints the authoritative message after storage canonicalization", async () => {
+    const scope = {
+      agentId: "main",
+      sessionId: "canonicalized-admission-session",
+      sessionKey: "agent:main:canonicalized-admission-session",
+      storePath,
+    };
+    await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+    const admitted = await appendSessionTranscriptMessageByIdentity({
+      ...scope,
+      message: {
+        role: "user",
+        content: "message with legacy media fields",
+        MediaPath: "/media/legacy.png",
+        MediaType: "image/png",
+      },
+    });
+    if (!admitted?.anchor) {
+      throw new Error("expected transcript admission anchor");
+    }
+    const admission = {
+      ...admitted.anchor,
+      logicalTurnId: "canonicalized-turn",
+      role: "user" as const,
+    };
+
+    expect(admitted.message).toEqual({
+      role: "user",
+      content: "message with legacy media fields",
+      __openclaw: { media: [{ path: "/media/legacy.png", contentType: "image/png" }] },
+    });
+    expect(admission.messageFingerprint).toMatch(/^[a-f0-9]{64}$/u);
+    // The minted fingerprint must equal one taken from the authoritative row, or every refresh
+    // after a rewrite silently degrades into full-history replay.
+    await expect(refreshCodexSessionTranscriptAdmission(admission)).resolves.toEqual(admission);
+  });
+
+  it("issues a rewrite receipt inside the write that the next queued rewrite cannot invalidate", async () => {
+    const scope = {
+      agentId: "main",
+      sessionId: "queued-rewrite-receipt-session",
+      sessionKey: "agent:main:queued-rewrite-receipt",
+      storePath,
+    };
+    await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+    const steered = await appendSessionTranscriptMessageByIdentity({
+      ...scope,
+      message: { role: "user", content: "steer target" },
+    });
+    const unrelated = await appendSessionTranscriptMessageByIdentity({
+      ...scope,
+      message: { role: "user", content: "unrelated request" },
+    });
+    if (!steered?.anchor || !unrelated?.anchor) {
+      throw new Error("expected transcript admission anchors");
+    }
+
+    // Both writes are queued in one tick: the FIFO writer commits the second rewrite — rotating the
+    // session generation — before the first caller's await resumes.
+    const confirming = rewriteTranscriptMessageAtAnchor(steered.anchor, () => ({
+      role: "user",
+      content: "steer target confirmed",
+    }));
+    const rotating = rewriteTranscriptMessageAtAnchor(unrelated.anchor, () => ({
+      role: "user",
+      content: "unrelated request rewritten",
+    }));
+    const [confirmed, rotated] = await Promise.all([confirming, rotating]);
+    if (!confirmed || !rotated) {
+      throw new Error("expected both rewrites to commit");
+    }
+    expect(
+      readActiveTranscriptEntryAnchor({ ...scope, entryId: unrelated.messageId })?.generation,
+    ).toBe(rotated.generation);
+
+    // The receipt describes the writer's own commit, not whatever the lane rotated to afterwards.
+    expect(confirmed.anchor.generation).toBe(confirmed.generation);
+    expect(confirmed.anchor.generation).not.toBe(rotated.generation);
+    const admission = {
+      ...confirmed.anchor,
+      logicalTurnId: "steer-turn",
+      role: "user" as const,
+    };
+    await expect(refreshCodexSessionTranscriptAdmission(admission)).resolves.toMatchObject({
+      entryId: admission.entryId,
+      generation: rotated.generation,
+      messageFingerprint: admission.messageFingerprint,
+    });
+  });
+
+  it("refreshes exact admission coverage across a benign transcript rewrite", async () => {
+    const scope = {
+      agentId: "main",
+      sessionId: "rewritten-admission-session",
+      sessionKey: "agent:main:rewritten-admission-session",
+      storePath,
+    };
+    await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+    const covered = await appendSessionTranscriptMessageByIdentity({
+      ...scope,
+      message: { role: "user", content: "covered request" },
+    });
+    const intervening = await appendSessionTranscriptMessageByIdentity({
+      ...scope,
+      message: { role: "assistant", content: "visible between admissions" },
+    });
+    const current = await appendSessionTranscriptMessageByIdentity({
+      ...scope,
+      message: { role: "user", content: "current request" },
+    });
+    if (!covered?.anchor || !intervening?.anchor || !current?.anchor) {
+      throw new Error("expected transcript admission anchors");
+    }
+    const coveredAdmission = {
+      ...covered.anchor,
+      logicalTurnId: "covered-turn",
+      role: "user" as const,
+    };
+    const currentAdmission = {
+      ...current.anchor,
+      logicalTurnId: "current-turn",
+      role: "user" as const,
+    };
+    await expect(
+      readCodexSessionTranscriptMessagesBetweenAdmissions(coveredAdmission, currentAdmission),
+    ).resolves.toMatchObject({
+      kind: "ok",
+      messages: [{ role: "assistant", content: "visible between admissions" }],
+    });
+
+    await rewriteTranscriptMessageAtAnchor(intervening.anchor, () => ({
+      role: "assistant",
+      content: "rewritten visible between admissions",
+    }));
+    const refreshedCovered = await refreshCodexSessionTranscriptAdmission(coveredAdmission);
+    const refreshedCurrent = await refreshCodexSessionTranscriptAdmission(currentAdmission);
+    expect(refreshedCovered?.generation).not.toBe(coveredAdmission.generation);
+    expect(refreshedCurrent?.generation).toBe(refreshedCovered?.generation);
+    expect(refreshedCovered?.messageFingerprint).toBe(coveredAdmission.messageFingerprint);
+    expect(refreshedCurrent?.messageFingerprint).toBe(currentAdmission.messageFingerprint);
+    if (!refreshedCovered || !refreshedCurrent) {
+      throw new Error("expected refreshed transcript admissions");
+    }
+    await expect(
+      readCodexSessionTranscriptMessagesBetweenAdmissions(coveredAdmission, refreshedCurrent),
+    ).resolves.toEqual({ kind: "stale" });
+    await expect(
+      readCodexSessionTranscriptMessagesBetweenAdmissions(refreshedCovered, refreshedCurrent),
+    ).resolves.toEqual({
+      kind: "ok",
+      messages: [{ role: "assistant", content: "rewritten visible between admissions" }],
+    });
+    await expect(
+      refreshCodexSessionTranscriptAdmission({
+        ...coveredAdmission,
+        messageFingerprint: undefined,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each(["covered", "current"] as const)(
+    "rejects refreshed coverage when a rewrite changes the %s endpoint payload",
+    async (rewrittenEndpoint) => {
+      const scope = {
+        agentId: "main",
+        sessionId: `rewritten-${rewrittenEndpoint}-endpoint-session`,
+        sessionKey: `agent:main:rewritten-${rewrittenEndpoint}-endpoint`,
+        storePath,
+      };
+      await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+      const covered = await appendSessionTranscriptMessageByIdentity({
+        ...scope,
+        message: { role: "user", content: "covered request" },
+      });
+      const current = await appendSessionTranscriptMessageByIdentity({
+        ...scope,
+        message: { role: "user", content: "current request" },
+      });
+      if (!covered?.anchor || !current?.anchor) {
+        throw new Error("expected transcript admission anchors");
+      }
+      const admissions = {
+        covered: {
+          ...covered.anchor,
+          logicalTurnId: "covered-turn",
+          role: "user" as const,
+        },
+        current: {
+          ...current.anchor,
+          logicalTurnId: "current-turn",
+          role: "user" as const,
+        },
+      };
+      // Both rewrites keep role "user" so only the payload fingerprint can reject the refresh;
+      // a role flip would drop the fingerprint entirely and mask a broken payload check.
+      await rewriteTranscriptMessageAtAnchor(admissions[rewrittenEndpoint], () => ({
+        role: "user",
+        content: `${rewrittenEndpoint} changed`,
+      }));
+
+      await expect(
+        refreshCodexSessionTranscriptAdmission(admissions[rewrittenEndpoint]),
+      ).resolves.toBeUndefined();
+      const unchangedEndpoint = rewrittenEndpoint === "covered" ? "current" : "covered";
+      await expect(
+        refreshCodexSessionTranscriptAdmission(admissions[unchangedEndpoint]),
+      ).resolves.toMatchObject({
+        entryId: admissions[unchangedEndpoint].entryId,
+        messageFingerprint: admissions[unchangedEndpoint].messageFingerprint,
+      });
+    },
+  );
+
+  it("returns an empty exact delta when a fallback reuses the same admission", async () => {
+    const scope = {
+      agentId: "main",
+      sessionId: "same-admission-fallback-session",
+      sessionKey: "agent:main:same-admission-fallback-session",
+      storePath,
+    };
+    await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+    const admitted = await appendSessionTranscriptMessageByIdentity({
+      ...scope,
+      message: { role: "user", content: "classify and retry this request" },
+    });
+    if (!admitted?.anchor) {
+      throw new Error("expected transcript admission anchor");
+    }
+    const admission = {
+      ...admitted.anchor,
+      logicalTurnId: "shared-fallback-turn",
+      role: "user" as const,
+    };
+
+    await expect(
+      readCodexSessionTranscriptMessagesBetweenAdmissions(admission, admission),
+    ).resolves.toEqual({ kind: "ok", messages: [] });
+    await expect(
+      readCodexSessionTranscriptMessagesBetweenAdmissions(admission, {
+        ...admission,
+        entryId: "different-entry-at-the-same-position",
+      }),
+    ).resolves.toEqual({ kind: "stale" });
   });
 });

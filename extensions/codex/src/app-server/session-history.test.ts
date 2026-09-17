@@ -11,6 +11,7 @@ import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { appendSessionTranscriptMessageByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readCodexNativeHistory } from "./session-history-read.js";
+import { readCodexHistoryAdmissionDeltaInWorker } from "../../session-history-worker-runtime.js";
 import { readCodexMirroredSessionHistoryMessages } from "./session-history.js";
 import {
   captureCodexSettledTurnFinalizationContext,
@@ -411,6 +412,80 @@ describe("readCodexMirroredSessionHistoryMessages", () => {
         acceptResult.resolve();
         spy.mockRestore();
         warn.mockRestore();
+      }
+    },
+  );
+
+  it.each(["abort", "stale"] as const)(
+    "rejects an admission delta after worker completion when its owner becomes %s",
+    async (change) => {
+      const { sessionTarget } = await writeSqliteSession();
+      const covered = await appendSessionTranscriptMessageByIdentity({
+        ...sessionTarget,
+        message: { role: "user", content: "covered admission", timestamp: 3 },
+      });
+      await appendSessionTranscriptMessageByIdentity({
+        ...sessionTarget,
+        message: { role: "assistant", content: "intervening answer", timestamp: 4 },
+      });
+      const current = await appendSessionTranscriptMessageByIdentity({
+        ...sessionTarget,
+        message: { role: "user", content: "current admission", timestamp: 5 },
+      });
+      if (!covered?.anchor || !current?.anchor) {
+        throw new Error("expected exact admission anchors");
+      }
+      const coveredAdmission = {
+        ...covered.anchor,
+        logicalTurnId: "covered-turn",
+        role: "user" as const,
+      };
+      const currentAdmission = {
+        ...current.anchor,
+        logicalTurnId: "current-turn",
+        role: "user" as const,
+      };
+      const readFinished = createDeferred<void>();
+      const acceptResult = createDeferred<void>();
+      const controller = new AbortController();
+      const spy = vi.spyOn(WorkerTaskPool.prototype, "run").mockImplementationOnce(async function (
+        this: WorkerTaskPool<unknown, unknown>,
+        ...args
+      ) {
+        spy.mockRestore();
+        const value = await this.run(...args);
+        readFinished.resolve();
+        await acceptResult.promise;
+        return value;
+      });
+      try {
+        const pending = readCodexHistoryAdmissionDeltaInWorker(
+          coveredAdmission,
+          currentAdmission,
+          controller.signal,
+        );
+        await readFinished.promise;
+        if (change === "abort") {
+          controller.abort();
+        } else {
+          expect(
+            SessionManager.open(sessionTarget).removeTrailingEntries(
+              (entry) =>
+                entry.type === "message" &&
+                entry.message.role === "user" &&
+                entry.message.content === "current admission",
+            ),
+          ).toBe(1);
+        }
+        acceptResult.resolve();
+        if (change === "abort") {
+          await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+        } else {
+          await expect(pending).resolves.toEqual({ kind: "stale" });
+        }
+      } finally {
+        acceptResult.resolve();
+        spy.mockRestore();
       }
     },
   );

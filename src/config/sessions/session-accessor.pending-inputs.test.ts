@@ -268,6 +268,44 @@ describe("accepted input custody", () => {
     },
   );
 
+  it("canonicalizes queued legacy media before minting a reusable admission", async () => {
+    const legacyMessage = {
+      ...message("legacy-media"),
+      MediaPath: "/media/legacy.png",
+      MediaType: "image/png",
+    } as PersistedUserTurnMessage;
+    const expectedMessage = {
+      ...message("legacy-media"),
+      __openclaw: {
+        media: [{ path: "/media/legacy.png", contentType: "image/png" }],
+      },
+    };
+    const receipt = await stage("legacy-media", { message: legacyMessage });
+    expect(receipt.message).toEqual(expectedMessage);
+
+    const promoted = await promote(receipt);
+    const activeAnchor = readActiveTranscriptEntryAnchor({
+      ...scope(),
+      entryId: receipt.inputId,
+    });
+    expect(promoted).toMatchObject({
+      appended: true,
+      message: expectedMessage,
+      messageId: receipt.inputId,
+    });
+    expect(promoted?.anchor).toEqual(activeAnchor);
+    expect(activeAnchor?.messageFingerprint).toMatch(/^[a-f0-9]{64}$/u);
+
+    const replay = await stage("legacy-media", { message: legacyMessage });
+    expect(replay.message).toEqual(expectedMessage);
+    await expect(promote(replay)).resolves.toMatchObject({
+      appended: false,
+      anchor: activeAnchor,
+      message: expectedMessage,
+      messageId: receipt.inputId,
+    });
+  });
+
   it("rolls transcript promotion and custody consumption back together", async () => {
     const receipt = await stage("atomic");
     const before = await loadTranscriptEvents(scope());

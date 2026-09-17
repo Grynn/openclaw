@@ -18,8 +18,11 @@ import {
   toDatabaseOptions,
   transcriptWriteScopeIsCurrent,
 } from "./session-accessor.sqlite-scope.js";
-import { readTranscriptGenerationInTransaction } from "./session-accessor.sqlite-transcript-state.js";
-import { rewriteSqliteTranscriptEventRowsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
+import { readActiveTranscriptEntryAnchorInTransaction } from "./session-accessor.sqlite-transcript-anchor.js";
+import {
+  canonicalizeTranscriptMessageForStorage,
+  rewriteSqliteTranscriptEventRowsInTransaction,
+} from "./session-accessor.sqlite-transcript-store.js";
 import type { SessionTranscriptAccessScope } from "./session-accessor.types.js";
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import type { SessionLifecycleRevisionExpectation } from "./session-transcript-turn-lifecycle.types.js";
@@ -31,6 +34,7 @@ import {
 } from "./transcript-write-context.js";
 
 type TranscriptMessageAnchorRewriteResult<TMessage> = {
+  anchor: TranscriptEntryAnchor;
   generation: string;
   message: TMessage;
 };
@@ -63,10 +67,11 @@ export async function rewriteTranscriptMessageAtAnchor<TMessage>(
           if (!isRecord(event) || event.type !== "message" || event.id !== anchor.entryId) {
             return;
           }
-          const message = rewriteMessage(event.message);
-          if (message === undefined) {
+          const rewritten = rewriteMessage(event.message);
+          if (rewritten === undefined) {
             return;
           }
+          const message = canonicalizeTranscriptMessageForStorage(rewritten);
           rewriteSqliteTranscriptEventRowsInTransaction(database, resolved, [
             {
               event: { ...event, message },
@@ -74,10 +79,21 @@ export async function rewriteTranscriptMessageAtAnchor<TMessage>(
               seq: anchor.rawSeq,
             },
           ]);
-          const generation = readTranscriptGenerationInTransaction(database, resolved.sessionId);
-          if (generation) {
-            result = { generation, message };
+          // Issue the receipt inside the write so the caller cannot observe a generation rotated by
+          // the next queued writer; a committed rewrite whose anchor cannot be minted must roll back
+          // rather than hand back a receipt that no longer matches the row.
+          const rewrittenAnchor = readActiveTranscriptEntryAnchorInTransaction({
+            database,
+            resolved,
+            entryId: anchor.entryId,
+            persistedMessage: message,
+          });
+          if (!rewrittenAnchor) {
+            throw new Error(
+              `Transcript row ${resolved.sessionId}:${anchor.rawSeq} lost its active anchor during exact rewrite`,
+            );
           }
+          result = { anchor: rewrittenAnchor, generation: rewrittenAnchor.generation, message };
         },
         toDatabaseOptions(resolved),
         { operationLabel: "session.transcript.message-rewrite" },

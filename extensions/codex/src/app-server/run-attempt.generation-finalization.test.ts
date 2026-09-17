@@ -67,7 +67,12 @@ describe("Codex finalization generation ownership", () => {
       const bindingStore = {
         ...baseStore,
         mutate: async (...args: Parameters<typeof baseStore.mutate>) => {
-          if (rejectCoverage && args[1].kind === "patch" && args[1].patch.historyCoveredThrough) {
+          if (
+            rejectCoverage &&
+            args[1].kind === "patch" &&
+            (args[1].patch.historyCoveredThrough !== undefined ||
+              "transcriptCoverage" in args[1].patch)
+          ) {
             throw new Error("simulated binding coverage write failure");
           }
           return await baseStore.mutate(...args);
@@ -176,7 +181,11 @@ describe("Codex finalization generation ownership", () => {
       ...testCodexAppServerBindingStore,
       mutate: vi.fn(async (...args: Parameters<typeof testCodexAppServerBindingStore.mutate>) => {
         const mutation = args[1];
-        if (mutation.kind === "patch" && mutation.patch.historyCoveredThrough) {
+        if (
+          mutation.kind === "patch" &&
+          (mutation.patch.historyCoveredThrough !== undefined ||
+            "transcriptCoverage" in mutation.patch)
+        ) {
           throw new Error("simulated binding coverage write failure");
         }
         return await testCodexAppServerBindingStore.mutate(...args);

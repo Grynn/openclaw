@@ -279,8 +279,17 @@ describe("host-owned current admission annotation", () => {
             const annotate = expectDefined(host.capabilities.annotateCurrentUserTurn, "annotation");
             await annotate(nativeAnnotation(content));
             const refreshed = expectDefined(recorder.getAdmissionReceipt(), "refreshed admission");
-            expect(refreshed).toEqual({ ...original, generation: expect.any(String) });
+            expect(refreshed).toEqual({
+              ...original,
+              generation: expect.any(String),
+              messageFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+            });
             expect(refreshed.generation).not.toBe(original.generation);
+            expect(refreshed.messageFingerprint).not.toBe(original.messageFingerprint);
+            const { logicalTurnId: _logicalTurnId, role: _role, ...refreshedAnchor } = refreshed;
+            expect(
+              readActiveTranscriptEntryAnchor({ ...f.target, entryId: refreshed.entryId }),
+            ).toEqual(refreshedAnchor);
             await expect(recorder.persistApproved()).resolves.toMatchObject({
               admission: refreshed,
               message: recorder.getPersistedMessage?.(),
@@ -410,8 +419,17 @@ describe("host-owned current admission annotation", () => {
         expect(projectionWork.counts).toEqual({ fts: 0, size: 0 });
         expect(searchRows()).toEqual(searchBefore);
         const refreshed = f.receipt();
-        expect(refreshed).toEqual({ ...original, generation: expect.any(String) });
+        expect(refreshed).toEqual({
+          ...original,
+          generation: expect.any(String),
+          messageFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        });
         expect(refreshed.generation).not.toBe(original.generation);
+        expect(refreshed.messageFingerprint).not.toBe(original.messageFingerprint);
+        const { logicalTurnId: _logicalTurnId, role: _role, ...refreshedAnchor } = refreshed;
+        expect(
+          readActiveTranscriptEntryAnchor({ ...f.target, entryId: refreshed.entryId }),
+        ).toEqual(refreshedAnchor);
         expect(
           await readSessionTranscriptVisibleMessageDelta({ ...f.target, cursor: page.cursor }),
         ).toMatchObject({ kind: "reset" });

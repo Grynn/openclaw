@@ -4,6 +4,7 @@ import {
   captureCodexSessionTranscriptReadAdmission,
   SessionTranscriptReadFenceError,
   validateCodexSessionTranscriptReadAdmission,
+  type CodexSessionTranscriptAdmissionDeltaResult,
   validateCodexSessionTranscriptContextVersion,
 } from "openclaw/plugin-sdk/codex-session-transcript-runtime";
 import {
@@ -93,6 +94,10 @@ async function readHistory(
         validateCodexSessionTranscriptContextVersion(resolved.target, result.version);
       }
     } catch (error) {
+      // Admission-delta reads carry no read-result envelope to reject into.
+      if (result.kind === "admission-delta") {
+        throw error;
+      }
       return {
         ...result,
         result: {
@@ -117,6 +122,40 @@ export async function readCodexHistoryMessagesInWorker(
   return result.kind === "messages" && result.result.status === "ok"
     ? result.result.value
     : undefined;
+}
+
+/** Reads one exact admission delta away from the Gateway event loop. */
+export async function readCodexHistoryAdmissionDeltaInWorker(
+  covered: TranscriptTurnAdmission,
+  current: TranscriptTurnAdmission,
+  signal?: AbortSignal,
+): Promise<CodexSessionTranscriptAdmissionDeltaResult> {
+  signal?.throwIfAborted();
+  const input: CodexHistoryWorkerInput = {
+    kind: "admission-delta",
+    covered: { ...covered },
+    current: { ...current },
+  };
+  const result = isIncognitoSessionKey(current.sessionKey)
+    ? await runCodexHistoryWorkerInput(input)
+    : await historyReads.run(input, { timeoutMs: 60_000, signal });
+  signal?.throwIfAborted();
+  if (result.kind !== "admission-delta") {
+    throw new Error("Codex history worker returned the wrong operation result");
+  }
+  if (result.delta.kind !== "ok") {
+    return result.delta;
+  }
+  try {
+    // The worker result is accepted only while both endpoint admissions still
+    // describe the exact live projection it read.
+    validateCodexSessionTranscriptReadAdmission(current, current);
+    validateCodexSessionTranscriptReadAdmission(covered, covered);
+  } catch {
+    signal?.throwIfAborted();
+    return { kind: "stale" };
+  }
+  return result.delta;
 }
 
 export async function projectCodexSettledHistoryInWorker(

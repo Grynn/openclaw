@@ -72,7 +72,7 @@ export function appendTranscriptMessageInTransaction<TMessage>(
       database,
       resolved,
       entryId: params.messageId,
-      message: params.message,
+      persistedMessage: params.message,
     });
   const existingAppendResult = (found: { message: unknown; messageId: string }) => {
     const anchor = readAnchor(found);
