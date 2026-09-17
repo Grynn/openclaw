@@ -38,6 +38,118 @@ function resolveCronPayloadModel(cfg: OpenClawConfig, raw: string) {
 }
 
 describe("resolveCronAgentConfig model policy preservation", () => {
+  it("keeps default model runtime policies beside per-agent model entries", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          models: {
+            "anthropic/claude-sonnet-5": { agentRuntime: { id: "claude-cli" } },
+          },
+        },
+        entries: {
+          main: {
+            models: {
+              "claude-cli/claude-opus-5": {},
+            },
+          },
+        },
+      },
+    };
+
+    const cronCfg = buildCronConfig(cfg, "main");
+
+    expect(cronCfg.agents?.defaults?.models).toEqual({
+      "anthropic/claude-sonnet-5": { agentRuntime: { id: "claude-cli" } },
+      "claude-cli/claude-opus-5": {},
+    });
+    expect(
+      resolveModelRuntimePolicy({
+        config: cronCfg,
+        provider: "anthropic",
+        modelId: "claude-sonnet-5",
+        agentId: "main",
+      }).policy,
+    ).toEqual({ id: "claude-cli" });
+  });
+
+  it("inherits default fields when a per-agent entry sparsely overrides the same model", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          models: {
+            "anthropic/claude-sonnet-5": {
+              alias: "Sonnet",
+              streaming: true,
+              agentRuntime: { id: "claude-cli" },
+            },
+          },
+        },
+        entries: {
+          main: {
+            models: {
+              "anthropic/claude-sonnet-5": { alias: "Main Sonnet" },
+            },
+          },
+        },
+      },
+    };
+
+    const cronCfg = buildCronConfig(cfg, "main");
+
+    expect(cronCfg.agents?.defaults?.models?.["anthropic/claude-sonnet-5"]).toEqual({
+      alias: "Main Sonnet",
+      streaming: true,
+      agentRuntime: { id: "claude-cli" },
+    });
+    expect(
+      resolveModelRuntimePolicy({
+        config: cronCfg,
+        provider: "anthropic",
+        modelId: "claude-sonnet-5",
+        agentId: "main",
+      }).policy,
+    ).toEqual({ id: "claude-cli" });
+  });
+
+  it("honors an explicit per-agent runtime override for the same model", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          models: {
+            "anthropic/claude-sonnet-5": {
+              alias: "Sonnet",
+              streaming: true,
+              agentRuntime: { id: "claude-cli" },
+            },
+          },
+        },
+        entries: {
+          main: {
+            models: {
+              "anthropic/claude-sonnet-5": { agentRuntime: { id: "openclaw" } },
+            },
+          },
+        },
+      },
+    };
+
+    const cronCfg = buildCronConfig(cfg, "main");
+
+    expect(cronCfg.agents?.defaults?.models?.["anthropic/claude-sonnet-5"]).toEqual({
+      alias: "Sonnet",
+      streaming: true,
+      agentRuntime: { id: "openclaw" },
+    });
+    expect(
+      resolveModelRuntimePolicy({
+        config: cronCfg,
+        provider: "anthropic",
+        modelId: "claude-sonnet-5",
+        agentId: "main",
+      }).policy,
+    ).toEqual({ id: "openclaw" });
+  });
+
   it("keeps an agent utility alias out of the implicit cron primary without flattening its model map", async () => {
     const cfg: OpenClawConfig = {
       meta: { migrations: { utilityModelSeparation: true } },

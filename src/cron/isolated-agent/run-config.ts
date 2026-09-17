@@ -25,6 +25,7 @@ export function resolveCronActiveRuntimeConfig(cfg: OpenClawConfig): OpenClawCon
 function extractCronAgentDefaultsOverride(agentConfigOverride?: ResolvedAgentConfig) {
   const {
     model: overrideModel,
+    models: overrideModels,
     sandbox: _agentSandboxOverride,
     memory: _agentMemoryOverride,
     models: _agentModelsOverride,
@@ -33,6 +34,7 @@ function extractCronAgentDefaultsOverride(agentConfigOverride?: ResolvedAgentCon
   } = agentConfigOverride ?? {};
   return {
     overrideModel,
+    overrideModels,
     definedOverrides: Object.fromEntries(
       Object.entries(agentOverrideRest).filter(([, value]) => value !== undefined),
     ) as Partial<AgentDefaultsConfig>,
@@ -42,8 +44,16 @@ function extractCronAgentDefaultsOverride(agentConfigOverride?: ResolvedAgentCon
 function mergeCronAgentModelOverride(params: {
   defaults: AgentDefaultsConfig;
   overrideModel: ResolvedAgentConfig["model"] | undefined;
+  overrideModels: ResolvedAgentConfig["models"] | undefined;
 }) {
   const nextDefaults: AgentDefaultsConfig = { ...params.defaults };
+  if (params.overrideModels) {
+    const mergedModels = { ...nextDefaults.models };
+    for (const [modelKey, overrideEntry] of Object.entries(params.overrideModels)) {
+      mergedModels[modelKey] = { ...mergedModels[modelKey], ...overrideEntry };
+    }
+    nextDefaults.models = mergedModels;
+  }
   const existingModel =
     nextDefaults.model && typeof nextDefaults.model === "object" ? nextDefaults.model : {};
   if (typeof params.overrideModel === "string") {
@@ -59,8 +69,8 @@ export function resolveCronAgentConfigFromSnapshot(params: {
   config: OpenClawConfig;
   agentConfigOverride?: ResolvedAgentConfig;
 }) {
-  const runtimeConfig = params.config;
-  const { overrideModel, definedOverrides } = extractCronAgentDefaultsOverride(
+  const runtimeConfig = resolveCronActiveRuntimeConfig(params.config);
+  const { overrideModel, overrideModels, definedOverrides } = extractCronAgentDefaultsOverride(
     params.agentConfigOverride,
   );
   // Agent-aware resolvers merge these scopes themselves. Flattening partial maps
@@ -68,6 +78,7 @@ export function resolveCronAgentConfigFromSnapshot(params: {
   const agentDefaults = mergeCronAgentModelOverride({
     defaults: Object.assign({}, runtimeConfig.agents?.defaults, definedOverrides),
     overrideModel,
+    overrideModels,
   });
   return {
     runtimeConfig,
