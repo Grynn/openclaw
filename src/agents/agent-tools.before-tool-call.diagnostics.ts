@@ -41,6 +41,7 @@ import {
   resolveSkillTelemetrySource,
   resolveSkillTelemetrySourceValue,
 } from "../skills/loading/source.js";
+import { resolveAuthorizedModelSkills } from "../skills/runtime/model-skill-catalog.js";
 import type { SkillSnapshot, SkillTelemetrySource } from "../skills/types.js";
 import { isPlainObject, truncateUtf16Safe } from "../utils.js";
 import { buildAdjustedParamsKey } from "./agent-tools.before-tool-call.state.js";
@@ -386,6 +387,33 @@ function findSkillInstructionMatch(
   return skill ? resolvedSkillUsageMatch({ activation: "read", skill }) : undefined;
 }
 
+function catalogSkillUsageMatch(params: {
+  toolParams: unknown;
+  snapshot?: SkillSnapshot;
+}): SkillUsageMatch | undefined {
+  if (!isPlainObject(params.toolParams)) {
+    return undefined;
+  }
+  const action = params.toolParams.action;
+  const skillName = params.toolParams.name;
+  if (
+    (action !== "read" && action !== "read_resource") ||
+    typeof skillName !== "string" ||
+    !skillName.trim()
+  ) {
+    return undefined;
+  }
+  if (!resolveAuthorizedModelSkills(params.snapshot).some((skill) => skill.name === skillName)) {
+    return undefined;
+  }
+  const candidates = (params.snapshot?.resolvedSkills ?? []).filter(
+    (skill) => skill.name === skillName,
+  );
+  return candidates.length === 1
+    ? resolvedSkillUsageMatch({ activation: "read", skill: candidates[0]! })
+    : undefined;
+}
+
 export function findSkillUsageMatch(params: {
   toolName: string;
   toolParams: unknown;
@@ -410,6 +438,13 @@ export function findSkillUsageMatch(params: {
         ...(skillFile ? { skillFile } : {}),
       };
     }
+  }
+
+  if (params.toolName === "skill_catalog") {
+    return catalogSkillUsageMatch({
+      toolParams: params.toolParams,
+      snapshot: params.ctx?.skillsSnapshot,
+    });
   }
 
   if (params.toolName !== "read") {

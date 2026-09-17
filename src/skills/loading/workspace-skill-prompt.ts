@@ -3,11 +3,16 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { resolveEffectiveAgentSkillsLimits } from "../discovery/agent-filter.js";
 import { filterPromptVisibleSkillEntries } from "../discovery/skill-index.js";
-import type { SkillEligibilityContext, SkillEntry, SkillSnapshot } from "../types.js";
+import type {
+  ResolvedSkill,
+  SkillEligibilityContext,
+  SkillEntry,
+  SkillSnapshot,
+} from "../types.js";
 import { WORKSPACE_SKILLS_PROMPT_FORMAT_VERSION } from "../types.js";
 import { hasUnavailableSkillSecretOwners, isSkillSecretOwnerUnavailable } from "./config.js";
 import { resolveSkillKey } from "./frontmatter.js";
-import { compactSkillsPromptForContext, escapeSkillXml, type Skill } from "./skill-contract.js";
+import { compactSkillsPromptForContext, escapeSkillXml } from "./skill-contract.js";
 import { compactPromptSkills } from "./skill-paths.js";
 import { prepareSkillsForPrompt } from "./skill-prompt-limits.js";
 import { resolveWorkspaceSkillPromptEntries } from "./workspace-skill-loader.js";
@@ -36,13 +41,17 @@ async function resolveWorkspaceSkillPromptState(
 ): Promise<{
   eligible: SkillEntry[];
   prompt: string;
-  resolvedSkills: Skill[];
+  promptEntries: SkillEntry[];
+  resolvedSkills: ResolvedSkill[];
   skillFilter?: string[];
 }> {
   const { eligible, skillFilter } = await resolveWorkspaceSkillPromptEntries(workspaceDir, opts);
   const promptEntries = filterPromptVisibleSkillEntries(eligible);
   const remoteNote = opts?.eligibility?.remote?.note?.trim();
-  const resolvedSkills = promptEntries.map((entry) => entry.skill);
+  const resolvedSkills = promptEntries.map((entry) => ({
+    ...entry.skill,
+    skillKey: resolveSkillKey(entry.skill, entry),
+  }));
   const limits = opts?.config?.skills?.limits;
   const agentLimits = resolveEffectiveAgentSkillsLimits(opts?.config, opts?.agentId);
   const prepared = prepareSkillsForPrompt({
@@ -59,6 +68,7 @@ async function resolveWorkspaceSkillPromptState(
   return {
     eligible,
     prompt: prepared.prompt,
+    promptEntries,
     resolvedSkills: prepared.skills.map((skill) => byName.get(skill.name)!),
     skillFilter,
   };
@@ -68,10 +78,8 @@ export async function buildSkillSnapshot(
   workspaceDir: string,
   opts?: WorkspaceSkillBuildOptions & { snapshotVersion?: number },
 ): Promise<SkillSnapshot> {
-  const { eligible, prompt, resolvedSkills, skillFilter } = await resolveWorkspaceSkillPromptState(
-    workspaceDir,
-    opts,
-  );
+  const { eligible, prompt, promptEntries, resolvedSkills, skillFilter } =
+    await resolveWorkspaceSkillPromptState(workspaceDir, opts);
   return {
     prompt,
     skills: eligible.map((entry) => ({
@@ -79,6 +87,10 @@ export async function buildSkillSnapshot(
       skillKey: resolveSkillKey(entry.skill, entry),
       primaryEnv: entry.metadata?.primaryEnv,
       requiredEnv: entry.metadata?.requires?.env?.slice(),
+    })),
+    modelInvocableSkills: promptEntries.map((entry) => ({
+      name: entry.skill.name,
+      skillKey: resolveSkillKey(entry.skill, entry),
     })),
     ...(skillFilter === undefined ? {} : { skillFilter }),
     ...(opts?.skillOverrides ? { skillOverrides: opts.skillOverrides } : {}),

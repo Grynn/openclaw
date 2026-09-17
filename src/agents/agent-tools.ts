@@ -133,6 +133,7 @@ import {
 import type { CronToolOptions } from "./tools/cron-tool.types.js";
 import { wrapToolWithGatewayCallerIdentity } from "./tools/gateway-caller-context.js";
 import type { QuestionPromptDelivery } from "./tools/question-prompt-send.js";
+import { createSkillCatalogTool } from "./tools/skill-catalog-tool.js";
 
 const MEMORY_FLUSH_ALLOWED_TOOL_NAMES = new Set(["read", "write"]);
 
@@ -367,6 +368,8 @@ type OpenClawCodingToolsOptions = {
   allocateToolOutcomeOrdinal?: (toolCallId?: string) => number;
   /** Runtime-only resolved skill paths that the read tool may load under workspaceOnly. */
   skillsSnapshot?: SkillSnapshot;
+  /** Opt in to bounded lazy skill discovery for providers with a deferred tool surface. */
+  enableSkillCatalogTool?: boolean;
   /** Original identities for sandbox-materialized skill instruction paths. */
   skillUsagePaths?: SkillUsagePath[];
   /** Prepared conversation-scoped facts for callers that already resolved this run context. */
@@ -825,6 +828,10 @@ export function createOpenClawCodingToolsInternal(
     }),
     isAvailable: (): boolean => authorizedTools.some((tool) => tool.name === "message"),
   });
+  const skillCatalogTool =
+    includeOpenClawTools && options?.enableSkillCatalogTool === true && !sandbox
+      ? createSkillCatalogTool({ skillsSnapshot: options.skillsSnapshot })
+      : null;
   const tools: AnyAgentTool[] = [
     ...scheduledCoreTools,
     // Include channel-defined agent tools (login, etc.).
@@ -955,7 +962,9 @@ export function createOpenClawCodingToolsInternal(
             processScopeKey: scopeKey,
             allowGatewaySubagentBinding: options?.allowGatewaySubagentBinding,
             recordToolPrepStage: options?.recordToolPrepStage,
-          }),
+          })
+            .filter((tool) => !skillCatalogTool || tool.name !== skillCatalogTool.name)
+            .concat(skillCatalogTool ? [skillCatalogTool] : []),
         )
       : pluginToolsOnly),
     ...toolSearchTools,

@@ -127,6 +127,19 @@ export type SkillEligibilityContext = {
 
 export const WORKSPACE_SKILLS_PROMPT_FORMAT_VERSION = 5;
 
+/** Persisted authority for one skill that may be discovered and invoked by the model. */
+export type ModelInvocableSkillIdentity = {
+  name: string;
+  /** Config identity can differ from the prompt-facing skill name. */
+  skillKey: string;
+};
+
+/** Runtime-resolved skill paired with the config identity selected by current source precedence. */
+export type ResolvedSkill = Skill & {
+  /** Undefined marks an older runtime snapshot and cannot authorize lazy model invocation. */
+  skillKey?: string;
+};
+
 export type SkillSnapshot = {
   librarySelections?: import("../../packages/gateway-protocol/src/schema/skill-library.js").SkillLibrarySelection[];
   prompt: string;
@@ -138,13 +151,18 @@ export type SkillSnapshot = {
     primaryEnv?: string;
     requiredEnv?: string[];
   }>;
+  /**
+   * Complete prompt-visible authority captured before prompt-size truncation.
+   * Undefined marks a legacy snapshot and must fail closed for lazy catalog access.
+   */
+  modelInvocableSkills?: ModelInvocableSkillIdentity[];
   /** Normalized agent-level filter used to build this snapshot; undefined means unrestricted. */
   skillFilter?: string[];
   /** Sparse per-session overlay applied after the agent-level filter. */
   skillOverrides?: Record<string, boolean>;
   /** Effective node-exec eligibility used to select connected node-hosted skills. */
   nodeSkillsEligibility?: SkillEligibilityContext["nodeSkills"];
-  resolvedSkills?: Skill[];
+  resolvedSkills?: ResolvedSkill[];
   /** Present only when a session merges skills from distinct agent and execution roots. */
   skillRoots?: {
     agentWorkspaceDir: string;
