@@ -121,6 +121,12 @@ intended target and the known-good rollback ref before starting the update.
 Updating target files alone does not repair an older running binary.
 </Warning>
 
+On the default lifecycle the script stops the gateway immediately before the
+clean build, so a live process cannot dynamically import hashed `dist` chunks
+that the build has already replaced. If the update fails after that stop, the
+gateway is restarted so the host keeps a reachable service. Build output cleanup
+itself stays with the build, which owns it under a checkout-local artifact lock.
+
 Generated output roots such as `dist`, `dist-runtime`, and package-local
 `dist` directories must be real directories. Builds refuse symbolic-link roots
 before reading or mutating their contents so cleanup cannot affect the link
@@ -136,6 +142,16 @@ Override the restart for custom service units, or skip it entirely:
 ```bash
 OPENCLAW_UPDATE_RESTART_CMD='systemctl --user restart openclaw-gateway.service' scripts/update-gateway.sh
 OPENCLAW_UPDATE_RESTART_CMD='' scripts/update-gateway.sh
+```
+
+Supplying your own restart means you own the service lifecycle, so the updater
+will not guess a stop command for it. Pair it with `OPENCLAW_UPDATE_STOP_CMD` to
+keep the pre-build stop:
+
+```bash
+OPENCLAW_UPDATE_STOP_CMD='systemctl --user stop openclaw-gateway.service' \
+OPENCLAW_UPDATE_RESTART_CMD='systemctl --user restart openclaw-gateway.service' \
+  scripts/update-gateway.sh
 ```
 
 For a plain single-user source install, prefer `openclaw update --channel dev`

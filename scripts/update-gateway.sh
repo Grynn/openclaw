@@ -16,15 +16,46 @@ fi
 # Environment:
 #   OPENCLAW_UPDATE_RESTART_CMD  restart command (default: openclaw gateway restart)
 #                                set to "" to skip the restart step
+#   OPENCLAW_UPDATE_STOP_CMD     stop command run before replacing live build output
+#                                (default: openclaw gateway stop, only when the
+#                                restart command is also left at its default)
 #   OPENCLAW_UPDATE_REMOTE       git remote to update from (default: origin)
 set -euo pipefail
 
 pnpm_dir=""
 log() { echo "[update-gateway] $*"; }
+
+trim_command() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+restart_cmd="$(trim_command "${OPENCLAW_UPDATE_RESTART_CMD-openclaw gateway restart}")"
+# Only the default lifecycle gets a guessed stop command. An operator who supplied
+# their own restart owns their lifecycle, so stopping is opt-in via the stop var;
+# and an empty restart is the documented opt-out, which must not strand the
+# gateway down. Both cases leave stop_cmd empty and skip the stop entirely.
+if [[ -v OPENCLAW_UPDATE_STOP_CMD ]]; then
+  stop_cmd="$(trim_command "$OPENCLAW_UPDATE_STOP_CMD")"
+elif [ -n "$restart_cmd" ] && [ ! -v OPENCLAW_UPDATE_RESTART_CMD ]; then
+  stop_cmd="openclaw gateway stop"
+else
+  stop_cmd=""
+fi
+
+gateway_stopped=0
 on_exit() {
   local code=$?
   if [ -n "$pnpm_dir" ]; then rm -rf "$pnpm_dir"; fi
   if [ "$code" -ne 0 ]; then
+    # A failed update must not leave the gateway down; bring it back even though
+    # its build output may be partial, so the operator keeps a reachable service.
+    if [ "$gateway_stopped" -eq 1 ]; then
+      log "restarting gateway after update failure"
+      bash -c "$restart_cmd" || true
+    fi
     echo "[update-gateway] FAILED (exit $code)" >&2
   fi
 }
@@ -130,7 +161,10 @@ log "installing dependencies"
 run_pnpm install --frozen-lockfile
 
 # Incremental builds have left stale hashed chunks and config validators from
-# the previous revision in dist; a clean build is the reliable path.
+# the previous revision in dist; a clean build is the reliable path. A running
+# gateway dynamically imports hashed chunks, so stop it before moving or
+# rebuilding dist. Keep the old output until the new build succeeds so a failed
+# compile can restore service instead of leaving the gateway unbootable.
 log "clean building"
 # These deletes must stay inside the checkout: a symlinked build dir would
 # redirect the recursion into its target, so refuse symlinks outright.
@@ -140,15 +174,23 @@ for build_path in dist dist-runtime .artifacts; do
     exit 1
   fi
 done
+# A live gateway lazily imports hashed chunks, so it cannot survive having them
+# replaced underneath it. Stop it before the build rather than after.
+if [ -n "$stop_cmd" ]; then
+  log "stopping gateway before replacing hashed build chunks: $stop_cmd"
+  bash -c "$stop_cmd"
+  gateway_stopped=1
+fi
+
 # The build owns cleanup under its checkout-local artifact lock. Deleting here
 # would race declaration writers and readers before that ownership is acquired.
 # Match CLI updates: build runtime artifacts unless declarations were explicitly requested.
 OPENCLAW_UPDATE_IN_PROGRESS=1 run_pnpm build
 
-restart_cmd="${OPENCLAW_UPDATE_RESTART_CMD-openclaw gateway restart}"
 if [ -n "$restart_cmd" ]; then
   log "restarting gateway: $restart_cmd"
   bash -c "$restart_cmd"
+  gateway_stopped=0
 else
   log "restart skipped (OPENCLAW_UPDATE_RESTART_CMD is empty)"
 fi
