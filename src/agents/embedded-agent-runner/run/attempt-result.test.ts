@@ -83,7 +83,7 @@ function createResultFixture(params?: {
     getAssistantTurnCount: () => 0,
     getCompactionCount: () => 0,
     getHeartbeatToolResponse: () => params?.heartbeatToolResponse,
-    getItemLifecycle: () => undefined,
+    getItemLifecycle: () => ({ startedCount: 0, completedCount: 0, activeCount: 0 }),
     getLastAssistantTextMessageIndex: () => undefined,
     getLastCompactionTokensAfter: () => undefined,
     getLastToolError: () => undefined,

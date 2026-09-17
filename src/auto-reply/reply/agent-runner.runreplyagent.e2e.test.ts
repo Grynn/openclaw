@@ -45,7 +45,7 @@ import {
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import type { TemplateContext } from "../templating.js";
-import { createReplyAgentRestartRecoveryController } from "./agent-runner-execute.js";
+import { createReplyAgentRestartRecoveryController } from "./agent-restart-recovery-controller.js";
 import { resolveActiveExplicitSteerSessionKey } from "./explicit-steer-routing.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import {

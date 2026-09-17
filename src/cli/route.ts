@@ -93,6 +93,5 @@ export async function tryRouteCli(
     commandPath: invocation.commandPath,
     startupPolicy,
   });
-  await run();
-  return true;
+  return (await run()) !== false;
 }

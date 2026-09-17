@@ -19,6 +19,7 @@ export function card(overrides: Partial<ModelProviderCard> = {}): ModelProviderC
     hasConfigApiKey: false,
     modelCount: 1,
     availableModelCount: 1,
+    availableAgentRuntimeIds: [],
     apiKey: { source: "env", envVar: "OPENAI_API_KEY" },
     ...overrides,
   };
