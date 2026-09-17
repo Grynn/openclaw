@@ -170,6 +170,9 @@ const mocks = vi.hoisted(() => ({
   noteWorkspaceStatus: vi.fn(),
   collectWorkspaceStatusHealthFindings: vi.fn().mockResolvedValue([]),
   collectWorkspaceBackupTip: vi.fn<(workspaceDir: string) => string | undefined>(() => undefined),
+  detectStateIntegrityHealthIssues: vi.fn(() => [] as unknown[]),
+  stateIntegrityIssueToHealthFinding: vi.fn((issue: unknown) => issue),
+  stateIntegrityIssueToRepairEffect: vi.fn((issue: unknown) => issue),
   shouldSuggestMemorySystem: vi.fn<(workspaceDir: string) => Promise<boolean>>(async () => false),
   collectDiskSpaceHealthFindings: vi.fn((): readonly HealthFinding[] => []),
   collectHeartbeatCadenceMigrationFindings: vi.fn(async () => [] as unknown[]),
@@ -553,7 +556,10 @@ vi.mock("../commands/doctor-workspace-status.js", () => ({
 
 vi.mock("../commands/doctor-state-integrity.js", () => ({
   collectWorkspaceBackupTip: mocks.collectWorkspaceBackupTip,
+  detectStateIntegrityHealthIssues: mocks.detectStateIntegrityHealthIssues,
   noteWorkspaceBackupTip: vi.fn(),
+  stateIntegrityIssueToHealthFinding: mocks.stateIntegrityIssueToHealthFinding,
+  stateIntegrityIssueToRepairEffect: mocks.stateIntegrityIssueToRepairEffect,
 }));
 
 vi.mock("../commands/doctor-workspace.js", () => ({
@@ -870,6 +876,9 @@ describe("doctor health contributions", () => {
       .mockReturnValue({ isLoaded: mocks.gatewayServiceIsLoaded });
     mocks.gatewayServiceIsLoaded.mockReset().mockResolvedValue(true);
     mocks.collectWorkspaceStatusHealthFindings.mockReset().mockResolvedValue([]);
+    mocks.detectStateIntegrityHealthIssues.mockReset().mockReturnValue([]);
+    mocks.stateIntegrityIssueToHealthFinding.mockClear();
+    mocks.stateIntegrityIssueToRepairEffect.mockClear();
     mocks.collectDiskSpaceHealthFindings.mockReset().mockReturnValue([]);
     mocks.collectHeartbeatCadenceMigrationFindings.mockReset().mockResolvedValue([]);
     mocks.maybeMigrateHeartbeatCadenceToCron
@@ -3166,6 +3175,22 @@ describe("doctor health contributions", () => {
       checksSkipped: 0,
     });
     expect(detect).toHaveBeenCalledTimes(2);
+  });
+
+  it("checks state integrity against the lint context environment", async () => {
+    const contributionChecks = await resolveDoctorContributionHealthChecks();
+    const stateIntegrityCheck = contributionChecks.find(
+      (check) => check.id === "core/doctor/state-integrity",
+    );
+    expect(stateIntegrityCheck).toBeDefined();
+
+    const env = { OPENCLAW_STATE_DIR: "/source-state" };
+    await stateIntegrityCheck!.detect(createDoctorLintFixture({}, { env }));
+
+    expect(mocks.detectStateIntegrityHealthIssues).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ env }),
+    );
   });
 
   it("collects memory-search notes as structured findings", async () => {

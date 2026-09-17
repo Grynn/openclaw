@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { withSuppressedNotes } from "../../packages/terminal-core/src/note.js";
 import { resolveAgentWorkspaceDir, tryResolveDefaultAgentId } from "../agents/agent-scope.js";
 import { createConfigIO, readConfigFileSnapshot } from "../config/config.js";
 import { maybeLoadDotEnvForConfig } from "../config/io.read-helpers.js";
@@ -105,9 +106,12 @@ export async function runDoctorLintCli(
   runtime: RuntimeEnv,
   opts: DoctorLintCliOptions,
 ): Promise<number> {
-  const execution = await withArtifactPreservingStateReads(() =>
-    prepareDoctorLintExecution(runtime, opts),
-  );
+  // JSON output is machine-read: terminal notes emitted while preparing the run would
+  // corrupt it. Interactive mode keeps them.
+  const prepare = () =>
+    withArtifactPreservingStateReads(() => prepareDoctorLintExecution(runtime, opts));
+  const execution =
+    detectMode(opts) === "json" ? await withSuppressedNotes(prepare) : await prepare();
   execution.writeOutput();
   return execution.exitCode;
 }
