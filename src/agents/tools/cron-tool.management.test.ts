@@ -206,7 +206,15 @@ describe("Control UI admin automation management tool", () => {
         "run",
         "remove",
       ]);
-      for (const key of ["in", "text", "mode", "contextMessages", "sessionKey"]) {
+      for (const key of [
+        "in",
+        "text",
+        "mode",
+        "waitForCompletion",
+        "completionTimeoutMs",
+        "contextMessages",
+        "sessionKey",
+      ]) {
         expect(tool.parameters).not.toHaveProperty(`properties.${key}`);
       }
       expect(tool.parameters).not.toHaveProperty("properties.job.properties.declarationKey");
@@ -226,4 +234,17 @@ describe("Control UI admin automation management tool", () => {
       });
     },
   );
+
+  it("rejects completion waiting before an administrator run is queued", async () => {
+    await withAdminTool("unknown", async ({ tool, calls }) => {
+      await expect(
+        tool.execute("run-wait", {
+          action: "run",
+          jobId: "telegram-created-job",
+          waitForCompletion: true,
+        }),
+      ).rejects.toThrow("Completion waiting is unavailable");
+      expect(calls).toEqual([]);
+    });
+  });
 });

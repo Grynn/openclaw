@@ -15,6 +15,7 @@ import { gatewayCallOptionSchemaProperties } from "./gateway-schema.js";
 
 export const REMINDER_CONTEXT_MESSAGES_MAX = 10;
 export const CRON_TOOL_LIST_MAX_LIMIT = 200;
+export const CRON_TOOL_COMPLETION_TIMEOUT_MAX_MS = 600_000;
 
 // Spell out job properties for the model-facing schema; runtime validation
 // still happens in normalizeCronJob* to avoid nested union schemas. One object
@@ -25,6 +26,7 @@ const CRON_ACTIONS = [
   "status",
   "list",
   "get",
+  "inspect",
   "add",
   "update",
   "remove",
@@ -330,7 +332,8 @@ export function createCronToolSchema(options?: CronToolSchemaOptions): TSchema {
         name: Type.Optional(Type.String({ description: "Job name" })),
         declarationKey: Type.Optional(
           Type.String({
-            description: "Idempotent declaration key (add only).",
+            description:
+              'Atomic upsert key for action="add": creates once, then no-ops or updates that declaration in place. The result reports created/updated/id/job.',
             minLength: 1,
             maxLength: 200,
           }),
@@ -379,7 +382,7 @@ export function createCronToolSchema(options?: CronToolSchemaOptions): TSchema {
         additionalProperties: true,
         description: managementOnly
           ? "Partial update: only supplied fields change; null clears."
-          : 'Job fields. action="add": full job. action="update": partial patch — only supplied fields change; null clears.',
+          : 'Job fields. action="add": full job; declarationKey makes add an atomic upsert. action="update": partial patch — only supplied fields change; null clears.',
       },
     ),
   );
@@ -413,6 +416,17 @@ export function createCronToolSchema(options?: CronToolSchemaOptions): TSchema {
         description:
           'Run mode for action="run": omitted defaults to "due"; use "force" to trigger now.',
       }),
+      waitForCompletion: Type.Optional(
+        Type.Boolean({
+          description:
+            'For action="run", wait in this tool call for the exact queued run to finish. Default false.',
+        }),
+      ),
+      completionTimeoutMs: optionalPositiveIntegerSchema({
+        maximum: CRON_TOOL_COMPLETION_TIMEOUT_MAX_MS,
+        description:
+          "End-to-end admission and completion wait when waitForCompletion=true; default and maximum 600000 ms. A timeout does not cancel an admitted run.",
+      }),
       contextMessages: Type.Optional(
         Type.Integer({ minimum: 0, maximum: REMINDER_CONTEXT_MESSAGES_MAX }),
       ),
@@ -433,6 +447,14 @@ export function createCronToolSchema(options?: CronToolSchemaOptions): TSchema {
     { additionalProperties: true },
   );
   return managementOnly
-    ? Type.Omit(schema, ["in", "text", "mode", "contextMessages", "sessionKey"])
+    ? Type.Omit(schema, [
+        "in",
+        "text",
+        "mode",
+        "waitForCompletion",
+        "completionTimeoutMs",
+        "contextMessages",
+        "sessionKey",
+      ])
     : schema;
 }

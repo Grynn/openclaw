@@ -47,6 +47,7 @@ import {
   resolveCronCreatorExecToolTarget,
 } from "./cron-tool-creator-cap.js";
 import { CronToolOutputSchema } from "./cron-tool-output-schema.js";
+import { runCronJobFromAgentTool } from "./cron-tool-run.js";
 import {
   assertCronPacingInput,
   createCronToolSchema,
@@ -93,7 +94,6 @@ function requireCronJobIdParam(params: Record<string, unknown>): string {
 }
 
 const CRON_SELF_REMOVE_SCOPE_ERROR = "Automations tool is restricted to the current automation.";
-
 function readCronSelfRemoveOnlyJobId(opts: CronToolOptions | undefined) {
   return opts?.selfRemoveOnlyJobId?.trim() || undefined;
 }
@@ -111,9 +111,15 @@ function assertCronSelfRemoveScope(
   if (!selfRemoveOnlyJobId || isCronSelfIntrospectionAction(action)) {
     return;
   }
-  if (["next_check", "get", "remove", "runs"].includes(action)) {
+  if (action === "next_check") {
     const id = readCronJobIdParam(params);
-    if (id === selfRemoveOnlyJobId || (action === "next_check" && !id)) {
+    if (!id || id === selfRemoveOnlyJobId) {
+      return;
+    }
+  }
+  if (action === "get" || action === "inspect" || action === "remove" || action === "runs") {
+    const id = readCronJobIdParam(params);
+    if (id && id === selfRemoveOnlyJobId) {
       return;
     }
   }
@@ -151,6 +157,15 @@ function formatCronTerminalPresentation(
     }
     case "get":
       return { text: "Automation loaded." };
+    case "inspect": {
+      const entries =
+        isRecord(result.details.runs) && Array.isArray(result.details.runs.entries)
+          ? result.details.runs.entries.length
+          : undefined;
+      return entries === undefined
+        ? { text: "Automation and run history loaded." }
+        : { text: `Automation and run history loaded.\nRuns: ${entries}` };
+    }
     case "runs": {
       const entries = Array.isArray(result.details.entries)
         ? result.details.entries.length
@@ -189,11 +204,13 @@ function buildCronToolDescription(params: { triggersEnabled: boolean }): string 
   const silentWatcherCue = params.triggersEnabled ? ' Silent watcher=>mode:"none".' : "";
   return `Gateway scheduler: reminders, delayed self-wakeups, loops, recurring work${params.triggersEnabled ? ", event watchers" : ""}. Never exec sleep/poll as timer.
 
-ACTIONS: status | list [includeDisabled,limit?,offset?] (compact summaries with timing; use nextOffset for the next page) | get jobId (full schedule, payload, and delivery details) | add job | update jobId job (partial: only supplied fields change; null clears) | remove jobId | run jobId (runMode "force"=now) | runs jobId = history | next_check in:"30m" (own paced run only) | wake text mode?:"now"|"next-heartbeat"(default) nudges a caller-owned lane (sessionKey/agentId to pick another).
+ACTIONS: status | list [includeDisabled,limit?,offset?] (compact summaries with timing; use nextOffset for the next page) | get jobId (full schedule, payload, and delivery details) | inspect jobId = job + run history | add job | update jobId job (partial: only supplied fields change; null clears) | remove jobId | run jobId (runMode "force"=now) | runs jobId = history | next_check in:"30m" (own paced run only) | wake text mode?:"now"|"next-heartbeat"(default) nudges a caller-owned lane (sessionKey/agentId to pick another).
 
 SCOPE: Authenticated configured channel owner and Control UI administrator turns can list/get/update/run/remove any Gateway automation. Other turns see only caller-visible jobs; totals/counts and hasMore describe that scoped view, not global inventory. In that restricted view, an empty list or failed list/get/update/remove (including not-found) does not establish global absence, whatever the source of a known job id (including your own history). Never recreate or replace a known automation to satisfy an update/remove or reconciliation request solely because of these results. Report that you cannot establish global absence and ask an authorized administrator to check through a fresh authenticated configured channel owner or Control UI administrator turn or the Automations page; do not bypass caller scope. Genuinely new, requested automations can still be created.
 
-ADD: ${addFields}. Required: schedule+payload.
+RUN WAIT: waitForCompletion:true keeps this tool call open for the exact queued run and returns its terminal history entry. completionTimeoutMs is the end-to-end admission+completion budget (default 600000). Timing out does not cancel an admitted run; inspect its runId before retrying.
+
+ADD: ${addFields}. Required: schedule+payload. declarationKey makes add an atomic upsert; its result reports created/updated/id/job, so do not list/get merely to confirm it.
 
 SCHEDULE:
 - {kind:"at",at:"ISO-8601"} one-shot; no tz=UTC; auto-deletes after successful completion: delivery confirmed, not requested, intentionally silent, or explicitly bestEffort. Failed/unknown required delivery retains it disabled.
@@ -216,7 +233,7 @@ DELIVERY {mode:"none"|"announce"|"webhook",channel?,to?,threadId?,bestEffort?,co
 
 FAILURE ALERTS: jobs with a failure route default to alerting after 2 consecutive execution failures with a 1h cooldown. Route order: job failureAlert fields, delivery.failureDestination over global cron.failureAlert destination fields, then primary announce. failureAlert:false disables execution/delivery alerts, not the auto-disable safety notice; a failureAlert object activates/tunes. bestEffort suppresses inherited execution alerts. Required completion-delivery failure uses only an alternate route, bypasses after, and shares the execution-alert cooldown from the first failure; it does not increment the execution streak.
 
-Job wakeMode (main jobs): "now"(default)|"next-heartbeat". Restricted automation-run sessions: self status/list/get/runs/remove + own next_check only. jobId canonical (id=compat). contextMessages 0-10 embeds recent chat lines into reminder text.`;
+Job wakeMode (main jobs): "now"(default)|"next-heartbeat". Restricted automation-run sessions: self status/list/get/inspect/runs/remove + own next_check only. failureAlert {...}|false disables. jobId canonical (id=compat). contextMessages 0-10 embeds recent chat lines into reminder text.`;
 }
 
 export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): AnyAgentTool {
@@ -406,6 +423,17 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
                 id,
               }),
             );
+          }
+          case "inspect": {
+            const id = readCronJobIdParam(params);
+            if (!id) {
+              throw new Error("jobId required (id accepted for backward compatibility)");
+            }
+            const [job, runs] = await Promise.all([
+              callGateway("cron.get", gatewayOpts, { id }),
+              callGateway("cron.runs", gatewayOpts, { id }),
+            ]);
+            return jsonResult({ job, runs });
           }
           case "add": {
             // Flat-params recovery: non-frontier models (e.g. Grok) sometimes flatten
@@ -631,12 +659,18 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
           }
           case "run": {
             const id = requireCronJobIdParam(params);
-            const runMode =
-              params.runMode === "due" || params.runMode === "force" ? params.runMode : "due";
+            if (managementAuthority?.managementOnly && params.waitForCompletion === true) {
+              throw new Error(
+                "Completion waiting is unavailable for administrator automation runs. Start the run without waitForCompletion and inspect it in the Automations page.",
+              );
+            }
             return jsonResult(
-              await callGateway("cron.run", gatewayOpts, {
-                id,
-                mode: runMode,
+              await runCronJobFromAgentTool({
+                jobId: id,
+                toolParams: params,
+                gatewayOpts,
+                callGateway,
+                operationSignal,
               }),
             );
           }

@@ -6,9 +6,8 @@ import {
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { Option, type Command } from "commander";
 import { resolveCronCompletionStatus } from "../../cron/completion-status.js";
-import type { CronRunLogEntry } from "../../cron/run-log-types.js";
+import { type CronRunTerminalEntry, waitForCronRunTerminalEntry } from "../../cron/run-wait.js";
 import { defaultRuntime } from "../../runtime.js";
-import { sleep } from "../../utils/sleep.js";
 import type { GatewayRpcOpts } from "../gateway-rpc.js";
 import { addGatewayClientOptions, callGatewayFromCli } from "../gateway-rpc.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
@@ -69,38 +68,30 @@ async function waitForCronRunCompletion(params: {
   runId: string;
   timeoutMs: number;
   pollIntervalMs: number;
-}): Promise<CronRunLogEntry> {
-  // Poll the task ledger rather than cron.run because completion state is written asynchronously.
-  const startedAt = performance.now();
-  let hasPolled = false;
-  for (;;) {
-    const elapsedBeforePollMs = Math.floor(performance.now() - startedAt);
-    if (hasPolled && elapsedBeforePollMs >= params.timeoutMs) {
-      throw new CronCliError(`timed out waiting for cron run ${params.runId}`);
-    }
-    const remainingMs = Math.max(1, params.timeoutMs - elapsedBeforePollMs);
-    const configuredTimeoutMs = parseTimeoutMs(params.opts.timeout);
-    const pollTimeoutMs =
-      configuredTimeoutMs === undefined ? remainingMs : Math.min(configuredTimeoutMs, remainingMs);
-    hasPolled = true;
-    // History reads share the wait deadline, but enqueue keeps its own RPC
-    // timeout and a zero-duration wait still gets one immediate ledger poll.
-    const pollOpts = { ...params.opts, timeout: String(pollTimeoutMs) };
-    const page = (await callGatewayFromCli("cron.runs", pollOpts, {
-      id: params.jobId,
-      runId: params.runId,
-      limit: 1,
-    })) as { entries?: CronRunLogEntry[] };
-    const entry = page.entries?.[0];
-    if (entry?.status === "ok" || entry?.status === "error" || entry?.status === "skipped") {
-      return entry;
-    }
-    const elapsedMs = Math.floor(performance.now() - startedAt);
-    if (elapsedMs >= params.timeoutMs) {
-      throw new CronCliError(`timed out waiting for cron run ${params.runId}`);
-    }
-    await sleep(Math.min(params.pollIntervalMs, params.timeoutMs - elapsedMs));
+}): Promise<CronRunTerminalEntry> {
+  const configuredTimeoutMs = parseTimeoutMs(params.opts.timeout);
+  const entry = await waitForCronRunTerminalEntry({
+    timeoutMs: params.timeoutMs,
+    pollIntervalMs: params.pollIntervalMs,
+    readPage: async (remainingMs) => {
+      const pollTimeoutMs =
+        configuredTimeoutMs === undefined
+          ? remainingMs
+          : Math.min(configuredTimeoutMs, remainingMs);
+      // History reads share the wait deadline, but enqueue keeps its own RPC
+      // timeout and a zero-duration wait still gets one immediate ledger poll.
+      const pollOpts = { ...params.opts, timeout: String(pollTimeoutMs) };
+      return await callGatewayFromCli("cron.runs", pollOpts, {
+        id: params.jobId,
+        runId: params.runId,
+        limit: 1,
+      });
+    },
+  });
+  if (!entry) {
+    throw new CronCliError(`timed out waiting for cron run ${params.runId}`);
   }
+  return entry;
 }
 
 function registerCronToggleCommand(params: {
