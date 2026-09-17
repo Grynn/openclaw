@@ -461,6 +461,12 @@ function buildCoreDistEntries(): Record<string, string> {
     "plugins/sdk-alias": "src/plugins/sdk-alias.ts",
     "facade-activation-check.runtime": "src/plugin-sdk/facade-activation-check.runtime.ts",
     "plugin-metadata-readers.runtime": "src/plugins/plugin-metadata-readers.runtime.ts",
+    // plugin-metadata-snapshot.runtime.ts requires these two by adjacent stable
+    // specifier for cold processes. Without their own entries the packaged tree
+    // only holds hashed chunks, so that require silently resolves nothing and
+    // metadata reads degrade to "no manifest policies exist".
+    "current-plugin-metadata-snapshot": "src/plugins/current-plugin-metadata-snapshot.ts",
+    "plugin-metadata-snapshot": "src/plugins/plugin-metadata-snapshot.ts",
     "infra/warning-filter": "src/infra/warning-filter.ts",
     "telegram-ingress-worker.runtime": bundledPluginFile(
       "telegram",

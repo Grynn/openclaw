@@ -315,6 +315,29 @@ describe("tsdown config", () => {
     expect(child.define?.SEALED_RUNTIME_BUILD).toBeUndefined();
   });
 
+  it.each([
+    {
+      entry: "current-plugin-metadata-snapshot",
+      source: "src/plugins/current-plugin-metadata-snapshot.ts",
+    },
+    { entry: "plugin-metadata-snapshot", source: "src/plugins/plugin-metadata-snapshot.ts" },
+  ])(
+    "keeps $entry on a stable dist entry the cold metadata bridge can require",
+    ({ entry, source }) => {
+      const distGraph = requireUnifiedDistGraph();
+      const bridge = readFileSync(
+        path.resolve("src/plugins/plugin-metadata-snapshot.runtime.ts"),
+        "utf8",
+      );
+
+      // The bridge's cold fallback requires this adjacent specifier. Without an
+      // explicit entry the packaged tree holds only hashed chunks, the require
+      // resolves nothing, and metadata reads degrade to "no policies exist".
+      expect(bridge).toContain(`"./${entry}.js"`);
+      expect(entrySources(distGraph)[entry]).toBe(source);
+    },
+  );
+
   it("builds the Docker healthcheck as a stable dist entry", () => {
     const distGraph = requireUnifiedDistGraph();
 

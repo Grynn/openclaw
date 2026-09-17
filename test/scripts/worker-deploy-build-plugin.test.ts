@@ -140,10 +140,17 @@ console.log("portable worker highlighting and shell analysis passed");
             TMPDIR: root,
             TMP: root,
             TEMP: root,
+            // The sealed worker owns its filesystem policy; a host override must
+            // not pull optional native code into a hash-bound bundle.
+            FS_SAFE_NATIVE_MODE: "require",
           },
         },
       );
-      expect(result.stdout.trim()).toBe("portable worker highlighting and shell analysis passed");
+      // The prewarm branch runs first and acknowledges the sealed fs-safe policy.
+      expect(result.stdout.split("\n").filter(Boolean)).toEqual([
+        '{"fsSafeNativeMode":"off","protocol":1}',
+        "portable worker highlighting and shell analysis passed",
+      ]);
       expect(result.stderr).toBe("");
     } finally {
       for (const bundle of bundles) {

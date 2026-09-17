@@ -1,9 +1,11 @@
 import { flushCompileCache } from "node:module";
 import "./worker-deploy-runtime.js";
 import { formatCliOperatorError } from "../cli/failure-output.js";
+import { getFsSafeNativeConfig } from "../infra/fs-safe-defaults.js";
 import { assertSupportedRuntime } from "../infra/runtime-guard.js";
 import { drainProcessOutput } from "../process/output-drain.js";
 import workerDeployBrowserRuntime from "./worker-deploy-browser-runtime.js";
+import { formatWorkerPrewarmAcknowledgement } from "./worker-prewarm-protocol.js";
 import { runWorkerProcess } from "./worker-process.js";
 
 try {
@@ -30,6 +32,9 @@ try {
 
   if (internalWorkerPrewarm) {
     flushCompileCache();
+    // Read after ./worker-deploy-runtime.js has sealed the process: the effective
+    // policy, not the requested one, is what a host-native escape would change.
+    process.stdout.write(formatWorkerPrewarmAcknowledgement(getFsSafeNativeConfig().mode));
   } else {
     await runWorkerProcess({
       internalWorkerIpc,
