@@ -26,7 +26,7 @@ import {
 import {
   hasSessionEntriesByStatusReadOnly,
   listSessionEntriesCore,
-  listSessionEntriesReadOnly,
+  listSessionEntriesReadOnly as listSessionEntriesReadOnlyCompatibility,
   loadExactSessionEntryCandidatesReadOnlyBatch,
   loadExactSessionEntryReadOnly,
   openSessionEntryReadView,
@@ -41,6 +41,7 @@ import {
   upsertSessionEntryCore,
   withSessionEntryReadOnlyScope,
 } from "./session-accessor.js";
+import { listSessionEntriesReadOnly } from "./session-accessor.read-list.js";
 import { ensureTranscriptSessionRoot } from "./session-accessor.sqlite-transcript-state.js";
 import * as sqliteTargets from "./session-sqlite-target.js";
 
@@ -237,6 +238,37 @@ describe("session accessor readonly listing", () => {
     expect(openSessionEntryReadView(listScope).entries()).toEqual(writableEntries);
     expect(readSessionStoreSummaryReadOnly(listScope, summaryOptions)).toEqual(expectedSummary);
     expect(isOpenClawAgentDatabaseOpen(resolveOpenClawAgentSqlitePath(listScope))).toBe(false);
+  });
+
+  it("matches the compatibility accessor for full and list projections", async () => {
+    const stateDir = makeTempDir(tempDirs, "openclaw-session-readonly-parity-");
+    const env = { OPENCLAW_STATE_DIR: stateDir };
+    const scope = { agentId: "worker-1", env };
+
+    await upsertSessionEntryCore(
+      { ...scope, sessionKey: "agent:worker-1:main" },
+      {
+        sessionId: "session-1",
+        skillsSnapshot: { prompt: "large skill prompt", skills: [] },
+        systemPromptReport: {
+          source: "run",
+          generatedAt: 1,
+          systemPrompt: { chars: 1, projectContextChars: 0, nonProjectContextChars: 1 },
+          injectedWorkspaceFiles: [],
+          skills: { promptChars: 0, entries: [] },
+          tools: { listChars: 0, schemaChars: 0, entries: [] },
+        },
+        updatedAt: 10,
+      },
+    );
+    closeOpenClawAgentDatabasesForTest();
+
+    expect(listSessionEntriesReadOnly(scope)).toEqual(
+      listSessionEntriesReadOnlyCompatibility(scope),
+    );
+    expect(listSessionEntriesReadOnly({ ...scope, clone: false, projection: "list" })).toEqual(
+      listSessionEntriesReadOnlyCompatibility({ ...scope, clone: false, projection: "list" }),
+    );
   });
 
   it("returns an empty list without creating or registering a missing agent database", () => {

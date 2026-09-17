@@ -193,7 +193,10 @@ function resolveProviderMetadataOwners(
     getCurrentPluginMetadataSnapshot({
       allowWorkspaceScopedSnapshot: true,
     })?.owners ??
-    loadPluginMetadataSnapshot({ config: {} }).owners;
+    // A snapshot loaded without plugin state carries no owner maps; the fields
+    // below are already optional, so treat the container as optional too.
+    loadPluginMetadataSnapshot({ config: {} }).owners ??
+    {};
   return {
     providerEndpoints: owners.providerEndpoints ?? [],
     providerRequests: owners.providerRequests ?? new Map(),

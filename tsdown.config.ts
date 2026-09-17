@@ -217,7 +217,12 @@ function workerDeployBuildConfig(): UserConfig {
       onlyBundle: false,
     },
     fixedExtension: false,
-    minify: { codegen: true, compress: true, mangle: { keepNames: true } },
+    // The fork's immutable-release module-closure gate statically reviews the
+    // loader edges of shipped artifacts. Mangling makes the sealed worker
+    // unreviewable: reused short identifiers read as require bindings, so the
+    // tracker cannot resolve the bundle's specifier surface. Codegen and
+    // compression still apply; only the mangler is off.
+    minify: { codegen: true, compress: true, mangle: false },
     outExtensions: () => ({ js: ".mjs", dts: ".d.ts" }),
     outputOptions: { codeSplitting: false, assetFileNames: "worker/[name][extname]" },
     plugins: [createStateSchemaInlinePlugin(), createWorkerDeployBuildPlugin()],
@@ -426,6 +431,8 @@ function buildCoreDistEntries(): Record<string, string> {
     "agents/code-mode.worker": "src/agents/code-mode.worker.ts",
     "agents/compaction-planning.worker": "src/agents/compaction-planning.worker.ts",
     "config/sessions/disk-budget.worker": "src/config/sessions/disk-budget.worker.ts",
+    "config/sessions/session-accessor.read-list":
+      "src/config/sessions/session-accessor.read-list.ts",
     "config/sessions/session-transcript-reconcile":
       "src/config/sessions/session-transcript-reconcile.ts",
     ...runtimeProcessBuildEntries,
@@ -441,6 +448,7 @@ function buildCoreDistEntries(): Record<string, string> {
     "plugins/synthetic-auth.runtime": "src/plugins/synthetic-auth.runtime.ts",
     "subagent-registry.runtime": "src/agents/subagents/registry/subagent-registry.runtime.ts",
     "task-registry-control.runtime": "src/tasks/task-registry-control.runtime.ts",
+    "tasks/task-registry.maintenance": "src/tasks/task-registry.maintenance.ts",
     "link-understanding/apply.runtime": "src/link-understanding/apply.runtime.ts",
     "media-understanding/apply.runtime": "src/media-understanding/apply.runtime.ts",
     "commands/status.summary.runtime": "src/status/summary.runtime.ts",
@@ -681,6 +689,7 @@ function buildUnifiedDistEntries(): Record<string, string> {
       ),
     ),
     ...listBundledPluginEntrySources(rootBundledPluginBuildEntries),
+    "extensions/browser/src/control-service": "extensions/browser/src/control-service.ts",
     "extensions/browser/native-host-entry": "extensions/browser/native-host-entry.ts",
     "extensions/browser/relay-daemon-entry": "extensions/browser/relay-daemon-entry.ts",
     ...bundledHookEntries,

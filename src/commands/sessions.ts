@@ -24,11 +24,14 @@ import { resolveRuntimePolicySessionKey } from "../auto-reply/reply/runtime-poli
 import { normalizeChatType } from "../channels/chat-type.js";
 import { ExpectedCliError } from "../cli/failure-output.js";
 import { getRuntimeConfig } from "../config/config.js";
-import { resolveFreshSessionTotalTokens, resolveSessionTotalTokens } from "../config/sessions.js";
 import { resolveProjectedSessionContextTokens } from "../config/sessions/context-token-provenance.js";
-import { listSessionEntriesReadOnly } from "../config/sessions/session-accessor.js";
+import { listSessionEntriesReadOnly } from "../config/sessions/session-accessor.read-list.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
-import type { SessionEntry } from "../config/sessions/types.js";
+import {
+  resolveFreshSessionTotalTokens,
+  resolveSessionTotalTokens,
+  type SessionEntry,
+} from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveStoredSessionKeyForAgentStore } from "../gateway/session-store-key.js";
 import { info } from "../globals.js";
@@ -295,6 +298,7 @@ export async function sessionsCommand(
   const allEntries = targets.flatMap((target) => {
     return listSessionEntriesReadOnly({
       agentId: target.agentId,
+      clone: false,
       storePath: target.storePath,
       projection: "list",
     })

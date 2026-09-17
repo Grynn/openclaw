@@ -33,8 +33,19 @@ vi.mock("../config/sessions.js", async () => {
   };
 });
 
-vi.mock("../config/sessions/session-accessor.js", () => ({
-  listSessionEntriesCore: listSessionEntriesMock,
+vi.mock("../infra/state-migrations.doctor.js", async () => ({
+  ...(await vi.importActual<typeof import("../infra/state-migrations.doctor.js")>(
+    "../infra/state-migrations.doctor.js",
+  )),
+  autoMigrateLegacyState: vi.fn(async () => ({
+    migrated: false,
+    skipped: true,
+    changes: [],
+    warnings: [],
+  })),
+}));
+
+vi.mock("../config/sessions/session-accessor.read-list.js", () => ({
   listSessionEntriesReadOnly: listSessionEntriesMock,
 }));
 
@@ -197,8 +208,9 @@ describe("sessionsCommand default store agent selection", () => {
 
     expect(listSessionEntriesMock).toHaveBeenCalledWith({
       agentId: "voice",
-      storePath: "/tmp/sessions-voice.json",
+      clone: false,
       projection: "list",
+      storePath: "/tmp/sessions-voice.json",
     });
     expect(logs[0]).toContain("Session store: /tmp/sessions-voice.voice.sqlite");
   });
@@ -269,13 +281,15 @@ describe("sessionsCommand default store agent selection", () => {
 
     expect(listSessionEntriesMock).toHaveBeenNthCalledWith(1, {
       agentId: "main",
-      storePath: "/tmp/sessions-main.json",
+      clone: false,
       projection: "list",
+      storePath: "/tmp/sessions-main.json",
     });
     expect(listSessionEntriesMock).toHaveBeenNthCalledWith(2, {
       agentId: "voice",
-      storePath: "/tmp/sessions-voice.json",
+      clone: false,
       projection: "list",
+      storePath: "/tmp/sessions-voice.json",
     });
     expect(logs[0]).toContain("Session stores: 2 (main, voice)");
     expect(logs[2]).toContain("Agent");

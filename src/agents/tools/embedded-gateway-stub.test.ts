@@ -21,6 +21,17 @@ const runtime = vi.hoisted(() => ({
   ),
   searchSessionTranscripts: vi.fn(() => ({ hits: [], indexing: false, truncated: false })),
   resolveSessionStorePathCore: vi.fn(() => "/tmp/openclaw-sessions.json"),
+  searchSessionTranscriptsBatch: vi.fn(
+    ({
+      queries,
+    }: {
+      queries: string[];
+    }): Array<{
+      hits: unknown[];
+      indexing: boolean;
+      truncated: boolean;
+    }> => queries.map(() => ({ hits: [], indexing: false, truncated: false })),
+  ),
   resolveSessionKeyFromResolveParams: vi.fn(),
   resolveSessionAgentId: vi.fn(() => "main"),
   loadSessionEntry: vi.fn(() => ({
@@ -66,6 +77,7 @@ describe("embedded gateway stub", () => {
     runtime.resolveStoredSessionKeyForAgentStore.mockClear();
     runtime.searchSessionTranscripts.mockClear();
     runtime.resolveSessionStorePathCore.mockClear();
+    runtime.searchSessionTranscriptsBatch.mockClear();
     runtime.loadCombinedSessionStoreForGatewayCore.mockClear();
     runtime.listSessionsFromStoreAsync.mockClear();
   });
@@ -215,6 +227,43 @@ describe("embedded gateway stub", () => {
     },
   );
 
+  it("runs embedded search batches through one shared transcript lookup", async () => {
+    const firstHit = { sessionKey: "agent:main:main", snippet: "first" };
+    const secondHit = { sessionKey: "agent:main:other", snippet: "second" };
+    runtime.searchSessionTranscriptsBatch.mockReturnValueOnce([
+      { hits: [firstHit], indexing: true, truncated: false },
+      { hits: [secondHit], indexing: false, truncated: true },
+    ]);
+    const callGateway = createEmbeddedCallGateway();
+
+    const result = await callGateway({
+      method: "sessions.search",
+      params: {
+        agentId: "main",
+        query: "first angle",
+        queries: [" first angle ", "second angle"],
+        sessionKeys: ["main", "agent:main:other"],
+        limit: 3,
+      },
+    });
+
+    expect(runtime.searchSessionTranscriptsBatch).toHaveBeenCalledOnce();
+    expect(runtime.searchSessionTranscriptsBatch).toHaveBeenCalledWith({
+      agentId: "main",
+      queries: ["first angle", "second angle"],
+      limit: 3,
+      sessionKeys: ["agent:main:main", "agent:main:other"],
+      storePath: expect.any(String),
+    });
+    expect(runtime.searchSessionTranscripts).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      states: [
+        { results: [firstHit], indexing: true },
+        { results: [secondHit], truncated: true },
+      ],
+    });
+  });
+
   it("rejects empty session-key filters instead of widening the search", async () => {
     const callGateway = createEmbeddedCallGateway();
 
@@ -234,6 +283,24 @@ describe("embedded gateway stub", () => {
       callGateway({ method: "sessions.search", params: { query: "x".repeat(4097) } }),
     ).rejects.toThrow("query must not exceed 4096 characters");
     expect(runtime.searchSessionTranscripts).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid embedded session search batches", async () => {
+    const callGateway = createEmbeddedCallGateway();
+
+    await expect(
+      callGateway({ method: "sessions.search", params: { query: "one", queries: ["two"] } }),
+    ).rejects.toThrow("use query or queries, not both");
+    await expect(
+      callGateway({ method: "sessions.search", params: { queries: [] } }),
+    ).rejects.toThrow("queries must contain 1-8 items");
+    await expect(
+      callGateway({ method: "sessions.search", params: { queries: ["valid", " "] } }),
+    ).rejects.toThrow("queries[1] must not be empty");
+    await expect(
+      callGateway({ method: "sessions.search", params: { queries: ["x".repeat(4097)] } }),
+    ).rejects.toThrow("queries[0] must not exceed 4096 characters");
+    expect(runtime.searchSessionTranscriptsBatch).not.toHaveBeenCalled();
   });
 
   it("rejects an explicit agent that conflicts with an unscoped store owner", async () => {

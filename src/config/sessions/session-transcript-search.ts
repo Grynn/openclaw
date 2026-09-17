@@ -25,6 +25,7 @@ import {
 const SEARCH_SNIPPET_MAX_CHARS = 500;
 const SEARCH_LIMIT_MAX = 25;
 const SEARCH_QUERY_MAX_CHARS = 4096;
+const SEARCH_QUERY_BATCH_MAX = 8;
 
 type SessionTranscriptSearchHit = {
   sessionKey: string;
@@ -41,6 +42,17 @@ type SessionTranscriptSearchResult = {
   indexing: boolean;
   truncated: boolean;
   archivedTranscriptsExcluded?: number;
+};
+
+type SessionTranscriptSearchScope = {
+  agentId: string;
+  env?: NodeJS.ProcessEnv;
+  limit?: number;
+  role?: "assistant" | "user";
+  sessionId?: string;
+  sessionKeys?: string[];
+  order?: "relevance" | "recent";
+  storePath?: string;
 };
 
 function toFtsQuery(query: string): string {
@@ -113,25 +125,21 @@ export function readSessionTranscriptSearchVersion(params: {
   return result.found ? result.value : null;
 }
 
-/** Search the per-agent FTS index; kicks off one background reconcile when the index lags. */
-export function searchSessionTranscripts(params: {
-  agentId: string;
-  env?: NodeJS.ProcessEnv;
-  limit?: number;
-  query: string;
-  role?: "assistant" | "user";
-  sessionId?: string;
-  sessionKeys?: string[];
-  order?: "relevance" | "recent";
-  storePath?: string;
-}): SessionTranscriptSearchResult {
-  const query = params.query.trim();
-  if (!query) {
-    throw new Error("query must not be empty");
+function normalizeSearchQuery(query: string, label: string): string {
+  const normalized = query.trim();
+  if (!normalized) {
+    throw new Error(`${label} must not be empty`);
   }
-  if (query.length > SEARCH_QUERY_MAX_CHARS) {
-    throw new Error(`query must not exceed ${SEARCH_QUERY_MAX_CHARS} characters`);
+  if (normalized.length > SEARCH_QUERY_MAX_CHARS) {
+    throw new Error(`${label} must not exceed ${SEARCH_QUERY_MAX_CHARS} characters`);
   }
+  return normalized;
+}
+
+function searchSessionTranscriptBatchCore(
+  params: SessionTranscriptSearchScope & { queries: string[] },
+): SessionTranscriptSearchResult[] {
+  const { queries } = params;
   const scope = resolveSqliteReadScope(params);
   const databaseOptions = toDatabaseOptions(scope);
   const result = withOpenClawAgentDatabaseReadOnly(
@@ -183,110 +191,141 @@ export function searchSessionTranscripts(params: {
           // are excluded: their rows may still hold rewound-away branch text that
           // sessions_history no longer exposes, so they stay hidden until reconcile
           // rebuilds them (indexing=true tells the caller to retry).
-          const rows = executeSqliteQuerySync(
-            database.db,
-            db
-              .selectFrom("session_transcript_fts")
-              .innerJoin(
-                "session_windows",
-                "session_windows.session_id",
-                "session_transcript_fts.session_id",
-              )
-              .select([
-                "session_windows.session_key",
-                "session_transcript_fts.session_id",
-                "message_id",
-                "role",
-                "timestamp",
-                /* kysely-allow-raw: FTS5 snippet primitive. */
-                sql`snippet(session_transcript_fts, 0, '', '', ' … ', 48)`.as("snippet"),
-                /* kysely-allow-raw: FTS5 ranking primitive. */
-                sql`bm25(session_transcript_fts)`.as("rank"),
-              ])
-              .where(
-                /* kysely-allow-raw: FTS5 table MATCH with a bound search query. */
-                sql<boolean>`session_transcript_fts MATCH ${toFtsQuery(query)}`,
-              )
-              .$if(params.sessionKeys === undefined, (builder) =>
-                builder.where((eb) =>
-                  eb.or([
-                    /* kysely-allow-raw: GLOB preserves literal underscores in SQLite agent namespaces. */
-                    sql<boolean>`${eb.ref("session_windows.session_key")} GLOB ${sessionFilterValues[0]}`,
-                    eb("session_windows.session_key", "in", ["global", "unknown"]),
-                  ]),
-                ),
-              )
-              .$if(params.sessionKeys !== undefined && sessionFilterValues.length > 0, (builder) =>
-                builder.where("session_windows.session_key", "in", sessionKeySet),
-              )
-              .$if(Boolean(params.sessionId), (builder) =>
-                builder.where("session_transcript_fts.session_id", "=", params.sessionId!),
-              )
-              .$if(Boolean(params.role), (builder) => builder.where("role", "=", params.role!))
-              .where(
-                "session_transcript_fts.session_id",
-                "not in",
-                db
-                  .selectFrom("session_transcript_index_state")
-                  .select("session_id")
-                  .where("needs_rebuild", "!=", 0)
-                  .$if(Boolean(params.sessionId), (builder) =>
-                    builder.where("session_id", "=", params.sessionId!),
+          return queries.map((query) => {
+            const rows = executeSqliteQuerySync(
+              database.db,
+              db
+                .selectFrom("session_transcript_fts")
+                .innerJoin(
+                  "session_windows",
+                  "session_windows.session_id",
+                  "session_transcript_fts.session_id",
+                )
+                .select([
+                  "session_windows.session_key",
+                  "session_transcript_fts.session_id",
+                  "message_id",
+                  "role",
+                  "timestamp",
+                  /* kysely-allow-raw: FTS5 snippet primitive. */
+                  sql`snippet(session_transcript_fts, 0, '', '', ' … ', 48)`.as("snippet"),
+                  /* kysely-allow-raw: FTS5 ranking primitive. */
+                  sql`bm25(session_transcript_fts)`.as("rank"),
+                ])
+                .where(
+                  /* kysely-allow-raw: FTS5 table MATCH with a bound search query. */
+                  sql<boolean>`session_transcript_fts MATCH ${toFtsQuery(query)}`,
+                )
+                .$if(params.sessionKeys === undefined, (builder) =>
+                  builder.where((eb) =>
+                    eb.or([
+                      /* kysely-allow-raw: GLOB preserves literal underscores in SQLite agent namespaces. */
+                      sql<boolean>`${eb.ref("session_windows.session_key")} GLOB ${sessionFilterValues[0]}`,
+                      eb("session_windows.session_key", "in", ["global", "unknown"]),
+                    ]),
                   ),
-              )
-              .$if(params.order === "recent", (builder) =>
-                builder
-                  .orderBy("timestamp", "desc")
-                  /* kysely-allow-raw: FTS5 implicit rowid is not a generated schema column. */
-                  .orderBy(sql`session_transcript_fts.rowid`, "desc"),
-              )
-              .$if(params.order !== "recent", (builder) =>
-                builder
-                  .orderBy("rank", "asc")
-                  .orderBy("timestamp", "desc")
-                  .orderBy("message_id", "asc"),
-              )
-              .limit(limit + 1),
-          ).rows;
-          const hits = rows.flatMap((row): SessionTranscriptSearchHit[] => {
-            if (
-              typeof row.session_key !== "string" ||
-              typeof row.session_id !== "string" ||
-              typeof row.message_id !== "string" ||
-              (row.role !== "user" && row.role !== "assistant") ||
-              typeof row.snippet !== "string"
-            ) {
-              return [];
-            }
-            const timestamp =
-              typeof row.timestamp === "number" ? row.timestamp : Number(row.timestamp);
-            const rank = typeof row.rank === "number" ? row.rank : Number(row.rank);
-            return [
-              {
-                sessionKey: row.session_key,
-                sessionId: row.session_id,
-                messageId: row.message_id,
-                role: row.role,
-                timestamp: Number.isFinite(timestamp) ? timestamp : 0,
-                snippet:
-                  row.snippet.length > SEARCH_SNIPPET_MAX_CHARS
-                    ? `${truncateUtf16Safe(row.snippet, SEARCH_SNIPPET_MAX_CHARS)}…`
-                    : row.snippet,
-                score: Number.isFinite(rank) ? -rank : 0,
-              },
-            ];
+                )
+                .$if(params.sessionKeys !== undefined && sessionFilterValues.length > 0, (builder) =>
+                  builder.where("session_windows.session_key", "in", sessionKeySet),
+                )
+                .$if(Boolean(params.sessionId), (builder) =>
+                  builder.where("session_transcript_fts.session_id", "=", params.sessionId!),
+                )
+                .$if(Boolean(params.role), (builder) => builder.where("role", "=", params.role!))
+                .where(
+                  "session_transcript_fts.session_id",
+                  "not in",
+                  db
+                    .selectFrom("session_transcript_index_state")
+                    .select("session_id")
+                    .where("needs_rebuild", "!=", 0)
+                    .$if(Boolean(params.sessionId), (builder) =>
+                      builder.where("session_id", "=", params.sessionId!),
+                    ),
+                )
+                .$if(params.order === "recent", (builder) =>
+                  builder
+                    .orderBy("timestamp", "desc")
+                    /* kysely-allow-raw: FTS5 implicit rowid is not a generated schema column. */
+                    .orderBy(sql`session_transcript_fts.rowid`, "desc"),
+                )
+                .$if(params.order !== "recent", (builder) =>
+                  builder
+                    .orderBy("rank", "asc")
+                    .orderBy("timestamp", "desc")
+                    .orderBy("message_id", "asc"),
+                )
+                .limit(limit + 1),
+            ).rows;
+            const hits = rows.flatMap((row): SessionTranscriptSearchHit[] => {
+              if (
+                typeof row.session_key !== "string" ||
+                typeof row.session_id !== "string" ||
+                typeof row.message_id !== "string" ||
+                (row.role !== "user" && row.role !== "assistant") ||
+                typeof row.snippet !== "string"
+              ) {
+                return [];
+              }
+              const timestamp =
+                typeof row.timestamp === "number" ? row.timestamp : Number(row.timestamp);
+              const rank = typeof row.rank === "number" ? row.rank : Number(row.rank);
+              return [
+                {
+                  sessionKey: row.session_key,
+                  sessionId: row.session_id,
+                  messageId: row.message_id,
+                  role: row.role,
+                  timestamp: Number.isFinite(timestamp) ? timestamp : 0,
+                  snippet:
+                    row.snippet.length > SEARCH_SNIPPET_MAX_CHARS
+                      ? `${truncateUtf16Safe(row.snippet, SEARCH_SNIPPET_MAX_CHARS)}…`
+                      : row.snippet,
+                  score: Number.isFinite(rank) ? -rank : 0,
+                },
+              ];
+            });
+            return {
+              hits: hits.slice(0, limit),
+              indexing,
+              truncated: hits.length > limit,
+              ...(archivedTranscriptsExcluded > 0 ? { archivedTranscriptsExcluded } : {}),
+            };
           });
-          return {
-            hits: hits.slice(0, limit),
-            indexing,
-            truncated: hits.length > limit,
-            ...(archivedTranscriptsExcluded > 0 ? { archivedTranscriptsExcluded } : {}),
-          };
         },
         { databaseLabel: database.path, operationLabel: "session transcript search" },
       ),
     databaseOptions,
     { throwOnMissingTable: true },
   );
-  return result.found ? result.value : { hits: [], indexing: false, truncated: false };
+  return result.found
+    ? result.value
+    : queries.map(() => ({ hits: [], indexing: false, truncated: false }));
+}
+
+/** Search the per-agent FTS index; kicks off one background reconcile when the index lags. */
+export function searchSessionTranscripts(
+  params: SessionTranscriptSearchScope & { query: string },
+): SessionTranscriptSearchResult {
+  const { query: rawQuery, ...scope } = params;
+  const query = normalizeSearchQuery(rawQuery, "query");
+  const result = searchSessionTranscriptBatchCore({ ...scope, queries: [query] })[0];
+  if (!result) {
+    throw new Error("query must not be empty");
+  }
+  return result;
+}
+
+/** Search up to eight queries while sharing one database/index setup and scope resolution. */
+export function searchSessionTranscriptsBatch(
+  params: SessionTranscriptSearchScope & { queries: string[] },
+): SessionTranscriptSearchResult[] {
+  if (params.queries.length === 0 || params.queries.length > SEARCH_QUERY_BATCH_MAX) {
+    throw new Error(`queries must contain 1-${SEARCH_QUERY_BATCH_MAX} items`);
+  }
+  const { queries: rawQueries, ...scope } = params;
+  const queries = rawQueries.map((query, index) =>
+    normalizeSearchQuery(query, `queries[${index}]`),
+  );
+  return searchSessionTranscriptBatchCore({ ...scope, queries });
 }

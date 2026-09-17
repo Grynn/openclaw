@@ -9,6 +9,13 @@ import { recordAgentDatabaseAdmissions } from "../state/agent-database-admission
 
 const mocks = vi.hoisted(() => ({
   events: [] as string[],
+  sessionCatalogs: [] as Array<{
+    provider: {
+      id: string;
+      prewarm?: () => Promise<void>;
+      list?: () => Promise<unknown[]>;
+    };
+  }>,
   canPrewarmCombinedSessionStoresForGateway: vi.fn(() => {
     mocks.events.push("sessions.count");
     return true;
@@ -31,6 +38,10 @@ const mocks = vi.hoisted(() => ({
   }),
 }));
 
+vi.mock("../plugins/runtime.js", () => ({
+  getActivePluginSessionExtensionRegistry: () => ({ sessionCatalogs: mocks.sessionCatalogs }),
+}));
+
 vi.mock("../config/sessions/combined-store-gateway.js", () => ({
   canPrewarmCombinedSessionStoresForGateway: mocks.canPrewarmCombinedSessionStoresForGateway,
   loadCombinedSessionStoreForGatewayCore: mocks.loadCombinedSessionStoreForGatewayCore,
@@ -48,6 +59,7 @@ const { scheduleGatewayHandlerPrewarm } = await import("./server-startup-handler
 
 beforeEach(() => {
   mocks.events.length = 0;
+  mocks.sessionCatalogs.length = 0;
   mocks.canPrewarmCombinedSessionStoresForGateway.mockClear();
   mocks.canPrewarmCombinedSessionStoresForGateway.mockImplementation(() => {
     mocks.events.push("sessions.count");
@@ -147,6 +159,33 @@ describe("scheduleGatewayHandlerPrewarm", () => {
       maxRows: 2_000,
     });
     await sidecar.stop();
+  });
+
+  it("warms only opt-in session catalog runtimes without running catalog data reads", async () => {
+    vi.useFakeTimers();
+    const list = vi.fn(async () => []);
+    const warmClaude = vi.fn(async () => {
+      mocks.events.push("catalog.claude");
+    });
+    const warmPi = vi.fn(async () => {
+      mocks.events.push("catalog.pi");
+    });
+    mocks.sessionCatalogs.push(
+      { provider: { id: "pi", prewarm: warmPi, list } },
+      { provider: { id: "no-hook", list } },
+      { provider: { id: "claude", prewarm: warmClaude, list } },
+    );
+
+    scheduleGatewayHandlerPrewarm({
+      cfgAtStart: {} as never,
+      log: { warn: vi.fn() },
+    });
+    await vi.runAllTimersAsync();
+
+    expect(warmClaude).toHaveBeenCalledOnce();
+    expect(warmPi).toHaveBeenCalledOnce();
+    expect(mocks.events.indexOf("catalog.claude")).toBeLessThan(mocks.events.indexOf("catalog.pi"));
+    expect(list).not.toHaveBeenCalled();
   });
 
   it("waits for gateway readiness before warming handler data", async () => {

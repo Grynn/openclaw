@@ -1214,6 +1214,59 @@ describe("resolveModel", () => {
     },
   );
 
+  it("uses the prepared manifest generation for model ref and configured catalog matching", async () => {
+    const cfg = makeProviderConfig("deepseek", {
+      api: "openai-completions",
+      models: [{ id: "deepseek-v4-pro", name: "Configured DeepSeek" }],
+    });
+    const preparedModelRuntime = {
+      catalogOwner: undefined,
+      agentDir: state.agentDir(),
+      activeProjectKeys: [],
+      allowGatewaySubagentBinding: false,
+      config: cfg,
+      observationConfig: cfg,
+      isCurrent: () => true,
+      authModes: {},
+      metadataSnapshot: createPluginMetadataSnapshotFixture({
+        plugins: [
+          {
+            id: "deepseek",
+            modelIdNormalization: {
+              providers: { deepseek: { aliases: { latest: "deepseek-v4-pro" } } },
+            },
+          },
+        ],
+      }),
+      modelCatalog: { entries: [], routeVariants: [] },
+      configuredRuntimeModels: [
+        {
+          provider: "deepseek",
+          modelId: "deepseek-v4-pro",
+          model: makeDeepSeekCatalogModel(),
+        },
+      ],
+      inlineProviderModels: buildInlineProviderModels(cfg.models?.providers ?? {}),
+      createStores: () => ({ authStorage: {} as never, modelRegistry: {} as never }),
+    } satisfies PreparedModelRuntimeSnapshot;
+
+    const result = await resolveModelAsync("deepseek", "latest", state.agentDir(), cfg, {
+      authStorage: { mocked: true } as never,
+      modelRegistry: { find: vi.fn(() => null) } as never,
+      preparedModelRuntime,
+      runtimeHooks: createRuntimeHooks(),
+      skipAgentDiscovery: true,
+      allowBundledStaticCatalogFallback: true,
+    });
+
+    expectRecordFields(expectResolvedModel(result), {
+      name: "Configured DeepSeek",
+      api: "openai-completions",
+    });
+    expect(resolveBundledStaticCatalogModelMock).not.toHaveBeenCalled();
+    expect(resolveBundledProviderStaticCatalogModelMock).not.toHaveBeenCalled();
+  });
+
   it("falls back when an opaque prepared handle has no model facts", async () => {
     const config = {};
     resolveBundledStaticCatalogModelMock.mockReturnValueOnce(

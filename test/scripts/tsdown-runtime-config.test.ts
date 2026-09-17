@@ -143,7 +143,7 @@ describe("tsdown config", () => {
     },
   );
 
-  it("minifies only the sealed deploy worker while preserving runtime names", () => {
+  it("minifies the sealed deploy worker without mangling it", () => {
     const configs = asConfigArray(tsdownConfig);
     const deployWorker = configs.find((config) => entryKeys(config).includes("worker/worker"));
     const rsyncReceiver = configs.find((config) =>
@@ -153,10 +153,13 @@ describe("tsdown config", () => {
       entryKeys(config).includes("worker/github-exec-launcher"),
     );
 
+    // Mangling is deliberately off: the immutable-release module-closure gate
+    // statically reviews this artifact's loader edges, and mangled identifiers
+    // are indistinguishable from require bindings to that analysis.
     expect(deployWorker?.minify).toEqual({
       codegen: true,
       compress: true,
-      mangle: { keepNames: true },
+      mangle: false,
     });
     expect(rsyncReceiver?.minify).toBeUndefined();
     expect(githubExecLauncher?.minify).toBeUndefined();
@@ -265,6 +268,7 @@ describe("tsdown config", () => {
       "plugins/memory-state",
       "subagent-registry.runtime",
       "task-registry-control.runtime",
+      "tasks/task-registry.maintenance",
       "link-understanding/apply.runtime",
       "media-understanding/apply.runtime",
       "index",
@@ -280,6 +284,7 @@ describe("tsdown config", () => {
       "mcp/openclaw-tools-serve",
       "mcp/plugin-tools-serve",
       bundledEntry("active-memory"),
+      "extensions/browser/src/control-service",
       "bundled/boot-md/handler",
     ]) {
       expect(keys).toContain(entry);
@@ -347,6 +352,22 @@ describe("tsdown config", () => {
 
     expect(entrySources(distGraph)["provider-dispatcher.runtime"]).toBe(
       "src/auto-reply/reply/provider-dispatcher.runtime.ts",
+    );
+  });
+
+  it("keeps task maintenance behind one stable dist entry", () => {
+    const distGraph = requireUnifiedDistGraph();
+
+    expect(entrySources(distGraph)["tasks/task-registry.maintenance"]).toBe(
+      "src/tasks/task-registry.maintenance.ts",
+    );
+  });
+
+  it("keeps browser control service behind one stable dist entry", () => {
+    const distGraph = requireUnifiedDistGraph();
+
+    expect(entrySources(distGraph)["extensions/browser/src/control-service"]).toBe(
+      "extensions/browser/src/control-service.ts",
     );
   });
 

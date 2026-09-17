@@ -17,6 +17,17 @@ type GatewayHandlerPrewarmItem = {
   load: () => Promise<unknown>;
 };
 
+async function prewarmSessionCatalogRuntimeModules(): Promise<void> {
+  const { getActiveRuntimePluginRegistry } = await import("../plugins/active-runtime-registry.js");
+  const registrations = getActiveRuntimePluginRegistry()?.sessionCatalogs ?? [];
+  // Deterministic order keeps the startup trace comparable across runs.
+  for (const { provider } of registrations.toSorted((left, right) =>
+    left.provider.id.localeCompare(right.provider.id),
+  )) {
+    await provider.prewarm?.();
+  }
+}
+
 async function prewarmGatewaySessionListData(cfg: OpenClawConfig, agentId: string): Promise<void> {
   const [{ loadCombinedSessionStoreForGatewayCore }, { listSessionsFromStoreAsync }] =
     await Promise.all([
@@ -87,6 +98,10 @@ function dashboardDataPrewarmItems(
         await listManagedPlugins({ config: cfg });
       },
     },
+    {
+      name: "session-catalog-runtimes",
+      load: prewarmSessionCatalogRuntimeModules,
+    },
   ];
 }
 
@@ -99,7 +114,8 @@ export function scheduleGatewayHandlerPrewarm(params: {
 }): GatewayIdleTaskHandle {
   // Frequent updater restarts make cold dashboard data the remaining slow tier.
   // Keep bounded session reads first and process-stable plugin data second.
-  // Provider catalogs stay request-driven because their adapters may do unbounded external work.
+  // Provider data stays request-driven because adapters may do unbounded external work; only
+  // providers that explicitly expose a code-only hook warm their lazy runtime here.
   const items = params.items ?? dashboardDataPrewarmItems(params.cfgAtStart, params.log);
   let stopped = false;
   let nextIndex = 0;

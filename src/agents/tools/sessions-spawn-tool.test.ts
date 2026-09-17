@@ -1068,6 +1068,19 @@ describe("sessions_spawn tool", () => {
     });
   });
 
+  it("treats an empty category placeholder as omitted for a hidden spawn", async () => {
+    const tool = createSessionsSpawnTool({ agentSessionKey: "agent:main:main" });
+
+    const result = await tool.execute("hidden-empty-category", {
+      task: "inspect",
+      category: "",
+      visible: false,
+    });
+
+    expect(result.details).toMatchObject({ status: "accepted" });
+    expect(hoisted.spawnSubagentDirectMock).toHaveBeenCalledOnce();
+  });
+
   it.each([
     { requested: 1800, configured: 120, seconds: 1800 },
     { requested: 0, configured: 120, seconds: 0 },
@@ -1359,6 +1372,93 @@ describe("sessions_spawn tool", () => {
     await expect(
       tool.execute("visible-unsupported", { task: "inspect", visible: true, ...override }),
     ).rejects.toThrow(message);
+  });
+
+  it("omits serializer defaults before validating a visible spawn", async () => {
+    const callGateway = vi.fn(async () => ({
+      key: "agent:main:dashboard:normalized-child",
+      runStarted: true,
+      runId: "run-normalized-child",
+    }));
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+      config: { agents: { list: [{ id: "main" }] } },
+      callGateway: callGateway as never,
+      registerRun: vi.fn(),
+      countActiveRuns: () => 0,
+    });
+
+    const result = await tool.execute("visible-serializer-defaults", {
+      task: "inspect issue",
+      runtime: "subagent",
+      mode: "run",
+      thread: false,
+      thinking: "",
+      lightContext: false,
+      attachments: [],
+      attachAs: { mountPath: "" },
+      visible: true,
+    });
+
+    expect(result.details).toMatchObject({
+      status: "accepted",
+      childSessionKey: "agent:main:dashboard:normalized-child",
+      runId: "run-normalized-child",
+    });
+    expect(callGateway).toHaveBeenCalledWith(
+      "sessions.create",
+      expect.not.objectContaining({
+        mode: expect.anything(),
+        attachments: expect.anything(),
+        attachAs: expect.anything(),
+      }),
+    );
+  });
+
+  it.each([
+    ["invalid mode", { mode: "invalid" }, "mode"],
+    ["malformed attachments", { attachments: null }, "attachments"],
+    ["malformed attachAs", { attachAs: null }, "attachAs"],
+  ] as const)("still rejects visible %s", async (_name, override, field) => {
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+      config: { agents: { list: [{ id: "main" }] } },
+      callGateway: vi.fn(async () => ({
+        key: "agent:main:dashboard:invalid-child",
+        runStarted: true,
+        runId: "run-invalid-child",
+      })) as never,
+      registerRun: vi.fn(),
+      countActiveRuns: () => 0,
+    });
+
+    await expect(
+      tool.execute("visible-invalid-placeholder", {
+        task: "inspect",
+        visible: true,
+        ...override,
+      }),
+    ).rejects.toThrow(`Parameters unavailable with visible=true: ${field}:`);
+  });
+
+  it("reports every unsupported visible parameter in one error", async () => {
+    const tool = createSessionsSpawnTool({ agentSessionKey: "agent:main:main" });
+
+    await expect(
+      tool.execute("visible-unsupported-many", {
+        task: "inspect",
+        runtime: "acp",
+        thinking: "high",
+        thread: true,
+        mode: "session",
+        lightContext: true,
+        attachments: [{ name: "note.txt", content: "hello" }],
+        attachAs: { mountPath: "inputs" },
+        visible: true,
+      }),
+    ).rejects.toThrow(
+      'Parameters unavailable with visible=true: runtime: supports runtime="subagent" only; thinking: thinking overrides are not wired to the sessions.create path; thread: visible sessions route to the dashboard, not a channel thread; mode: visible sessions are persistent dashboard sessions; lightContext: bootstrap staging is not wired to the sessions.create path; attachments: attachment staging is not wired to the sessions.create path; attachAs: attachment staging is not wired to the sessions.create path',
+    );
   });
 
   it("creates visible sessions while carrying inherited tool restrictions forward", async () => {

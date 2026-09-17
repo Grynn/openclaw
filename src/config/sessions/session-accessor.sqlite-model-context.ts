@@ -65,7 +65,7 @@ type TranscriptContextSnapshot = {
 const MODEL_CONTEXT_PAYLOAD_BATCH_SIZE = 400;
 
 function assertContextAnchor(
-  database: Pick<OpenClawAgentDatabase, "db" | "path">,
+  database: Pick<OpenClawAgentDatabase, "agentId" | "db" | "path">,
   resolved: ReturnType<typeof resolveSqliteTranscriptReadScope>,
   through: TranscriptEntryAnchor,
 ): void {
