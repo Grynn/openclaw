@@ -406,6 +406,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       groupTurn && groupTurn.round > 1
         ? groupTurn.messageId
         : (sessionCtx.MessageSidFull ?? sessionCtx.MessageSid),
+    ...(sourceTurnId ? { restartRecovery: { sourceTurnId } } : {}),
     summaryLine: baseBodyTrimmedRaw,
     ...(queuedToolsAllow !== undefined ? { toolsAllow: queuedToolsAllow } : {}),
     ...(opts?.disableTools !== undefined ? { disableTools: opts.disableTools } : {}),

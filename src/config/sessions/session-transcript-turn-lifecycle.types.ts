@@ -18,12 +18,14 @@ export type SessionTranscriptTurnExpectedState = {
   restartRecoveryDeliveryRequestFingerprint: SessionRestartRecoveryState["restartRecoveryDeliveryRequestFingerprint"];
   restartRecoveryDeliveryRunId: SessionRestartRecoveryState["restartRecoveryDeliveryRunId"];
   restartRecoveryDeliverySourceRunId: SessionRestartRecoveryState["restartRecoveryDeliverySourceRunId"];
+  restartRecoveryDeliveryConstituentSourceTurnIds: SessionRestartRecoveryState["restartRecoveryDeliveryConstituentSourceTurnIds"];
   restartRecoveryRequesterAccountId: SessionRestartRecoveryState["restartRecoveryRequesterAccountId"];
   restartRecoveryRequesterSenderId: SessionRestartRecoveryState["restartRecoveryRequesterSenderId"];
   restartRecoverySameChannelThreadRequired: SessionRestartRecoveryState["restartRecoverySameChannelThreadRequired"];
   restartRecoverySourceIngress: SessionRestartRecoveryState["restartRecoverySourceIngress"];
   restartRecoverySourceReplyDeliveryMode: SessionRestartRecoveryState["restartRecoverySourceReplyDeliveryMode"];
   restartRecoveryTerminalRunIds: SessionRestartRecoveryState["restartRecoveryTerminalRunIds"];
+  restartRecoveryTerminalSourceTurnIdGroups: SessionRestartRecoveryState["restartRecoveryTerminalSourceTurnIdGroups"];
   status: PersistedSessionRunStatus | undefined;
 };
 
@@ -43,6 +45,7 @@ export type SessionTranscriptTurnLifecyclePatch = {
   restartRecoveryDeliveryRequestFingerprint?: SessionRestartRecoveryState["restartRecoveryDeliveryRequestFingerprint"];
   restartRecoveryDeliveryRunId?: SessionRestartRecoveryState["restartRecoveryDeliveryRunId"];
   restartRecoveryDeliverySourceRunId?: SessionRestartRecoveryState["restartRecoveryDeliverySourceRunId"];
+  restartRecoveryDeliveryConstituentSourceTurnIds?: SessionRestartRecoveryState["restartRecoveryDeliveryConstituentSourceTurnIds"];
   restartRecoveryRequesterAccountId?: SessionRestartRecoveryState["restartRecoveryRequesterAccountId"];
   restartRecoveryRequesterSenderId?: SessionRestartRecoveryState["restartRecoveryRequesterSenderId"];
   restartRecoverySameChannelThreadRequired?: SessionRestartRecoveryState["restartRecoverySameChannelThreadRequired"];
@@ -52,6 +55,7 @@ export type SessionTranscriptTurnLifecyclePatch = {
   restartRecoveryRuns?: SessionEntry["restartRecoveryRuns"];
   /** Durable tombstones merged with the fresh row inside the SQLite write transaction. */
   restartRecoveryTerminalRunIds?: SessionRestartRecoveryState["restartRecoveryTerminalRunIds"];
+  restartRecoveryTerminalSourceTurnIdGroups?: SessionRestartRecoveryState["restartRecoveryTerminalSourceTurnIdGroups"];
   runtimeMs?: number;
   startedAt?: number;
   status?: PersistedSessionRunStatus;

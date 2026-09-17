@@ -100,7 +100,9 @@ export function createFollowupRunner(
     let terminalPayloads: ReplyPayload[] = [];
     const admissionNotices: ReplyPayload[] = [];
     let completion: QueuedFollowupReplyBatch["completion"] = { kind: "completed" };
+    let restartRecoveryClaim: AdmittedFollowupTurn["restartRecoveryClaim"] | undefined;
     let queuedFollowupAdmitted = false;
+    let durableRecoveryDeferred = false;
     const initiallyAborted =
       queued.abortSignal?.aborted === true || queued.queueAbortSignal?.aborted === true;
     const endDeliveryCorrelations = initiallyAborted
@@ -151,6 +153,7 @@ export function createFollowupRunner(
       admittedTurn = turn;
       admittedRunId = turn.runId;
       operation = turn.operation;
+      restartRecoveryClaim = turn.restartRecoveryClaim;
       queuedFollowupAdmitted = true;
       const execution = await executeFollowupTurn({
         turn,
@@ -246,10 +249,28 @@ export function createFollowupRunner(
         disposition = { kind: "deferred", reason: error.message };
       } else if (
         operation?.result?.kind === "aborted" &&
+        operation.result.code === "aborted_for_restart"
+      ) {
+        disposition = { kind: "consumed" };
+      } else if (
+        operation?.result?.kind === "aborted" &&
         operation.result.code === "aborted_by_user"
       ) {
         disposition = { kind: "consumed" };
         completion = resolveFollowupCompletion({ kind: "aborted", reason: "user" });
+      } else if (restartRecoveryClaim?.isTracked() === true) {
+        durableRecoveryDeferred = true;
+        try {
+          await restartRecoveryClaim.deferToRecovery();
+        } catch (recoveryError) {
+          // Never tombstone an admitted source because its immediate wake marker
+          // hit a transient store failure. Startup recovery still owns the claim.
+          defaultRuntime.error?.(
+            `followup queue: failed to arm admitted source recovery: ${formatErrorMessage(recoveryError)}`,
+          );
+        }
+        disposition = { kind: "consumed" };
+        operation?.fail("run_failed", error);
       } else if (disposition.kind === "consumed") {
         completion = { kind: "failed", error: formatErrorMessage(error) };
         defaultRuntime.error?.(
@@ -290,6 +311,15 @@ export function createFollowupRunner(
         } catch (error) {
           defaultRuntime.error?.(
             `followup queue: delivery correlation cleanup failed: ${formatErrorMessage(error)}`,
+          );
+        }
+      }
+      if (!durableRecoveryDeferred) {
+        try {
+          await restartRecoveryClaim?.clear();
+        } catch (error) {
+          defaultRuntime.error?.(
+            `followup queue: recovery claim cleanup failed: ${formatErrorMessage(error)}`,
           );
         }
       }

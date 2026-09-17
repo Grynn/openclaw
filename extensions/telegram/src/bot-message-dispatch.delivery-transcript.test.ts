@@ -459,6 +459,62 @@ describeTelegramDispatch("dispatchTelegramMessage delivery-transcript", () => {
     });
   });
 
+  it("mirrors a durably handled visible error final exactly once", async () => {
+    const context = createContext();
+    context.ctxPayload.SessionKey = "agent:default:telegram:direct:123";
+    mockDefaultSessionEntry();
+    deliverInboundReplyWithMessageSendContext.mockResolvedValue({
+      status: "handled_visible",
+      delivery: { messageIds: ["1001"], visibleReplySent: true },
+    });
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver(
+        { text: "Provider failed", isError: true },
+        { kind: "final" },
+      );
+      return { queuedFinal: true };
+    });
+
+    await dispatchWithContext({ context, streamMode: "off" });
+
+    expect(deliverInboundReplyWithMessageSendContext).toHaveBeenCalledTimes(1);
+    expect(deliverReplies).not.toHaveBeenCalled();
+    expect(appendAssistantMirrorMessageByIdentity).toHaveBeenCalledTimes(1);
+    expectRecordFields(mockCallArg(appendAssistantMirrorMessageByIdentity), {
+      agentId: "default",
+      sessionId: "s1",
+      sessionKey: "agent:default:telegram:direct:123",
+      storePath: "/tmp/sessions.json",
+      text: "Provider failed",
+    });
+  });
+
+  it("does not retry durable error delivery when its transcript mirror rejects", async () => {
+    const context = createContext();
+    context.ctxPayload.SessionKey = "agent:default:telegram:direct:123";
+    mockDefaultSessionEntry();
+    deliverInboundReplyWithMessageSendContext.mockResolvedValue({
+      status: "handled_visible",
+      delivery: { messageIds: ["1001"], visibleReplySent: true },
+    });
+    appendAssistantMirrorMessageByIdentity.mockRejectedValueOnce(new Error("mirror unavailable"));
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver(
+        { text: "Provider failed", isError: true },
+        { kind: "final" },
+      );
+      return { queuedFinal: true };
+    });
+
+    await expect(dispatchWithContext({ context, streamMode: "off" })).resolves.toEqual({
+      kind: "completed",
+    });
+
+    expect(deliverInboundReplyWithMessageSendContext).toHaveBeenCalledTimes(1);
+    expect(appendAssistantMirrorMessageByIdentity).toHaveBeenCalledTimes(1);
+    expect(deliverReplies).not.toHaveBeenCalled();
+  });
+
   it("keeps same-millisecond transcript mirror keys distinct per inbound message", async () => {
     createTelegramDraftStream.mockImplementation(() => createDraftStream(2001));
     const dateNow = vi.spyOn(Date, "now").mockReturnValue(1234567890);

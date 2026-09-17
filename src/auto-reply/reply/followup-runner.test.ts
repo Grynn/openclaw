@@ -502,6 +502,31 @@ describe("createFollowupRunner", () => {
     expect(typing.markDispatchIdle).toHaveBeenCalledOnce();
   });
 
+  it("consumes an admitted durable source only after arming recovery", async () => {
+    const order: string[] = [];
+    const typing = createTypingController();
+    const turn = createTurn(order);
+    const clear = vi.fn(async () => order.push("recovery-clear"));
+    const deferToRecovery = vi.fn(async () => order.push("recovery-deferred"));
+    turn.restartRecoveryClaim = {
+      clear,
+      deferToRecovery,
+      isTracked: () => true,
+    } as never;
+    state.admit.mockResolvedValue({ kind: "admitted", turn });
+    state.execute.mockRejectedValue(new Error("candidate failed after durable admission"));
+
+    await createFollowupRunner({ typing, typingMode: "instant", defaultModel: "claude" })(
+      turn.queued,
+    );
+
+    expect(deferToRecovery).toHaveBeenCalledOnce();
+    expect(clear).not.toHaveBeenCalled();
+    expect(state.completeLifecycle).toHaveBeenCalledWith(turn.queued);
+    expect(turn.operation.fail).toHaveBeenCalledOnce();
+    expect(order).toEqual(["recovery-deferred", "operation-failed", "operation-complete"]);
+  });
+
   it("consumes a user abort before execution starts", async () => {
     const typing = createTypingController();
     const turn = createTurn([], { kind: "aborted", code: "aborted_by_user" });
@@ -523,6 +548,25 @@ describe("createFollowupRunner", () => {
         payloads: [],
       }),
     );
+  });
+
+  it("leaves a restart-aborted queued turn to durable recovery instead of replaying it", async () => {
+    const order: string[] = [];
+    const typing = createTypingController();
+    const turn = createTurn(order, { kind: "aborted", code: "aborted_for_restart" });
+    const clear = vi.fn(async () => order.push("recovery-clear"));
+    turn.restartRecoveryClaim = { clear } as never;
+    state.admit.mockResolvedValue({ kind: "admitted", turn });
+    state.execute.mockRejectedValue(new Error("gateway restart"));
+
+    await createFollowupRunner({ typing, typingMode: "instant", defaultModel: "claude" })(
+      turn.queued,
+    );
+
+    expect(clear).toHaveBeenCalledOnce();
+    expect(state.completeLifecycle).toHaveBeenCalledWith(turn.queued);
+    expect(turn.operation.fail).not.toHaveBeenCalled();
+    expect(order).toEqual(["recovery-clear", "operation-complete"]);
   });
 
   it("does not replay a returned execution when terminal delivery fails", async () => {
@@ -572,6 +616,9 @@ describe("createFollowupRunner", () => {
       kind: "deliver" as const,
       payloads: [{ text: "done\nUsage: 1.3k total" } satisfies ReplyPayload],
     };
+    turn.restartRecoveryClaim = {
+      clear: vi.fn(async () => order.push("recovery-cleared")),
+    } as never;
     state.admit.mockResolvedValue({ kind: "admitted", turn });
     state.execute.mockResolvedValue(execution);
     state.account.mockImplementation(async () => {
@@ -611,6 +658,7 @@ describe("createFollowupRunner", () => {
       "delivered",
       "completion",
       "presentation-settled",
+      "recovery-cleared",
       "lifecycle-complete",
       "operation-complete",
     ]);

@@ -1,10 +1,17 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { FollowupRun } from "./queue.js";
+import { createReplyOperation } from "./reply-run-registry.js";
+import { resolveFollowupRunToolAuthorityFingerprint } from "./reply-tool-authority.js";
 
 const state = vi.hoisted(() => ({
   admitLifecycle: vi.fn(),
   admitReply: vi.fn(),
+  claimAdmit: vi.fn(),
+  claimClear: vi.fn(),
+  claimDefer: vi.fn(),
+  claimIsArmed: vi.fn(),
+  claimIsTracked: vi.fn(),
   buildPreflightFailureText: vi.fn(),
   loadEntry: vi.fn(),
   preflight: vi.fn(),
@@ -19,6 +26,18 @@ const state = vi.hoisted(() => ({
 vi.mock("./agent-runner-auto-fallback.js", () => ({
   resolveRunAfterAutoFallbackPrimaryProbeRecheck: (...args: unknown[]) =>
     state.recheckFallbackProbe(...args),
+}));
+
+vi.mock("./agent-restart-recovery-controller.js", () => ({
+  createReplyAgentRestartRecoveryController: () => ({
+    admitUserTurn: (...args: unknown[]) => state.claimAdmit(...args),
+    beginBeforeAgentReply: vi.fn(),
+    checkpointBeforeAgentReply: vi.fn(),
+    clear: (...args: unknown[]) => state.claimClear(...args),
+    deferToRecovery: (...args: unknown[]) => state.claimDefer(...args),
+    isArmed: (...args: unknown[]) => state.claimIsArmed(...args),
+    isTracked: (...args: unknown[]) => state.claimIsTracked(...args),
+  }),
 }));
 
 vi.mock("./agent-runner-memory.js", () => ({
@@ -93,6 +112,7 @@ function createOperation(sessionId = "queued-session") {
     setPhase: vi.fn(),
     abortForRestart: vi.fn(() => true),
     retainFailureUntilComplete: vi.fn(),
+    bindToolAuthoritySnapshot: vi.fn(),
     fail: vi.fn(),
     complete: vi.fn(),
     updateSessionId: vi.fn(),
@@ -116,6 +136,11 @@ beforeEach(() => {
   state.resolveSendPolicy.mockImplementation(() => state.sendPolicy);
   state.resolveConfig.mockImplementation(async (config) => config);
   state.buildPreflightFailureText.mockReturnValue("preflight failed");
+  state.claimAdmit.mockResolvedValue("admitted");
+  state.claimClear.mockResolvedValue(undefined);
+  state.claimDefer.mockResolvedValue(true);
+  state.claimIsArmed.mockReturnValue(false);
+  state.claimIsTracked.mockReturnValue(false);
   state.preflight.mockImplementation(async ({ sessionEntry }) => sessionEntry);
   state.recheckFallbackProbe.mockImplementation(({ run }) => run);
   state.admitLifecycle.mockResolvedValue(undefined);
@@ -158,7 +183,14 @@ describe("admitFollowupTurn", () => {
   });
 
   it("uses admission-time session generation, model lock, policy, and goal context", async () => {
-    const operation = createOperation("admitted-session");
+    const operation = createReplyOperation({
+      sessionKey: "main",
+      sessionId: "admitted-session",
+      turnKind: "queued_followup",
+      resetTriggered: false,
+    });
+    onTestFinished(() => operation.complete());
+    const retainFailure = vi.spyOn(operation, "retainFailureUntilComplete");
     const queuedEntry: SessionEntry = { sessionId: "queued-session", updatedAt: 1 };
     const admittedEntry: SessionEntry = {
       sessionId: "admitted-session",
@@ -196,9 +228,17 @@ describe("admitFollowupTurn", () => {
       expect(result.turn.queued.currentInboundContext).toEqual({ text: "fresh goal" });
       expect(result.turn.sendPolicy).toBe("deny");
       expect(result.turn.session.current()).toBe(admittedEntry);
+      for (const route of [
+        { provider: "anthropic", model: "claude" },
+        { provider: "openai", model: "gpt-test" },
+      ]) {
+        expect(operation.bindToolAuthorityRoute(route)).toBe(
+          resolveFollowupRunToolAuthorityFingerprint(result.turn.queued, route),
+        );
+      }
     }
     expect(onQueuedFollowupAdmitted).toHaveBeenCalledOnce();
-    expect(operation.retainFailureUntilComplete).toHaveBeenCalledOnce();
+    expect(retainFailure).toHaveBeenCalledOnce();
     expect(state.resolveSendPolicy).toHaveBeenCalledWith(
       expect.objectContaining({ chatType: "group" }),
     );

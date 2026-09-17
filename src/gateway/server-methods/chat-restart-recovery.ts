@@ -48,6 +48,7 @@ type RestartSafeChatRequest = {
 };
 
 type RestartSafeChatAdmission = {
+  priorTerminalConstituentSourceTurnIds?: string[];
   priorTerminalSourceRunId?: string;
   requestFingerprint: string;
   retryExpectedState?: SessionTranscriptTurnExpectedState;
@@ -371,7 +372,16 @@ export function resolveRestartSafeChatAdmission(params: {
           retryExpectedState: buildRestartRecoveryExpectedState(entry),
         }
       : entry.restartRecoveryDeliverySourceRunId
-        ? { priorTerminalSourceRunId: entry.restartRecoveryDeliverySourceRunId }
+        ? {
+            ...(entry.restartRecoveryDeliveryConstituentSourceTurnIds?.length
+              ? {
+                  priorTerminalConstituentSourceTurnIds: [
+                    ...entry.restartRecoveryDeliveryConstituentSourceTurnIds,
+                  ],
+                }
+              : {}),
+            priorTerminalSourceRunId: entry.restartRecoveryDeliverySourceRunId,
+          }
         : {}),
   };
 }
@@ -403,6 +413,7 @@ export function buildRestartSafeChatTranscriptState(params: {
       restartRecoveryDeliveryRequestFingerprint: params.admission.requestFingerprint,
       restartRecoveryDeliveryRunId: params.clientRunId,
       restartRecoveryDeliverySourceRunId: params.clientRunId,
+      restartRecoveryDeliveryConstituentSourceTurnIds: undefined,
       restartRecoveryRequesterAccountId: undefined,
       restartRecoveryRequesterSenderId: undefined,
       restartRecoverySameChannelThreadRequired: undefined,
@@ -410,6 +421,13 @@ export function buildRestartSafeChatTranscriptState(params: {
       restartRecoverySourceReplyDeliveryMode: undefined,
       ...(params.admission.priorTerminalSourceRunId
         ? { restartRecoveryTerminalRunIds: [params.admission.priorTerminalSourceRunId] }
+        : {}),
+      ...(params.admission.priorTerminalConstituentSourceTurnIds?.length
+        ? {
+            restartRecoveryTerminalSourceTurnIdGroups: [
+              params.admission.priorTerminalConstituentSourceTurnIds,
+            ],
+          }
         : {}),
     },
   };

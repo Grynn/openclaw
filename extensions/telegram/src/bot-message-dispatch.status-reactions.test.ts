@@ -1,7 +1,9 @@
+import { dispatchReplyWithBufferedBlockDispatcher as dispatchReplyWithBufferedBlockDispatcherRuntime } from "openclaw/plugin-sdk/reply-dispatch-runtime";
 import { expect, it, vi } from "vitest";
 import {
   describeTelegramDispatch,
   createContext,
+  createDirectSessionPayload,
   createStatusReactionController,
   deliverReplies,
   dispatchReplyWithBufferedBlockDispatcher,
@@ -170,5 +172,42 @@ describeTelegramDispatch("dispatchTelegramMessage status-reactions", () => {
     });
     expect(statusReactionController.setDone).not.toHaveBeenCalled();
     expect(reactionApi).not.toHaveBeenCalledWith(123, 456, []);
+  });
+
+  it("uses the error reaction when a raw reply operation failure delivers a visible final", async () => {
+    const statusReactionController = createStatusReactionController();
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async (params) => {
+      return await dispatchReplyWithBufferedBlockDispatcherRuntime({
+        ...params,
+        replyResolver: async (_ctx, options) => {
+          options?.onAgentRunStart?.("raw-failed-run");
+          const replyOperation = Reflect.get(options ?? {}, "replyOperation");
+          if (
+            typeof replyOperation !== "object" ||
+            replyOperation === null ||
+            !("fail" in replyOperation) ||
+            typeof replyOperation.fail !== "function"
+          ) {
+            throw new Error("expected dispatch-owned reply operation");
+          }
+          replyOperation.fail("run_failed", new Error("provider failed"));
+          return { text: "Provider failed", isError: true };
+        },
+      });
+    });
+
+    await dispatchWithContext({
+      context: createContext({
+        ctxPayload: createDirectSessionPayload(),
+        statusReactionController: statusReactionController as never,
+      }),
+      streamMode: "off",
+    });
+
+    await vi.waitFor(() => {
+      expect(statusReactionController.setError).toHaveBeenCalledTimes(1);
+      expect(statusReactionController.restoreInitial).toHaveBeenCalledTimes(1);
+    });
+    expect(statusReactionController.setDone).not.toHaveBeenCalled();
   });
 });

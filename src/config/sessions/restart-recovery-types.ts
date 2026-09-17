@@ -86,6 +86,8 @@ export type SessionRestartRecoveryState = {
   restartRecoveryDeliveryRunId?: string;
   restartRecoveryDeliverySourceRunId?: string;
   restartRecoveryHarnessCompletion?: HarnessCompletionRecovery;
+  /** Provider source turns represented by one synthetic aggregate claim. */
+  restartRecoveryDeliveryConstituentSourceTurnIds?: string[];
   restartRecoveryRequesterAccountId?: string;
   restartRecoveryRequesterSenderId?: string;
   restartRecoverySameChannelThreadRequired?: true;
@@ -93,4 +95,6 @@ export type SessionRestartRecoveryState = {
   restartRecoverySourceReplyDeliveryMode?: SourceReplyDeliveryMode;
   restartRecoveryTerminalDeliveryEvidence?: RestartRecoveryTerminalDeliveryEvidence[];
   restartRecoveryTerminalRunIds?: string[];
+  /** Bounded claim groups preserve every provider source represented by an aggregate. */
+  restartRecoveryTerminalSourceTurnIdGroups?: string[][];
 };

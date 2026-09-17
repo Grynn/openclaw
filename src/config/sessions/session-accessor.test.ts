@@ -4517,6 +4517,8 @@ describe("session accessor seam", () => {
           retryable.restartRecoveryDeliveryRequestFingerprint,
         restartRecoveryDeliveryRunId: retryable.restartRecoveryDeliveryRunId,
         restartRecoveryDeliverySourceRunId: retryable.restartRecoveryDeliverySourceRunId,
+        restartRecoveryDeliveryConstituentSourceTurnIds:
+          retryable.restartRecoveryDeliveryConstituentSourceTurnIds,
         restartRecoveryRequesterAccountId: retryable.restartRecoveryRequesterAccountId,
         restartRecoveryRequesterSenderId: retryable.restartRecoveryRequesterSenderId,
         restartRecoverySameChannelThreadRequired:
@@ -4524,6 +4526,8 @@ describe("session accessor seam", () => {
         restartRecoverySourceIngress: retryable.restartRecoverySourceIngress,
         restartRecoverySourceReplyDeliveryMode: retryable.restartRecoverySourceReplyDeliveryMode,
         restartRecoveryTerminalRunIds: retryable.restartRecoveryTerminalRunIds,
+        restartRecoveryTerminalSourceTurnIdGroups:
+          retryable.restartRecoveryTerminalSourceTurnIdGroups,
         status: retryable.status,
       },
       messages: [
@@ -4737,12 +4741,15 @@ describe("session accessor seam", () => {
       restartRecoveryDeliveryRequestFingerprint: stored.restartRecoveryDeliveryRequestFingerprint,
       restartRecoveryDeliveryRunId: stored.restartRecoveryDeliveryRunId,
       restartRecoveryDeliverySourceRunId: stored.restartRecoveryDeliverySourceRunId,
+      restartRecoveryDeliveryConstituentSourceTurnIds:
+        stored.restartRecoveryDeliveryConstituentSourceTurnIds,
       restartRecoveryRequesterAccountId: stored.restartRecoveryRequesterAccountId,
       restartRecoveryRequesterSenderId: stored.restartRecoveryRequesterSenderId,
       restartRecoverySameChannelThreadRequired: stored.restartRecoverySameChannelThreadRequired,
       restartRecoverySourceIngress: stored.restartRecoverySourceIngress,
       restartRecoverySourceReplyDeliveryMode: stored.restartRecoverySourceReplyDeliveryMode,
       restartRecoveryTerminalRunIds: stored.restartRecoveryTerminalRunIds,
+      restartRecoveryTerminalSourceTurnIdGroups: stored.restartRecoveryTerminalSourceTurnIdGroups,
       status: stored.status,
     };
     const predicateStarted = createDeferred();

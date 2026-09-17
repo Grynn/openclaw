@@ -4037,10 +4037,11 @@ describe("gateway server chat", () => {
     }
   });
 
-  test("chat.send preserves a terminal source claim before admitting the next turn", async () => {
+  test("chat.send terminalizes a replaced aggregate claim before admitting the next turn", async () => {
     const { storePath } = openDirectChatSession();
     const dispatchRelease = createDeferred();
     const priorRunId = "idem-prior-terminal-claim";
+    const priorConstituentSourceTurnIds = ["telegram-update-a", "telegram-update-b"];
     const nextRunId = "idem-after-terminal-claim";
     try {
       await writeStoredMainSession(
@@ -4048,6 +4049,7 @@ describe("gateway server chat", () => {
           abortedLastRun: false,
           restartRecoveryDeliveryRunId: priorRunId,
           restartRecoveryDeliverySourceRunId: priorRunId,
+          restartRecoveryDeliveryConstituentSourceTurnIds: priorConstituentSourceTurnIds,
           restartRecoveryTerminalRunIds: ["idem-older-terminal-claim"],
         }),
       );
@@ -4080,8 +4082,10 @@ describe("gateway server chat", () => {
         restartRecoveryDeliveryRunId: nextRunId,
         restartRecoveryDeliverySourceRunId: nextRunId,
         restartRecoveryTerminalRunIds: ["idem-older-terminal-claim", priorRunId],
+        restartRecoveryTerminalSourceTurnIdGroups: [priorConstituentSourceTurnIds],
         status: "running",
       });
+      expect(snapshotAtAck?.restartRecoveryDeliveryConstituentSourceTurnIds).toBeUndefined();
 
       const retryResponses: Array<{ ok: boolean; payload?: unknown; meta?: unknown }> = [];
       const replayAdmission = vi.fn(async () => true);

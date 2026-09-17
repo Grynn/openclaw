@@ -2,6 +2,7 @@ import { settleProgressVisibilityCallbackResult } from "../../channels/progress-
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { withBeforeAgentReplyObserver } from "../../plugins/before-agent-reply.js";
 import { isFastModeAutoProgressPayload } from "../reply-payload.js";
 import type { TemplateContext } from "../templating.js";
 import type { VerboseLevel } from "../thinking.js";
@@ -10,8 +11,10 @@ import { executeAgentTurn } from "./agent-runner-execution.js";
 import type { AgentTurnExecutionResult } from "./agent-runner-execution.types.js";
 import { buildTerminalAgentRunFailureReplyPayload } from "./agent-runner-failure-reply.js";
 import { resetReplyRunSession } from "./agent-runner-session-reset.js";
+import { createBeforeAgentReplyRecoveryObserver } from "./before-agent-reply-recovery.js";
 import { resolveTurnCommentaryProgressOwner } from "./commentary-progress-owner.js";
 import { requiresDurableToolResultDelivery } from "./dispatch-from-config.payloads.js";
+import { buildFollowupTemplateContext } from "./followup-template-context.js";
 import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./followup-turn-admission.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import { drainPendingToolTasks } from "./pending-tool-task-drain.js";
@@ -30,44 +33,6 @@ export type FollowupExecutionResult = {
     drain(): Promise<void>;
   };
 };
-
-function buildFollowupTemplateContext(turn: AdmittedFollowupTurn): TemplateContext {
-  const queued = turn.queued;
-  const run = queued.run;
-  const surface = queued.originatingChannel ?? run.messageProvider;
-  const sessionKey = turn.session.kind === "session" ? turn.session.key : run.sessionKey;
-  const currentMessageId =
-    run.inputProvenance?.kind === "internal_system" &&
-    run.inputProvenance.sourceTool === "restart-sentinel"
-      ? queued.originatingReplyToId
-      : queued.messageId;
-  return {
-    Provider: run.messageProvider,
-    Surface: surface,
-    OriginatingChannel: queued.originatingChannel,
-    OriginatingTo: queued.originatingTo,
-    To: queued.originatingTo,
-    AccountId: queued.originatingAccountId ?? run.agentAccountId,
-    ChatType: queued.originatingChatType ?? run.chatType,
-    SessionKey: sessionKey,
-    RuntimePolicySessionKey: run.runtimePolicySessionKey ?? sessionKey,
-    MessageSid: currentMessageId,
-    MessageSidFull: currentMessageId,
-    MessageThreadId: queued.originatingThreadId,
-    ReplyToId: queued.originatingReplyToId,
-    SenderId: run.senderId,
-    MemberRoleIds: run.memberRoleIds,
-    ChannelContext: run.channelContext,
-    SenderName: run.senderName,
-    SenderUsername: run.senderUsername,
-    SenderE164: run.senderE164,
-    GroupChannel: run.groupChannel,
-    GroupSpace: run.groupSpace,
-    InputProvenance: run.inputProvenance,
-    InboundEventKind: queued.currentInboundEventKind,
-    media: queued.media,
-  } as TemplateContext;
-}
 
 /** Adapts an admitted queued turn to the canonical agent execution owner. */
 export async function executeFollowupTurn(params: {
@@ -414,6 +379,7 @@ export async function executeFollowupTurn(params: {
           storePath: turn.session.kind === "session" ? turn.session.storePath : undefined,
           resolvedVerboseLevel: currentVerboseLevel() ?? "off",
           toolProgressDetail: defaults.toolProgressDetail,
+          isRestartRecoveryArmed: turn.restartRecoveryClaim?.isArmed,
           onCompactionNoticePayload: (payload) =>
             enqueueProgress(() =>
               progressAllowed()
@@ -426,9 +392,29 @@ export async function executeFollowupTurn(params: {
       // custody after lazy collection binds it, so runtime appends consume all sources.
       await recorder?.resolveMessage();
       turn.operation.abortSignal.throwIfAborted();
+      const restartRecoveryClaim = turn.restartRecoveryClaim;
+      // Recovery observation sits inside source custody: the claim watches this run's
+      // reply, while custody still owns the whole execution.
+      const runExecute = restartRecoveryClaim
+        ? () =>
+            withBeforeAgentReplyObserver(
+              createBeforeAgentReplyRecoveryObserver({
+                cfg: turn.config,
+                controller: restartRecoveryClaim,
+                getActiveSessionEntry: turn.session.current,
+                opts: sourceOpts,
+                replyOperation: turn.operation,
+                runtimePolicySessionKey: turn.queued.run.runtimePolicySessionKey,
+                sessionCtx,
+                sessionKey: turn.session.kind === "session" ? turn.session.key : undefined,
+                storePath: turn.session.kind === "session" ? turn.session.storePath : undefined,
+              }),
+              execute,
+            )
+        : execute;
       execution = await (recorder?.withPendingInput
-        ? recorder.withPendingInput(execute)
-        : execute());
+        ? recorder.withPendingInput(runExecute)
+        : runExecute());
     } catch (error) {
       await drainPendingWork();
       if (!hasReplyOperationExecutionStarted(turn.operation)) {

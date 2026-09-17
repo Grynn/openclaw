@@ -621,6 +621,8 @@ export async function finalizeEmbeddedAgentCommand(params: {
                     restartRecoveryTerminalDeliveryEvidence:
                       entry.restartRecoveryTerminalDeliveryEvidence,
                     restartRecoveryTerminalRunIds: entry.restartRecoveryTerminalRunIds,
+                    restartRecoveryTerminalSourceTurnIdGroups:
+                      entry.restartRecoveryTerminalSourceTurnIdGroups,
                   },
                   recordTerminalSource: true,
                   terminalDeliveryEvidence: buildRestartRecoveryTerminalDeliveryEvidence(

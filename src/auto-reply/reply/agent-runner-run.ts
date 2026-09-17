@@ -15,6 +15,7 @@ import {
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import type { OriginatingChannelType } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
+import { createReplyAgentRestartRecoveryController } from "./agent-restart-recovery-controller.js";
 import {
   BLOCK_REPLY_SEND_TIMEOUT_MS,
   cleanupReplyAgentRun,
@@ -25,10 +26,7 @@ import {
   type RunReplyAgentParams,
   scheduleFollowupDrainAfterReplyOperationClear,
 } from "./agent-runner-core.js";
-import {
-  createReplyAgentRestartRecoveryController,
-  executePreparedReplyAgentRun,
-} from "./agent-runner-execute.js";
+import { executePreparedReplyAgentRun } from "./agent-runner-execute.js";
 import {
   createShouldEmitToolOutput,
   createShouldEmitToolResult,

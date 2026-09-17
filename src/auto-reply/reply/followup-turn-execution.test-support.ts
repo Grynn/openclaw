@@ -5,8 +5,30 @@ import { createMockReplyOperation } from "./test-helpers.js";
 const followupTurnTestState = vi.hoisted(() => ({
   execute: vi.fn(),
   loadEntryReadOnly: vi.fn(),
+  // Captures the before-agent-reply observer the turn installs so a test can drive
+  // its restart-recovery checkpoints without a real plugin hook.
+  observer: undefined as
+    | {
+        beforeDispatch: () => Promise<boolean | void>;
+        afterDispatch: (result: undefined) => Promise<unknown>;
+      }
+    | undefined,
   reset: vi.fn(),
 }));
+
+vi.mock("../../plugins/before-agent-reply.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../plugins/before-agent-reply.js")>();
+  return {
+    ...actual,
+    withBeforeAgentReplyObserver: <T>(
+      observer: NonNullable<typeof followupTurnTestState.observer>,
+      run: () => T,
+    ): T => {
+      followupTurnTestState.observer = observer;
+      return run();
+    },
+  };
+});
 
 vi.mock("./agent-runner-execution.js", () => ({
   executeAgentTurn: (...args: unknown[]) => followupTurnTestState.execute(...args),
@@ -92,6 +114,7 @@ export function createFollowupTurnTestTurn(
 export function resetFollowupTurnTestState() {
   vi.clearAllMocks();
   followupTurnTestState.loadEntryReadOnly.mockReturnValue(undefined);
+  followupTurnTestState.observer = undefined;
   followupTurnTestState.execute.mockResolvedValue({
     runId: "run-1",
     outcome: { kind: "rejected", payload: { text: "done" } },

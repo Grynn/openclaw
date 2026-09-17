@@ -633,6 +633,11 @@ export function createDispatchReplyOperationCoordinator(params: {
     completeDispatchReplyOperation();
   };
 
+  const getAgentRunTerminalOutcome = () =>
+    // The operation is the authoritative owner after admission; providers can
+    // fail it directly while returning a visible terminal error payload.
+    dispatchReplyOperation?.result?.kind === "failed" ? "failed" : agentRunTerminalOutcome;
+
   const isDispatchOperationAborted = () => getDispatchAbortSignal()?.aborted === true;
   const isPreDispatchOperationAborted = () => getPreDispatchAbortSignal()?.aborted === true;
   const throwIfDispatchOperationAborted = () => {
@@ -659,7 +664,7 @@ export function createDispatchReplyOperationCoordinator(params: {
     ensureDispatchReplyOperation,
     failDispatchReplyOperation,
     getAgentRunId: () => agentRunId,
-    getAgentRunTerminalOutcome: () => agentRunTerminalOutcome,
+    getAgentRunTerminalOutcome,
     getDispatchAbortOperation: () => dispatchAbortOperation,
     getDispatchAbortSignal,
     getDispatchReplyOperation: () => dispatchReplyOperation,

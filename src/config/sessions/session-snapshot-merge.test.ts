@@ -14,6 +14,77 @@ const initial: SessionEntry = {
 };
 
 describe("session snapshot merge", () => {
+  it("atomically unions terminal source deltas over concurrent cleanup", () => {
+    const initialRecovery: SessionEntry = {
+      ...initial,
+      restartRecoveryTerminalRunIds: ["run-old"],
+      restartRecoveryTerminalSourceTurnIdGroups: [["source-old-a", "source-old-b"]],
+    };
+    const next: SessionEntry = {
+      ...initialRecovery,
+      updatedAt: 2,
+      restartRecoveryTerminalRunIds: ["run-old", "run-owned"],
+      restartRecoveryTerminalSourceTurnIdGroups: [
+        ["source-old-a", "source-old-b"],
+        ["source-owned-a", "source-owned-b"],
+      ],
+    };
+    const current: SessionEntry = {
+      ...initialRecovery,
+      updatedAt: 3,
+      restartRecoveryTerminalRunIds: ["run-old", "run-concurrent"],
+      restartRecoveryTerminalSourceTurnIdGroups: [
+        ["source-old-a", "source-old-b"],
+        ["source-concurrent-a", "source-concurrent-b"],
+      ],
+    };
+
+    expect(mergeSessionSnapshotChanges({ initial: initialRecovery, next, current })).toMatchObject({
+      restartRecoveryTerminalRunIds: ["run-old", "run-concurrent", "run-owned"],
+      restartRecoveryTerminalSourceTurnIdGroups: [
+        ["source-old-a", "source-old-b"],
+        ["source-concurrent-a", "source-concurrent-b"],
+        ["source-owned-a", "source-owned-b"],
+      ],
+    });
+  });
+
+  it("clears terminal source history when the snapshot rotates session generation", () => {
+    const initialRecovery: SessionEntry = {
+      ...initial,
+      restartRecoveryDeliveryConstituentSourceTurnIds: ["source-active-a", "source-active-b"],
+      restartRecoveryTerminalRunIds: ["run-old"],
+      restartRecoveryTerminalSourceTurnIdGroups: [["source-old-a", "source-old-b"]],
+    };
+    const next: SessionEntry = {
+      ...initialRecovery,
+      sessionId: "session-2",
+      updatedAt: 2,
+      restartRecoveryDeliveryConstituentSourceTurnIds: undefined,
+      restartRecoveryTerminalRunIds: undefined,
+      restartRecoveryTerminalSourceTurnIdGroups: undefined,
+    };
+
+    const current: SessionEntry = {
+      ...initialRecovery,
+      updatedAt: 3,
+      restartRecoveryTerminalRunIds: ["run-old", "run-concurrent"],
+      restartRecoveryTerminalSourceTurnIdGroups: [
+        ["source-old-a", "source-old-b"],
+        ["source-concurrent-a", "source-concurrent-b"],
+      ],
+    };
+    const merged = mergeSessionSnapshotChanges({
+      initial: initialRecovery,
+      next,
+      current,
+    });
+    expect(merged.sessionId).toBe("session-2");
+    expect(merged.restartRecoveryDeliveryConstituentSourceTurnIds).toBeUndefined();
+    expect(merged.restartRecoveryTerminalRunIds).toBeUndefined();
+    expect(merged.restartRecoveryTerminalSourceTurnIdGroups).toBeUndefined();
+  });
+
   it("projects same-provider model changes as an atomic pair", () => {
     const next = { ...initial, model: "claude-sonnet-4-6", updatedAt: 2 };
     const patch = projectSessionSnapshotChanges({ initial, next, current: initial });

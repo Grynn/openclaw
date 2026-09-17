@@ -13,6 +13,7 @@ import {
   resolveReplyOperationAgentTurn,
   type ReplyOperationRunState,
 } from "./reply-operation-run-state.js";
+import { readChannelSourceTurnId } from "./source-turn-id.js";
 
 const state = getFollowupTurnTestState();
 const createTypingController = createFollowupTurnTestTypingController;
@@ -107,7 +108,20 @@ describe("executeFollowupTurn", () => {
   );
 
   it("normalizes queued route facts into the canonical execution call", async () => {
-    const turn = createTurn();
+    const isArmed = vi.fn(() => true);
+    const beginBeforeAgentReply = vi.fn(async () => true);
+    const checkpointBeforeAgentReply = vi.fn(async () => undefined);
+    const turn = createTurn({
+      queued: {
+        ...createTurn().queued,
+        restartRecovery: { sourceTurnId: "followup-collect:aggregate-1" },
+      },
+      restartRecoveryClaim: {
+        isArmed,
+        beginBeforeAgentReply,
+        checkpointBeforeAgentReply,
+      } as never,
+    });
     const typing = createTypingController();
     const onAgentRunStart = vi.fn();
     state.execute.mockImplementation(async (params: AgentTurnParams) => {
@@ -137,6 +151,7 @@ describe("executeFollowupTurn", () => {
       sessionKey: "main",
     });
     expect(call.opts?.runId).toBe("run-1");
+    expect(call.isRestartRecoveryArmed).toBe(isArmed);
     expect(call.sessionCtx).toMatchObject({
       Provider: "slack",
       Surface: "discord",
@@ -149,6 +164,12 @@ describe("executeFollowupTurn", () => {
     });
     expect(call.sessionCtx.media).toEqual([{ kind: "audio", contentType: "audio/ogg" }]);
     expect(onAgentRunStart).toHaveBeenCalledWith("run-1");
+    expect(readChannelSourceTurnId(call.sessionCtx)).toBe("followup-collect:aggregate-1");
+    expect(state.observer).toBeDefined();
+    await state.observer?.beforeDispatch();
+    await state.observer?.afterDispatch(undefined);
+    expect(beginBeforeAgentReply).toHaveBeenCalledTimes(1);
+    expect(checkpointBeforeAgentReply).toHaveBeenCalledWith({ state: undefined });
   });
 
   it.each(["off", "on", "full"] as const)(
