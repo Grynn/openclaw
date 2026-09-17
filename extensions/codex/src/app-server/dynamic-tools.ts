@@ -48,10 +48,6 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-tool-runtime";
 import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
-import {
-  type JsonSchemaObject,
-  validateJsonSchemaValue,
-} from "openclaw/plugin-sdk/json-schema-runtime";
 import type { ImageContent, TextContent } from "openclaw/plugin-sdk/llm";
 import {
   asNonArrayRecord,
@@ -76,6 +72,12 @@ import {
   type CodexDynamicToolSchemaQuarantine,
   type CodexToolDescriptor,
 } from "./dynamic-tool-catalog.js";
+import {
+  assertCodexDynamicToolInputMatchesSchema,
+  createCodexDynamicToolValidationControl,
+  resolveCodexNarrowedRootMessageSchema,
+  shouldValidateCodexDynamicToolInput,
+} from "./dynamic-tool-input-validation.js";
 import {
   createFailedDynamicToolResponse,
   type CodexDynamicToolRuntimeResponse,
@@ -117,57 +119,6 @@ type CodexDynamicToolHookContext = NonNullable<
 type CodexToolResultHookContext = Omit<CodexDynamicToolHookContext, "config">;
 
 type ProjectedCodexDynamicTool = ProjectedTool<AnyAgentTool>;
-
-const INTERNAL_TOOL_EXECUTION_VALIDATION = Symbol.for("openclaw.internalToolExecutionValidation");
-const MAX_CODEX_DYNAMIC_TOOL_VALIDATION_ERRORS = 4;
-const MAX_CODEX_DYNAMIC_TOOL_VALIDATION_ERROR_CHARS = 160;
-const CODEX_DYNAMIC_TOOL_VALIDATION_TRUNCATED_SUFFIX = " [detail truncated]";
-
-function shouldValidateCodexDynamicToolInput(tool: AnyAgentTool): boolean {
-  return getPluginToolMeta(tool)?.mcp?.operation !== "tool";
-}
-
-function assertCodexDynamicToolInputMatchesSchema(params: {
-  toolName: string;
-  schema: JsonSchemaObject;
-  value: unknown;
-}): void {
-  const validation = validateJsonSchemaValue({
-    schema: params.schema,
-    cacheKey: `codex-dynamic-tool-input:${params.toolName}:${JSON.stringify(params.schema)}`,
-    value: params.value,
-  });
-  if (validation.ok) {
-    return;
-  }
-  const visibleErrors = validation.errors.slice(0, MAX_CODEX_DYNAMIC_TOOL_VALIDATION_ERRORS);
-  const details = visibleErrors
-    .map((error) => {
-      if (error.text.length <= MAX_CODEX_DYNAMIC_TOOL_VALIDATION_ERROR_CHARS) {
-        return error.text;
-      }
-      return `${error.text.slice(
-        0,
-        MAX_CODEX_DYNAMIC_TOOL_VALIDATION_ERROR_CHARS -
-          CODEX_DYNAMIC_TOOL_VALIDATION_TRUNCATED_SUFFIX.length,
-      )}${CODEX_DYNAMIC_TOOL_VALIDATION_TRUNCATED_SUFFIX}`;
-    })
-    .join("; ");
-  const omitted = validation.errors.length - visibleErrors.length;
-  const omittedSuffix = omitted > 0 ? `; ${omitted} more violation(s) omitted` : "";
-  throw new Error(`Invalid arguments for tool "${params.toolName}": ${details}${omittedSuffix}.`);
-}
-
-function createCodexDynamicToolValidationControl(params: {
-  toolCallId: string;
-  validate: (value: unknown) => void;
-}): Record<PropertyKey, unknown> {
-  return {
-    [INTERNAL_TOOL_EXECUTION_VALIDATION]: true,
-    toolCallId: params.toolCallId,
-    validate: params.validate,
-  };
-}
 
 function applyCurrentMessageProvider(
   toolName: string,
@@ -681,6 +632,11 @@ export function createCodexDynamicToolBridge(params: {
       const rawArguments =
         toolName === "automations" ? resolveAutomationsToolsAllow(call.arguments) : call.arguments;
       const args = asNonArrayRecord(rawArguments);
+      const narrowedRootMessageSchema = resolveCodexNarrowedRootMessageSchema({
+        specs,
+        toolName,
+        namespace: call.namespace,
+      });
       const startedAt = Date.now();
       const signal = composeAbortSignals(params.signal, options?.signal);
       let didStartExecution = false;
@@ -714,6 +670,16 @@ export function createCodexDynamicToolBridge(params: {
         }
       };
       try {
+        // Reject forged rich or routed root calls before message-specific
+        // preparation can read media; the wrapper validates hook-adjusted
+        // arguments against the same schema again below.
+        if (narrowedRootMessageSchema) {
+          assertCodexDynamicToolInputMatchesSchema({
+            toolName,
+            schema: narrowedRootMessageSchema,
+            value: rawArguments,
+          });
+        }
         // Compatibility preparation owns raw arguments; record coercion must not run first.
         const prepare = tool.prepareArguments;
         const toolArgs = prepare ? Reflect.apply(prepare, tool, [rawArguments]) : args;
@@ -749,7 +715,7 @@ export function createCodexDynamicToolBridge(params: {
               validate: (value) =>
                 assertCodexDynamicToolInputMatchesSchema({
                   toolName,
-                  schema: toolEntry.inputSchema,
+                  schema: narrowedRootMessageSchema ?? toolEntry.inputSchema,
                   value,
                 }),
             }),
