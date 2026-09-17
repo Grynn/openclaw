@@ -20,6 +20,8 @@ import { refreshQueuedFollowupSession } from "../../auto-reply/reply/queue.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth-profile-override-provenance.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { isAcpSessionKey, isSubagentSessionKey } from "../../routing/session-key.js";
+import { isAgentSessionModelPatchOrigin } from "../session-model-patch-origin.js";
 import type { SessionWorkerPlacementContext } from "../worker-environments/session-placement-lifecycle.js";
 import { resolveGatewayModelSelectionPolicy } from "./session-model-selection-policy.js";
 import { resolveSessionWorkerPlacementPatchError } from "./sessions-shared.js";
@@ -32,7 +34,15 @@ export function persistSessionPatchModelSelection(params: {
   sessionKey: string;
   targetAgentId: string;
 }): void {
-  if (typeof params.patch.model !== "string") {
+  if (
+    typeof params.patch.model !== "string" ||
+    isAgentSessionModelPatchOrigin() ||
+    isSubagentSessionKey(params.sessionKey) ||
+    isAcpSessionKey(params.sessionKey) ||
+    (params.entry.spawnDepth ?? 0) > 0 ||
+    Boolean(params.entry.spawnedBy?.trim()) ||
+    Boolean(params.entry.parentSessionKey?.trim())
+  ) {
     return;
   }
   const policy = resolveGatewayModelSelectionPolicy({

@@ -38,7 +38,7 @@ const REASONING_ONLY_RETRY_INSTRUCTION =
   "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch.";
 const EMPTY_RESPONSE_RETRY_INSTRUCTION =
   "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.";
-const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
+export const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
   "The previous assistant turn completed its tool calls but did not produce a user-visible answer. Continue from the current transcript and produce the final user-visible answer now. Do not repeat completed tool calls or restart from scratch. Tools are unavailable in this step: it is a text-only pass, so reply with plain text and do not attempt any tool call.";
 
 export function shouldRetrySilentErrorAssistantTurn(params: {
@@ -110,6 +110,8 @@ function shouldSkipNonVisibleTurnRetry(params: {
     params.aborted ||
     params.timedOut ||
     params.attempt.terminal.kind === "failed" ||
+    params.attempt.itemLifecycle.activeCount > 0 ||
+    params.attempt.itemLifecycle.completedCount !== params.attempt.itemLifecycle.startedCount ||
     params.attempt.clientToolCalls ||
     params.attempt.yieldDetected ||
     params.attempt.didSendDeterministicApprovalPrompt ||
@@ -120,7 +122,7 @@ function shouldSkipNonVisibleTurnRetry(params: {
   );
 }
 
-/** Allows configured silent handling for replay-safe empty, reasoning-only, or explicit silent turns. */
+/** Allows declared exact silence or configured handling for eligible non-visible turns. */
 export function shouldTreatEmptyAssistantReplyAsSilent(params: {
   allowEmptyAssistantReplyAsSilent?: boolean;
   onlyExplicitSilentReply?: boolean;
@@ -140,10 +142,15 @@ export function shouldTreatEmptyAssistantReplyAsSilent(params: {
     params.payloadCount === 0 &&
     assistant?.stopReason !== "error" &&
     hasOnlySilentAssistantReply(params.attempt.assistantTexts);
-  const tolerateSideEffects = terminalReplyOptional || explicitSilentReply;
+  // An authored NO_REPLY is silence on its own. The allow-empty toggle widens
+  // which turns may reach that classification; it is not required to honour one
+  // the model actually authored.
   if (
     (!params.allowEmptyAssistantReplyAsSilent && !explicitSilentReply) ||
-    shouldSkipNonVisibleTurnRetry({ ...params, tolerateSideEffects })
+    shouldSkipNonVisibleTurnRetry({
+      ...params,
+      tolerateSideEffects: terminalReplyOptional || explicitSilentReply,
+    })
   ) {
     return false;
   }

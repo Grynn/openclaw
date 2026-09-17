@@ -274,6 +274,7 @@ type EmbeddedAgentParams = {
   sessionManager?: SessionManager;
   provider?: string;
   model?: string;
+  contextTokenBudget?: number;
   thinkLevel?: string;
   agentHarnessId?: string;
   agentHarnessRuntimeOverride?: string;
@@ -286,6 +287,7 @@ type EmbeddedAgentParams = {
   allowEmptyAssistantReplyAsSilent?: boolean;
   terminalReplyExpectation?: "required" | "optional";
   extraSystemPrompt?: string;
+  bootstrapContextMode?: "full" | "lightweight";
   bootstrapPromptWarningSignaturesSeen?: string[];
   bootstrapPromptWarningSignature?: string;
   abortSignal?: AbortSignal;
@@ -4866,6 +4868,10 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(flushCall.extraSystemPrompt).toContain("Flush memory now.");
     expect(flushCall.memoryFlushWritePath).toBe("memory/2023-11-14.md");
     expect(flushCall.silentExpected).toBe(true);
+    // A pre-compaction checkpoint is append-only: it must stay bounded instead of
+    // inheriting the conversation window it is protecting.
+    expect(flushCall.contextTokenBudget).toBe(64_000);
+    expect(flushCall.bootstrapContextMode).toBe("lightweight");
     expect(flushCall.bootstrapPromptWarningSignaturesSeen).toEqual(["sig-a", "sig-b"]);
     expect(flushCall.bootstrapPromptWarningSignature).toBe("sig-b");
   });

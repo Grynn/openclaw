@@ -18,6 +18,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
+import { withAgentSessionModelPatchOrigin } from "../session-model-patch-origin.js";
 import type { GatewayClient, GatewayRequestContext, RespondFn } from "./types.js";
 
 const pluginMetadata = vi.hoisted(() => ({
@@ -399,6 +400,48 @@ describe("sessions.patch sticky model persistence", () => {
       expect(effects.mutateConfigFileWithRetry).not.toHaveBeenCalled();
     },
   );
+
+  it("keeps an agent-requested model patch session-only", async () => {
+    const sessionKey = "agent:main:dm:agent-requested-model";
+    await upsertSessionEntryCore(
+      { agentId: "main", sessionKey },
+      { sessionId: "session-agent-requested-model", updatedAt: 1 },
+    );
+
+    const response = await withAgentSessionModelPatchOrigin(async () =>
+      patchSession({ key: sessionKey, model: "openai/gpt-5.6-sol" }),
+    );
+
+    expect(response[0]).toBe(true);
+    expect(loadSessionEntry({ agentId: "main", sessionKey })).toMatchObject({
+      providerOverride: "openai",
+      modelOverride: "gpt-5.6-sol",
+    });
+    expect(effects.mutateConfigFileWithRetry).not.toHaveBeenCalled();
+  });
+
+  it("keeps a spawned child model patch session-only", async () => {
+    const sessionKey = "agent:main:subagent:child-model";
+    await upsertSessionEntryCore(
+      { agentId: "main", sessionKey },
+      {
+        sessionId: "session-child-model",
+        updatedAt: 1,
+        spawnedBy: "agent:main:main",
+        parentSessionKey: "agent:main:main",
+        spawnDepth: 1,
+      },
+    );
+
+    const response = await patchSession({ key: sessionKey, model: "openai/gpt-5.6-sol" });
+
+    expect(response[0]).toBe(true);
+    expect(loadSessionEntry({ agentId: "main", sessionKey })).toMatchObject({
+      providerOverride: "openai",
+      modelOverride: "gpt-5.6-sol",
+    });
+    expect(effects.mutateConfigFileWithRetry).not.toHaveBeenCalled();
+  });
 
   it("returns session success and warns when the sticky config write fails", async () => {
     cfg.agents!.defaults!.modelSelectionScope = "global";

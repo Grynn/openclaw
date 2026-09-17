@@ -159,6 +159,47 @@ describe("pushResolvedAgentCapabilityChanges", () => {
     );
   });
 
+  it("classifies heartbeat tool caps by effective set membership", () => {
+    const narrowed = collectChanges({
+      currentAgent: { id: "worker", heartbeat: { every: "5m" } },
+      desiredAgent: { id: "worker", heartbeat: { every: "5m", tools: ["exec"] } },
+    });
+    expect(narrowed).toContainEqual(
+      expect.objectContaining({
+        path: "agent.heartbeat.tools",
+        classification: "reduction",
+        requiresDistinctConsent: false,
+      }),
+    );
+
+    const widened = collectChanges({
+      currentAgent: { id: "worker", heartbeat: { every: "5m", tools: ["exec"] } },
+      desiredAgent: {
+        id: "worker",
+        heartbeat: { every: "5m", tools: ["exec", "memory_search"] },
+      },
+    });
+    expect(widened).toContainEqual(
+      expect.objectContaining({
+        path: "agent.heartbeat.tools",
+        classification: "escalation",
+        requiresDistinctConsent: true,
+      }),
+    );
+
+    const removed = collectChanges({
+      currentAgent: { id: "worker", heartbeat: { every: "5m", tools: ["exec"] } },
+      desiredAgent: { id: "worker", heartbeat: { every: "5m" } },
+    });
+    expect(removed).toContainEqual(
+      expect.objectContaining({
+        path: "agent.heartbeat.tools",
+        classification: "escalation",
+        requiresDistinctConsent: true,
+      }),
+    );
+  });
+
   it("ranks sandbox mode and sharing scope", () => {
     const changes = collectChanges({
       currentAgent: { id: "worker", sandbox: { mode: "off", scope: "shared" } },

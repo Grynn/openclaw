@@ -71,10 +71,7 @@ const BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX =
 const ACCEPTED_SESSION_SPAWN_CONTINUATION_TEXT =
   "I’m continuing this work and will send the result when it is ready.";
 
-type TerminalPresentationObservation = {
-  terminalPresentation?: string;
-  toolCallOrdinal?: number;
-};
+type TerminalPresentationObservation = { terminalPresentation?: string; toolCallOrdinal?: number };
 
 export function createTerminalToolPresentationTracker() {
   let latestOrdinal = -1;

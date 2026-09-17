@@ -9,6 +9,7 @@ import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   buildCodexSystemPromptReport,
+  hasCodexSkillCatalogTool,
   prependCodexOpenClawPromptContext,
   readContextEngineThreadBootstrapProjection,
   resolveCodexDeliveryHintPreservedInputRange,
@@ -37,9 +38,12 @@ import {
   codexDynamicToolsFingerprint,
   codexLegacyDynamicToolsFingerprint,
 } from "./thread-lifecycle.js";
-import { hasCodexMirrorOrigin } from "./transcript-mirror-attestation.js";
+import {
+  selectCodexHistoryAfterExactCoverage,
+  selectCodexHistoryAfterInvalidExactCoverage,
+  selectCodexHistoryAfterLegacyTimestamp,
+} from "./transcript-coverage.js";
 import { buildCodexParentLocalInstructions } from "./turn-params.js";
-import { readMirrorIdentity } from "./upstream-prompt-provenance.js";
 
 function isRestrictivePromptToolsAllow(toolsAllow: string[] | undefined): boolean {
   return toolsAllow !== undefined && !toolsAllow.some((name) => name.trim() === "*");
@@ -50,7 +54,9 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     runtime,
     attemptTools,
     historyState,
+    transcriptReadFence,
     hookContext,
+    hookRunner,
     workspaceBootstrapContext,
     buildActiveContextEngineRuntimeContext,
     baseDeveloperInstructions,
@@ -78,6 +84,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     agentDir,
     appServer,
     contextSessionKey,
+    sessionAgentId,
     effectiveWorkspace,
     sandbox,
   } = connection;
@@ -163,6 +170,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     promptState.promptContextRange = projection.promptContextRange;
     promptState.prePromptMessageCount = projection.prePromptMessageCount;
     promptState.noEngineContinuityProjectionApplied = true;
+    return true;
   };
   const applyActiveContextEngineProjection = async (
     decisionStartupBinding: typeof mutable.startupBinding,
@@ -190,7 +198,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       fallbackReason: usesSupervisionConnection ? undefined : params.fallbackReason,
       degradedReason: usesSupervisionConnection ? undefined : params.degradedReason,
       runtimeContext: buildActiveContextEngineRuntimeContext(),
-      transcriptReadFence: params.userTurnTranscriptRecorder?.getAdmissionReceipt(),
+      transcriptReadFence,
       prompt: params.prompt,
     });
     if (!assembled) {
@@ -205,6 +213,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
           expectedBinding: buildContextEngineBinding(
             buildActiveRunAttemptParams(),
             contextEngineProjection,
+            sessionAgentId,
           ),
           projection: contextEngineProjection,
           dynamicToolsFingerprint: codexDynamicToolsFingerprint(toolBridge.specs),
@@ -287,6 +296,9 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       ? ""
       : params.prompt;
   const buildPromptFromCurrentInputs = async () => {
+    const hookMessages = hookRunner?.hasHooks("before_prompt_build")
+      ? await historyState.ensureLoaded()
+      : [];
     const result = await resolveAgentHarnessBeforePromptBuildResult({
       currentUserMessage,
       currentUserMessageId: admittedMessage?.idempotencyKey,
@@ -301,7 +313,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
           return promptState.developerInstructions;
         },
       },
-      messages: historyState.messages,
+      messages: hookMessages,
       ctx: hookContext,
       bootstrapContextRunKind: params.bootstrapContextRunKind,
       toolAuthority: {
@@ -460,42 +472,40 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     };
     turnState.codexTurnPromptText = decorateCodexTurnPromptText(nextPromptBuild);
   };
-  const selectNewerVisibleHistoryAfterBinding = (
+  const selectNewerVisibleHistoryAfterBinding = async (
     binding: NonNullable<typeof mutable.startupBinding>,
   ) => {
-    const cutoff = Date.parse(binding.historyCoveredThrough ?? "");
-    return historyState.messages.filter((message) => {
-      if (
-        message.role !== "user" &&
-        message.role !== "assistant" &&
-        !isCodexDurableCustomMessage(message)
-      ) {
-        return false;
+    if (!binding.transcriptCoverage) {
+      const historyMessages = await historyState.ensureLoaded();
+      return selectCodexHistoryAfterLegacyTimestamp(historyMessages, binding.historyCoveredThrough);
+    }
+    if (transcriptReadFence) {
+      const exact = await selectCodexHistoryAfterExactCoverage({
+        coverage: binding.transcriptCoverage,
+        currentAdmission: transcriptReadFence,
+        signal: connection.runAbortController.signal,
+      });
+      connection.runAbortController.signal.throwIfAborted();
+      connection.assertCurrent();
+      if (exact.kind === "ok") {
+        return exact.messages;
       }
-      const mirrorIdentity = readMirrorIdentity(message);
-      const timestamp =
-        typeof message.timestamp === "number"
-          ? message.timestamp
-          : typeof message.timestamp === "string"
-            ? Date.parse(message.timestamp)
-            : Number.NaN;
-      return (
-        !(
-          "idempotencyKey" in message &&
-          typeof message.idempotencyKey === "string" &&
-          message.idempotencyKey.startsWith("codex-app-server:")
-        ) &&
-        !hasCodexMirrorOrigin(message) &&
-        !mirrorIdentity?.startsWith("codex-app-server:") &&
-        Number.isFinite(timestamp) &&
-        timestamp > (Number.isFinite(cutoff) ? cutoff : 0)
+      embeddedAgentLog.warn(
+        "codex exact transcript coverage is unavailable; replaying visible context",
+        {
+          threadId: binding.threadId,
+          reason: exact.kind,
+        },
       );
-    });
+    }
+    // An invalid exact boundary must never fall back to a later wall-clock
+    // cutoff: doing so could hide a message that arrived during the prior turn.
+    return selectCodexHistoryAfterInvalidExactCoverage(await historyState.ensureLoaded());
   };
   const applyResumeStaleBindingContinuityProjection = async (
     binding: NonNullable<typeof mutable.startupBinding>,
   ) => {
-    const newerVisibleMessages = selectNewerVisibleHistoryAfterBinding(binding);
+    const newerVisibleMessages = await selectNewerVisibleHistoryAfterBinding(binding);
     if (newerVisibleMessages.length === 0) {
       return false;
     }
@@ -504,6 +514,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
   };
   const precomputeNoContextEngineStaleBindingProjection = async () => {
     promptState.precomputedStaleBindingContinuityProjectionApplied = false;
+    promptState.precomputedStaleBindingContinuityProjectionThreadId = undefined;
     promptState.staleBindingContinuityForcedFreshStart = false;
     const binding = mutable.startupBinding;
     if (activeContextEngine || !binding?.threadId || binding.pendingSupervisionBranch) {
@@ -514,7 +525,9 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       return false;
     }
     const projected = await applyResumeStaleBindingContinuityProjection(binding);
+    promptState.precomputedStaleBindingContinuityProjectionResolved = true;
     promptState.precomputedStaleBindingContinuityProjectionApplied = projected;
+    promptState.precomputedStaleBindingContinuityProjectionThreadId = binding.threadId;
     return projected;
   };
   const applyNoContextEngineContinuityProjection = async (
@@ -533,8 +546,15 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     if (activeContextEngine || (!hasContinuity && !params.pluginRuntimeRefreshMessages?.length)) {
       return false;
     }
-    if (action === "resumed" && promptState.precomputedStaleBindingContinuityProjectionApplied) {
-      return true;
+    if (
+      action === "resumed" &&
+      binding &&
+      promptState.precomputedStaleBindingContinuityProjectionResolved &&
+      promptState.precomputedStaleBindingContinuityProjectionThreadId === binding.threadId
+    ) {
+      // A valid empty delta is a resolved result too; do not query it again
+      // after thread startup just because no continuity projection was needed.
+      return promptState.precomputedStaleBindingContinuityProjectionApplied;
     }
     if (action === "started" && promptState.staleBindingContinuityForcedFreshStart) {
       return true;
@@ -543,7 +563,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       return false;
     }
     if (action === "resumed" && binding) {
-      return applyResumeStaleBindingContinuityProjection(binding);
+      return await applyResumeStaleBindingContinuityProjection(binding);
     }
     if (action === "started") {
       await applyContinuityProjection(historyState.messages);
@@ -616,6 +636,13 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     });
   };
   await rotateStartupBindingForProjectedTurn();
+  // With the lazy catalog tool present the snapshot prompt stays out of the system
+  // prompt: the model discovers skills through the tool instead of up-front bytes.
+  const skillsPrompt = hasCodexSkillCatalogTool(toolBridge.availableSpecs)
+    ? (skillsCollaborationInstructions ?? "")
+    : skillsCollaborationInstructions
+      ? (params.skillsSnapshot?.prompt ?? "")
+      : "";
   const buildSystemPromptReport = (omitWorkspaceReferences = false) =>
     buildCodexSystemPromptReport({
       attempt: params,
@@ -624,7 +651,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       developerInstructions: buildRenderedCodexDeveloperInstructions(),
       workspaceBootstrapContext,
       omitWorkspaceReferences,
-      skillsPrompt: skillsCollaborationInstructions ? (params.skillsSnapshot?.prompt ?? "") : "",
+      skillsPrompt,
       tools: toolBridge.availableSpecs,
     });
   const systemPromptReport = buildSystemPromptReport();

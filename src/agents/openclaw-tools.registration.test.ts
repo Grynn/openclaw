@@ -628,7 +628,7 @@ describe("sessions_yield completion ownership", () => {
         requesterSessionKey: "agent:main:subagent:worker",
         requesterTurnRunId: "run-subagent",
       });
-      expect(onYield).toHaveBeenCalledOnce();
+      expect(onYield).not.toHaveBeenCalled();
     } finally {
       markRequesterTurnYielded.mockRestore();
     }

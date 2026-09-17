@@ -254,6 +254,23 @@ describe("resolveReusableWorkspaceSkillSnapshot", () => {
     expect(buildWorkspaceSkillSnapshotMock).toHaveBeenCalledTimes(2);
   });
 
+  it("rebuilds an unrestricted snapshot after a filtered heartbeat turn", async () => {
+    const result = await resolveReusableWorkspaceSkillSnapshot({
+      workspaceDir: TEST_WORKSPACE_DIR,
+      config: {},
+      existingSnapshot: {
+        ...strippedSnapshot(),
+        skillFilter: ["heartbeat-only"],
+      },
+    });
+
+    expect(result.shouldRefresh).toBe(true);
+    expect(buildWorkspaceSkillSnapshotMock).toHaveBeenCalledWith(
+      TEST_WORKSPACE_DIR,
+      expect.objectContaining({ skillFilter: undefined }),
+    );
+  });
+
   it("refreshes when effective node-skill eligibility changes", async () => {
     const result = await resolveReusableWorkspaceSkillSnapshot({
       workspaceDir: TEST_WORKSPACE_DIR,

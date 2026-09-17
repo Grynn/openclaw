@@ -56,6 +56,8 @@ export const HeartbeatSchema = z
     to: z.string().optional(),
     accountId: z.string().optional(),
     prompt: z.string().optional(),
+    skills: z.array(z.string()).optional(),
+    tools: z.array(z.string()).optional(),
     timeoutSeconds: z.number().int().positive().optional(),
     lightContext: z.boolean().optional(),
     isolatedSession: z.boolean().optional(),
@@ -118,6 +120,8 @@ export const HeartbeatSchema = z
 
 export const AgentContextLimitsSchema = z
   .object({
+    /** Max chars projected into Codex continuity prompts; only narrows the token-derived cap. */
+    contextProjectionMaxChars: z.number().int().min(1).max(1_000_000).optional(),
     /** Default max chars returned by memory_get before truncation metadata/notice (default: 12000). */
     memoryGetMaxChars: z.number().int().min(1).max(250_000).optional(),
     /** Max chars retained from post-compaction AGENTS.md context injection (default: 1800). */

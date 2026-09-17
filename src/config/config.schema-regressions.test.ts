@@ -232,6 +232,7 @@ describe("config schema regressions", () => {
       agents: {
         defaults: {
           contextLimits: {
+            contextProjectionMaxChars: 304_000,
             memoryGetMaxChars: 20_000,
             postCompactionMaxChars: 4_000,
           },
@@ -242,6 +243,7 @@ describe("config schema regressions", () => {
               maxSkillsPromptChars: 30_000,
             },
             contextLimits: {
+              contextProjectionMaxChars: 280_000,
               memoryGetMaxChars: 24_000,
             },
           },

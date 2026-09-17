@@ -2,6 +2,7 @@ import {
   isActiveHarnessContextEngine,
   type EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { resolveAgentConfig } from "openclaw/plugin-sdk/agent-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   resolveCodexContextEngineProjectionMaxChars,
@@ -22,6 +23,7 @@ export type CodexContextEngineThreadBootstrapProjection = {
 export function buildContextEngineBinding(
   params: EmbeddedRunAttemptParams,
   projection?: CodexContextEngineThreadBootstrapProjection,
+  agentId?: string,
 ): CodexAppServerContextEngineBinding | undefined {
   const contextEngine = isActiveHarnessContextEngine(params.contextEngine)
     ? params.contextEngine
@@ -41,13 +43,25 @@ export function buildContextEngineBinding(
       turnMaintenanceMode: contextEngine.info.turnMaintenanceMode,
       citationsMode: resolveContextEngineCitationsMode(params.config),
       contextTokenBudget: params.contextTokenBudget,
-      projectionMaxChars: resolveCodexContextEngineProjectionMaxChars({
-        contextTokenBudget: params.contextTokenBudget,
-        reserveTokens: resolveCodexContextEngineProjectionReserveTokens(),
-      }),
+      projectionMaxChars: resolveCodexContextEngineProjectionMaxCharsForAttempt(params, agentId),
     }),
     projection: projection ? buildContextEngineProjectionBinding(projection) : undefined,
   };
+}
+
+export function resolveCodexContextEngineProjectionMaxCharsForAttempt(
+  params: EmbeddedRunAttemptParams,
+  agentId?: string,
+): number {
+  const defaults = params.config?.agents?.defaults?.contextLimits;
+  const contextLimits = agentId
+    ? (resolveAgentConfig(params.config ?? {}, agentId)?.contextLimits ?? defaults)
+    : defaults;
+  return resolveCodexContextEngineProjectionMaxChars({
+    contextTokenBudget: params.contextTokenBudget,
+    contextProjectionMaxChars: contextLimits?.contextProjectionMaxChars,
+    reserveTokens: resolveCodexContextEngineProjectionReserveTokens(),
+  });
 }
 
 function buildContextEngineProjectionBinding(

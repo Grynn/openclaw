@@ -233,6 +233,7 @@ Shared defaults for bounded runtime context surfaces.
   agents: {
     defaults: {
       contextLimits: {
+        contextProjectionMaxChars: 304000,
         memoryGetMaxChars: 12000,
         postCompactionMaxChars: 1800,
       },
@@ -241,6 +242,12 @@ Shared defaults for bounded runtime context surfaces.
 }
 ```
 
+- `contextProjectionMaxChars`: optional upper bound on assembled conversation
+  characters rendered into Codex app-server continuity prompts. OpenClaw takes
+  the lower of this value and the token-derived Codex projection limit, so this
+  setting can only narrow a projection. It does not change `contextTokens`, the
+  model context window, context-engine token budgets, provider context guards,
+  or compaction thresholds.
 - `memoryGetMaxChars`: default `memory_get` excerpt cap before truncation
   metadata and continuation notice are added.
 - When `memory_get` omits `lines`, OpenClaw uses a built-in 120-line window and

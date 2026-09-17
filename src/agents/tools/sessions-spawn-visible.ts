@@ -151,30 +151,32 @@ export async function maybeSpawnVisibleSession(params: {
   const unsupported = [
     [
       "runtime",
-      params.runtime === "subagent" ? undefined : params.runtime,
+      params.raw.runtime === "subagent" ? undefined : params.raw.runtime,
       'supports runtime="subagent" only',
     ],
     [
       "thinking",
-      readToolStringParam(params.raw, "thinking"),
+      typeof params.raw.thinking === "string" && !params.raw.thinking.trim()
+        ? undefined
+        : params.raw.thinking,
       "thinking overrides are not wired to the sessions.create path",
     ],
     [
       "thread",
-      params.raw.thread === true ? true : undefined,
+      params.raw.thread === false ? undefined : params.raw.thread,
       "visible sessions route to the dashboard, not a channel thread",
     ],
     ["mode", requestedMode, "visible sessions are persistent dashboard sessions"],
     [
       "lightContext",
-      params.raw.lightContext === true ? true : undefined,
+      params.raw.lightContext === false ? undefined : params.raw.lightContext,
       "bootstrap staging is not wired to the sessions.create path",
     ],
     [
       "attachments",
-      Array.isArray(params.raw.attachments) && params.raw.attachments.length > 0
-        ? params.raw.attachments
-        : undefined,
+      Array.isArray(params.raw.attachments) && params.raw.attachments.length === 0
+        ? undefined
+        : params.raw.attachments,
       "attachment staging is not wired to the sessions.create path",
     ],
     [

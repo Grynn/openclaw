@@ -26,6 +26,7 @@ import {
   runWithCronCreatorAuthorityCapabilityResolver,
 } from "openclaw/plugin-sdk/codex-mcp-projection";
 import { isToolAllowed } from "openclaw/plugin-sdk/sandbox";
+import { shouldInjectCodexOpenClawPromptContext } from "./attempt-context.js";
 import {
   createStageTimingTracker,
   formatStageTimings,
@@ -45,6 +46,7 @@ import {
   isSystemAgentOnlyCodexDynamicToolAllowlist,
   normalizeCodexDynamicToolName,
 } from "./dynamic-tool-profile.js";
+import { isCodexMemoryFlushRun } from "./memory-flush-run.js";
 import {
   resolveCodexNodeExecToolOverrides,
   resolveCodexNativeExecutionPolicy,
@@ -257,6 +259,8 @@ export async function buildDynamicTools(
   });
   const messageToolProvider = resolveCodexMessageToolProvider(params);
   const webFetchHostnameAllowlistRef: { value?: string[] } = {};
+  const enableSkillCatalogTool =
+    input.sandbox?.enabled !== true && shouldInjectCodexOpenClawPromptContext(params);
   const toolConstructionPlan = resolveCodexNodePlacementToolConstructionPlan(
     input.sandbox,
     input.nativeToolSurfaceEnabled,
@@ -361,6 +365,7 @@ export async function buildDynamicTools(
     onToolOutcome: params.onToolOutcome,
     isTurnTainted: params.isTurnTainted,
     allocateToolOutcomeOrdinal: params.allocateToolOutcomeOrdinal,
+    enableSkillCatalogTool,
     cronCreatorToolAllowlistRef: input.cronCreatorToolAllowlistRef,
     cronCreatorToolAllowlistCaptureRef: input.cronCreatorToolAllowlistCaptureRef,
     cronCreatorAuthorityUnavailableReason: input.cronCreatorAuthorityUnavailableReason,
@@ -695,11 +700,6 @@ function canSandboxToolPolicyExposeCodexNativeToolSurface(sandbox: {
   tools: Parameters<typeof isToolAllowed>[0];
 }): boolean {
   return CODEX_NATIVE_TOOL_REQUIREMENTS.every((toolName) => isToolAllowed(sandbox.tools, toolName));
-}
-function isCodexMemoryFlushRun(
-  params?: Pick<EmbeddedRunAttemptParams, "trigger" | "memoryFlushWritePath">,
-): boolean {
-  return params?.trigger === "memory" && Boolean(params.memoryFlushWritePath?.trim());
 }
 function filterCodexMemoryFlushDynamicTools<T extends { name: string }>(tools: T[]): T[] {
   return tools.filter((tool) =>

@@ -19,6 +19,8 @@
     "../../src/agents/model-catalog.planning.test.ts",
     "../../src/agents/model-catalog-view.test.ts",
     "../../src/agents/tool-*.test.ts",
-    "../../src/agents/tool-*.test.tsx"
+    "../../src/agents/tool-*.test.tsx",
+    "../../src/agents/agent-command.live-model-switch.test.ts",
+    "../../src/agents/openclaw-tools.registration.test.ts"
   ]
 }

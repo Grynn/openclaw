@@ -8,6 +8,7 @@ import {
   isHostScopedAgentToolActive,
   resolveContextEngineOwnerPluginId,
   runHarnessContextEngineMaintenance,
+  type AgentMessage,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
   buildCodexOpenClawPromptContext,
@@ -18,19 +19,28 @@ import {
   renderCodexSkillsCollaborationInstructions,
 } from "./attempt-context.js";
 import {
-  resolveCodexContextEngineProjectionMaxChars,
-  resolveCodexContextEngineProjectionReserveTokens,
   resolveCodexContinuityProjectionMaxChars,
   type CodexProjectedContextRange,
 } from "./context-engine-projection.js";
 import { isSystemAgentOnlyCodexDynamicToolAllowlist } from "./dynamic-tool-profile.js";
+import { flattenCodexDynamicToolFunctions } from "./protocol.js";
 import type { CodexAttemptRuntime } from "./run-attempt-runtime.js";
 import { joinPresentSections } from "./run-attempt-state.js";
 import type { CodexAttemptTools } from "./run-attempt-tool-setup.js";
 import {
   buildDeveloperInstructions,
+  resolveCodexContextEngineProjectionMaxCharsForAttempt,
   type CodexContextEngineThreadBootstrapProjection,
 } from "./thread-lifecycle.js";
+
+const CODEX_BOOTSTRAP_FILE_TOOL_NAMES = new Set([
+  "apply_patch",
+  "edit",
+  "exec",
+  "exec_command",
+  "read",
+  "write",
+]);
 
 export async function prepareCodexAttemptContext(
   runtime: CodexAttemptRuntime,
@@ -70,8 +80,10 @@ export async function prepareCodexAttemptContext(
     sessionKey: contextSessionKey,
     sessionTarget: params.sessionTarget,
   };
+  // This exact admitted row fences every history read used to build turn/start.
+  // Keep it immutable for the attempt even if later steering rewrites the transcript.
+  const transcriptReadFence = params.userTurnTranscriptRecorder?.getAdmissionReceipt();
   const readFencedHistory = async () => {
-    const transcriptReadFence = params.userTurnTranscriptRecorder?.getAdmissionReceipt();
     const messages = await readMirroredSessionHistoryMessages({
       ...activeTranscriptTarget,
       signal: connection.runAbortController.signal,
@@ -82,13 +94,49 @@ export async function prepareCodexAttemptContext(
     connection.assertCurrent();
     return messages;
   };
-  const historyState = {
-    messages:
-      !activeContextEngine && initialStartupBindingHadInactiveThreadBootstrap
-        ? []
-        : ((await readFencedHistory()) ?? []),
+  // Exact resumes normally need only the indexed admission delta. Keep the
+  // transcript-start scan cached and lazy for the conservative paths that do.
+  let historyReadPromise: Promise<AgentMessage[]> | undefined;
+  const historyState: {
+    messages: AgentMessage[];
+    loaded: boolean;
+    ensureLoaded: () => Promise<AgentMessage[]>;
+    reload: () => Promise<AgentMessage[]>;
+  } = {
+    messages: [],
+    loaded: false,
+    ensureLoaded: async () => historyState.messages,
+    reload: async () => historyState.messages,
   };
-  const hadSessionTranscriptState = historyState.messages.length > 0;
+  const loadFencedHistory = async (force: boolean): Promise<AgentMessage[]> => {
+    if (!activeContextEngine && initialStartupBindingHadInactiveThreadBootstrap) {
+      historyState.loaded = true;
+      return historyState.messages;
+    }
+    if (!force && historyState.loaded) {
+      return historyState.messages;
+    }
+    if (!force && historyReadPromise) {
+      return await historyReadPromise;
+    }
+    const readPromise = readFencedHistory()
+      .then((messages) => {
+        if (messages) {
+          historyState.messages = messages;
+        }
+        historyState.loaded = true;
+        return historyState.messages;
+      })
+      .finally(() => {
+        if (historyReadPromise === readPromise) {
+          historyReadPromise = undefined;
+        }
+      });
+    historyReadPromise = readPromise;
+    return await readPromise;
+  };
+  historyState.ensureLoaded = async () => await loadFencedHistory(false);
+  historyState.reload = async () => await loadFencedHistory(true);
   const hookContextWindowFields = {
     ...(effectiveContextWindowInfo?.tokens
       ? { contextTokenBudget: effectiveContextWindowInfo.tokens }
@@ -140,15 +188,16 @@ export async function prepareCodexAttemptContext(
       tokenBudget: effectiveContextTokenBudget,
     });
   if (activeContextEngine) {
+    await historyState.ensureLoaded();
     await bootstrapHarnessContextEngine({
-      hadSessionFile: hadSessionTranscriptState,
+      hadSessionFile: historyState.messages.length > 0,
       contextEngine: activeContextEngine,
       sessionId: activeSessionId,
       sessionKey: contextSessionKey,
       sessionFile: activeSessionFile,
       sessionTarget: params.sessionTarget,
       runtimeContext: buildActiveContextEngineRuntimeContext(),
-      transcriptReadFence: params.userTurnTranscriptRecorder?.getAdmissionReceipt(),
+      transcriptReadFence,
       contextEngineHostSupport: CODEX_APP_SERVER_CONTEXT_ENGINE_HOST,
       providerId: effectiveRuntimeProviderId,
       requestedModelId: usesSupervisionConnection ? undefined : params.requestedModelId,
@@ -159,11 +208,16 @@ export async function prepareCodexAttemptContext(
       config: params.config,
       warn: (message) => embeddedAgentLog.warn(message),
     });
-    historyState.messages = (await readFencedHistory()) ?? historyState.messages;
+    await historyState.reload();
   }
   // The admission fence intentionally excludes this logical turn's committed results.
   historyState.messages.push(...(params.pluginRuntimeRefreshMessages ?? []));
   const memoryToolNames = getCodexWorkspaceMemoryToolNames(toolBridge.availableSpecs);
+  const hasBootstrapFileAccess =
+    runtime.nativeToolSurfaceEnabled ||
+    flattenCodexDynamicToolFunctions(toolBridge.availableSpecs).some((tool) =>
+      CODEX_BOOTSTRAP_FILE_TOOL_NAMES.has(tool.name.trim().toLowerCase()),
+    );
   const workspaceBootstrapContext = await buildCodexWorkspaceBootstrapContext({
     params: runtimeParams,
     resolvedWorkspace: runtimeParams.bootstrapWorkspaceDir ?? resolvedWorkspace,
@@ -175,6 +229,7 @@ export async function prepareCodexAttemptContext(
     ringZeroActive:
       isHostScopedAgentToolActive("openclaw") &&
       isSystemAgentOnlyCodexDynamicToolAllowlist(runtimeParams.toolsAllow),
+    hasBootstrapFileAccess,
     sandboxed: sandbox?.enabled === true,
   });
   // A thread keeps the bounded agent-workspace snapshot captured at creation.
@@ -206,14 +261,17 @@ export async function prepareCodexAttemptContext(
   const skillsCollaborationInstructions = renderCodexSkillsCollaborationInstructions({
     attempt: runtimeParams,
     skillsPrompt: params.skillsSnapshot?.prompt,
+    dynamicTools: toolBridge.availableSpecs,
   });
   const promptState = {
     promptText: params.prompt,
     promptContextRange: undefined as CodexProjectedContextRange | undefined,
     developerInstructions: baseDeveloperInstructions,
-    prePromptMessageCount: historyState.messages.length,
+    prePromptMessageCount: 0,
     contextEngineProjection: undefined as CodexContextEngineThreadBootstrapProjection | undefined,
+    precomputedStaleBindingContinuityProjectionResolved: false,
     precomputedStaleBindingContinuityProjectionApplied: false,
+    precomputedStaleBindingContinuityProjectionThreadId: undefined as string | undefined,
     staleBindingContinuityForcedFreshStart: false,
     // Set by the no-engine continuity appliers; gates calibration recording so a
     // dense direct or active-engine prompt can never persist a density sample
@@ -222,18 +280,22 @@ export async function prepareCodexAttemptContext(
     inactiveThreadBootstrapBindingForcedFreshStart:
       initialInactiveThreadBootstrapBindingForcedFreshStart,
   };
-  const codexContextProjectionMaxChars = resolveCodexContextEngineProjectionMaxChars({
-    contextTokenBudget: effectiveContextTokenBudget,
-    reserveTokens: resolveCodexContextEngineProjectionReserveTokens(),
-  });
-  const codexContinuityProjectionMaxChars = resolveCodexContinuityProjectionMaxChars({
-    contextTokenBudget: effectiveContextTokenBudget,
-    calibration: connection.mutable.continuityCalibration,
-  });
+  const codexContextProjectionMaxChars = resolveCodexContextEngineProjectionMaxCharsForAttempt(
+    runtimeParams,
+    sessionAgentId,
+  );
+  const codexContinuityProjectionMaxChars = Math.min(
+    resolveCodexContinuityProjectionMaxChars({
+      contextTokenBudget: effectiveContextTokenBudget,
+      calibration: connection.mutable.continuityCalibration,
+    }),
+    codexContextProjectionMaxChars,
+  );
   return {
     runtime,
     attemptTools,
     activeTranscriptTarget,
+    transcriptReadFence,
     historyState,
     hookContext,
     hookContextWindowFields,

@@ -462,12 +462,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     config: params.config,
     toolOverrides: params.toolOverrides,
     allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
-    ...(attemptContextEngine
-      ? {
-          contextEngine: attemptContextEngine,
-          contextWindowInfo: runtime.contextWindowInfo,
-        }
-      : {}),
+    ...(attemptContextEngine ? { contextEngine: attemptContextEngine } : {}),
     ...(runtime.contextTokenBudget === undefined
       ? {}
       : { contextTokenBudget: runtime.contextTokenBudget }),
@@ -477,6 +472,9 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     ...(runtime.authoredContextTokenCap === undefined
       ? {}
       : { authoredContextTokenCap: runtime.authoredContextTokenCap }),
+    ...(runtime.contextWindowInfo === undefined
+      ? {}
+      : { contextWindowInfo: runtime.contextWindowInfo }),
     skillsSnapshot,
     prompt: remapSkillReferencePaths(
       pluginHarnessPrompt ?? preparedExecApprovalContinuation.prompt,

@@ -105,6 +105,11 @@ const MAX_FLUSH_FAILURES = 3;
 const MAX_FLUSH_ERROR_LENGTH = 200;
 const preflightCompactionLog = createSubsystemLogger("auto-reply/preflight-compaction");
 const memoryFlushLog = createSubsystemLogger("auto-reply/memory-flush");
+// Memory flushes only need a bounded recent transcript tail plus the durable
+// memory target. Letting them inherit a very large conversational window turns
+// a small append-only checkpoint into a full-context agent run immediately
+// before compaction, which delays the user turn the checkpoint is protecting.
+const MEMORY_FLUSH_CONTEXT_TOKEN_BUDGET = 64_000;
 
 const embeddedAgentRuntimeLoader = createLazyImportLoader<EmbeddedAgentRuntime>(
   () => import("../../agents/embedded-agent.js"),
@@ -1738,7 +1743,8 @@ export async function runMemoryFlushIfNeeded(params: {
           allowEmptyAssistantReplyAsSilent: true,
           terminalReplyExpectation: "optional",
           trigger: "memory",
-          contextTokenBudget: contextWindowTokens,
+          contextTokenBudget: Math.min(contextWindowTokens, MEMORY_FLUSH_CONTEXT_TOKEN_BUDGET),
+          bootstrapContextMode: "lightweight",
           memoryFlushWritePath,
           initialTurnTainted:
             !params.followupRun.run.senderIsOwner || sessionLogSnapshot?.turnTainted === true,

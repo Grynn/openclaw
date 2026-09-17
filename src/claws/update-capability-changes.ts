@@ -140,7 +140,7 @@ function classifyAgentCapability(
     }
     return desired.some((target) => !current.includes(target)) ? "escalation" : "reduction";
   }
-  if (path === "tools.profile" || path === "tools.allow" || path === "tools.deny") {
+  if (["tools.profile", "tools.allow", "tools.deny", "heartbeat.tools"].includes(path)) {
     if (!currentAgentExists && desired !== undefined) {
       return "escalation";
     }
@@ -225,7 +225,7 @@ function classifyAgentCapability(
       : "neutral";
   }
   if (
-    (path === "tools.profile" || path === "tools.allow" || path === "tools.alsoAllow") &&
+    ["tools.profile", "tools.allow", "tools.alsoAllow", "heartbeat.tools"].includes(path) &&
     Array.isArray(current) &&
     Array.isArray(desired)
   ) {
@@ -272,6 +272,7 @@ function pushAgentCapabilityChanges(params: {
     ["heartbeat", "every"],
     ["heartbeat", "activeHours"],
     ["heartbeat", "isolatedSession"],
+    ["heartbeat", "tools"],
     ["heartbeat", "timeoutSeconds"],
   ] as const;
   for (const field of fields) {

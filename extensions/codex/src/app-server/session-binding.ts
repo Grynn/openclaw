@@ -37,6 +37,7 @@ export {
   assertCodexBindingMayBeReplaced,
   bindingStoreKey,
   CodexSupervisionBindingReplacementError,
+  isSameCodexAppServerBindingGeneration,
   readCodexAppServerThreadBinding,
   readStoredCodexAppServerBinding,
   sessionBindingIdentity,

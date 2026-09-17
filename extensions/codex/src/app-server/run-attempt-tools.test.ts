@@ -79,4 +79,19 @@ describe("Codex direct tool loading", () => {
       }
     },
   );
+
+  it("exposes the exact memory flush tools without a discovery turn", () => {
+    const params = createAttemptParams({
+      trigger: "memory",
+      memoryFlushWritePath: "memory/2026-08-12.md",
+    } as Partial<EmbeddedRunAttemptParams>);
+
+    expect(resolveCodexDynamicToolDirectNames(params, [])).toEqual(["read", "write"]);
+  });
+
+  it("does not expose memory tools for an incomplete memory run", () => {
+    const params = createAttemptParams({ trigger: "memory" } as Partial<EmbeddedRunAttemptParams>);
+
+    expect(resolveCodexDynamicToolDirectNames(params, [])).toEqual([]);
+  });
 });

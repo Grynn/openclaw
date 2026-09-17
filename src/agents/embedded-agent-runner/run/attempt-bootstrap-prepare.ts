@@ -67,6 +67,7 @@ export async function prepareEmbeddedAttemptBootstrap(params: {
     completedBootstrapTurn ??= await hasCompletedBootstrapTurn(attempt.sessionTarget);
     return completedBootstrapTurn;
   };
+  const isPrimaryRun = isPrimaryBootstrapRun(attempt.sessionKey);
   const resolveBootstrapRouting = (bootstrapFiles?: readonly WorkspaceBootstrapFile[]) =>
     resolveWorkspaceBootstrapRouting({
       isWorkspaceBootstrapPending,
@@ -74,7 +75,7 @@ export async function prepareEmbeddedAttemptBootstrap(params: {
       bootstrapContextRunKind: attempt.bootstrapContextRunKind,
       trigger: attempt.trigger,
       sessionKey: attempt.sessionKey,
-      isPrimaryRun: isPrimaryBootstrapRun(attempt.sessionKey),
+      isPrimaryRun,
       isCanonicalWorkspace: attempt.isCanonicalWorkspace,
       effectiveWorkspace: params.setup.effectiveWorkspace,
       resolvedWorkspace: bootstrapWorkspaceDir,
@@ -111,6 +112,7 @@ export async function prepareEmbeddedAttemptBootstrap(params: {
     bootstrapContextMode: attempt.bootstrapContextMode,
     bootstrapContextRunKind: attempt.bootstrapContextRunKind ?? "default",
     bootstrapMode,
+    isPrimaryRun,
     hasCompletedBootstrapTurn: hasCompletedBootstrapTurnForAttempt,
     resolveBootstrapContextForRun: async () => {
       const bootstrapFiles =

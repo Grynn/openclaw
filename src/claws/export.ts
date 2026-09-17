@@ -180,6 +180,7 @@ function portableOpenClawProfile(
             ...(agent.heartbeat.isolatedSession !== undefined
               ? { isolatedSession: agent.heartbeat.isolatedSession }
               : {}),
+            ...(agent.heartbeat.tools !== undefined ? { tools: agent.heartbeat.tools } : {}),
             ...(agent.heartbeat.timeoutSeconds !== undefined
               ? { timeoutSeconds: agent.heartbeat.timeoutSeconds }
               : {}),

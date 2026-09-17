@@ -1,4 +1,6 @@
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { isSilentReplyText } from "openclaw/plugin-sdk/reply-runtime";
+import type { EmbeddedRunAttemptResult } from "./attempt-terminal.js";
 import {
   CodexHistoryRejection,
   codexHistoryRejectionReason,
@@ -7,6 +9,23 @@ import {
 import type { JsonValue } from "./protocol.js";
 import type { CodexMirroredSessionHistoryTarget } from "./session-history.js";
 import type { SettledTurnMessages } from "./settled-turn-evidence.js";
+
+/** Whether a completed tool turn owes a visible answer that may need isolated finalization. */
+export function shouldCaptureCodexSettledTurnFinalizationContext(
+  result: Pick<EmbeddedRunAttemptResult, "assistantTexts" | "messagesSnapshot">,
+  options: { silentExpected?: boolean } = {},
+): boolean {
+  const nonEmptyAssistantTexts = result.assistantTexts.filter((text) => text.trim());
+  const expectedExplicitSilence =
+    options.silentExpected === true &&
+    nonEmptyAssistantTexts.length > 0 &&
+    nonEmptyAssistantTexts.every((text) => isSilentReplyText(text));
+  return (
+    !expectedExplicitSilence &&
+    result.assistantTexts.every((text) => !text.trim() || isSilentReplyText(text)) &&
+    result.messagesSnapshot.some((message) => message.role === "toolResult")
+  );
+}
 
 function freezeProjection(value: JsonValue): void {
   if (value !== null && typeof value === "object") {

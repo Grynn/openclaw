@@ -13,7 +13,12 @@ const CONTEXT_WINDOW_WARN_BELOW_TOKENS = 8_000;
 const CONTEXT_WINDOW_HARD_MIN_RATIO = 0.1;
 const CONTEXT_WINDOW_WARN_BELOW_RATIO = 0.2;
 
-type ContextWindowSource = "model" | "modelsConfig" | "agentContextTokens" | "default";
+type ContextWindowSource =
+  | "model"
+  | "modelsConfig"
+  | "agentContextTokens"
+  | "runContextTokenBudget"
+  | "default";
 
 export type ContextWindowInfo = {
   tokens: number;

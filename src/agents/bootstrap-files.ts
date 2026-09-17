@@ -2,10 +2,14 @@
  * Resolves workspace bootstrap files for agent runs and converts them into
  * bounded context files.
  */
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { ChatType } from "../channels/chat-type.js";
-import { readRecentSessionTranscriptActiveEvents } from "../config/sessions/session-accessor.js";
+import {
+  appendTranscriptEvent,
+  readLatestSessionTranscriptControlEvent,
+} from "../config/sessions/session-accessor.js";
 import type { AgentContextInjection } from "../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isMemoryOriginEligibleForAutomaticInjection } from "../memory-host-sdk/host/types.js";
@@ -35,7 +39,6 @@ import {
 
 export type BootstrapContextMode = "full" | "lightweight";
 
-const CONTINUATION_SCAN_MAX_RECORDS = 500;
 export const FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE = "openclaw:bootstrap-context:full";
 const BOOTSTRAP_WARNING_DEDUPE_LIMIT = 1024;
 const seenBootstrapWarnings = new Set<string>();
@@ -80,24 +83,41 @@ export async function hasCompletedBootstrapTurn(
     return false;
   }
   try {
-    const records = readRecentSessionTranscriptActiveEvents(
+    const latestControl = readLatestSessionTranscriptControlEvent(
       { agentId, sessionId, sessionKey, storePath },
-      CONTINUATION_SCAN_MAX_RECORDS,
+      FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE,
     );
-    for (const entry of records.toReversed()) {
-      const record = entry as { type?: string; customType?: string } | null | undefined;
-      // Context before compaction/reset is not reusable on the active branch.
-      if (record?.type === "compaction" || record?.type === "reset") {
-        return false;
-      }
-      if (record?.type === "custom" && record.customType === FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE) {
-        return true;
-      }
-    }
-    return false;
+    return (
+      latestControl?.type === "custom" &&
+      latestControl.customType === FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE
+    );
   } catch {
     return false;
   }
+}
+
+/** Persist a clean full-bootstrap marker through the storage-neutral transcript owner. */
+export async function persistCompletedBootstrapTurn(params: {
+  runId: string;
+  sessionTarget?: AgentRunSessionTarget;
+}): Promise<boolean> {
+  const { agentId, sessionId, sessionKey, storePath, threadId } = params.sessionTarget ?? {};
+  if (!agentId || !sessionId || !sessionKey || !storePath) {
+    return false;
+  }
+  await appendTranscriptEvent(
+    { agentId, sessionId, sessionKey, storePath, threadId },
+    {
+      type: "custom",
+      customType: FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE,
+      data: { timestamp: Date.now(), runId: params.runId, sessionId },
+      id: randomUUID(),
+      parentId: null,
+      timestamp: new Date().toISOString(),
+    },
+    { appendIntent: "active-branch" },
+  );
+  return true;
 }
 
 /** Builds a session-scoped warning sink that dedupes repeated bootstrap warnings. */
