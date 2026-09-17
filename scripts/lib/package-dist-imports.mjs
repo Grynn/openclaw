@@ -19,6 +19,23 @@ function hasJavaScriptFileExtension(value) {
   return /\.(?:cjs|js|mjs)$/u.test(path.posix.basename(stripSpecifierSuffix(value)));
 }
 
+// openclaw.mjs probes `.js`/`.mjs` build alternates under dist/ through literal
+// import()s and tolerates a direct miss, so a build ships only one format and may
+// inline the warning filter and root help. Only the CLI entry is mandatory.
+const LAUNCHER_PATH = "openclaw.mjs";
+const LAUNCHER_ENTRY_ALTERNATES = ["dist/entry.js", "dist/entry.mjs"];
+const LAUNCHER_OPTIONAL_PROBES = new Set([
+  ...LAUNCHER_ENTRY_ALTERNATES,
+  "dist/warning-filter.js",
+  "dist/warning-filter.mjs",
+  "dist/cli/program/root-help.js",
+  "dist/cli/program/root-help.mjs",
+]);
+
+function isOptionalLauncherProbe(importerPath, importedPath) {
+  return importerPath === LAUNCHER_PATH && LAUNCHER_OPTIONAL_PROBES.has(importedPath);
+}
+
 function appendImportEdges(source, importerPath, imports) {
   const sourceFile = ts.createSourceFile(
     importerPath,
@@ -65,9 +82,13 @@ export function collectPackageDistImportErrors(params) {
   const imports = params.imports ?? collectPackageDistImports({ files, readText: params.readText });
 
   for (const { importerPath, importedPath } of imports) {
-    if (!fileSet.has(importedPath)) {
-      errors.push(`${importerPath} imports missing ${importedPath}`);
+    if (fileSet.has(importedPath) || isOptionalLauncherProbe(importerPath, importedPath)) {
+      continue;
     }
+    errors.push(`${importerPath} imports missing ${importedPath}`);
+  }
+  if (fileSet.has(LAUNCHER_PATH) && !LAUNCHER_ENTRY_ALTERNATES.some((file) => fileSet.has(file))) {
+    errors.push(`${LAUNCHER_PATH} has no CLI entry (${LAUNCHER_ENTRY_ALTERNATES.join(" or ")})`);
   }
 
   return errors;

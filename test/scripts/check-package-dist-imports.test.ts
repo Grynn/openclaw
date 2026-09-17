@@ -2,7 +2,10 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { collectPackageDistImports } from "../../scripts/lib/package-dist-imports.mjs";
+import {
+  collectPackageDistImportErrors,
+  collectPackageDistImports,
+} from "../../scripts/lib/package-dist-imports.mjs";
 import { cleanupTempDirs, makeTempDir } from "../helpers/temp-dir.js";
 
 const CHECK_SCRIPT = "scripts/check-package-dist-imports.mjs";
@@ -91,6 +94,34 @@ describe("collectPackageDistImports", () => {
         importedPath,
       })),
     );
+  });
+});
+
+describe("collectPackageDistImportErrors", () => {
+  const launcherSource = [
+    'import("./dist/warning-filter.js");',
+    'import("./dist/warning-filter.mjs");',
+    'import("./dist/entry.js");',
+    'import("./dist/entry.mjs");',
+    'import("./dist/infra/package-lifecycle.js");',
+  ].join("\n");
+
+  it("treats launcher build alternates as optional but still requires one CLI entry", () => {
+    const errorsFor = (files: string[]) =>
+      collectPackageDistImportErrors({
+        files,
+        readText: (file) => (file === "openclaw.mjs" ? launcherSource : ""),
+      });
+
+    expect(errorsFor(["openclaw.mjs", "dist/entry.js", "dist/infra/package-lifecycle.js"])).toEqual(
+      [],
+    );
+    expect(errorsFor(["openclaw.mjs", "dist/entry.js"])).toEqual([
+      "openclaw.mjs imports missing dist/infra/package-lifecycle.js",
+    ]);
+    expect(errorsFor(["openclaw.mjs", "dist/infra/package-lifecycle.js"])).toEqual([
+      "openclaw.mjs has no CLI entry (dist/entry.js or dist/entry.mjs)",
+    ]);
   });
 });
 
