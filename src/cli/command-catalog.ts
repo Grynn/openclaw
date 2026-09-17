@@ -32,6 +32,7 @@ type CliRoutedCommandId =
   | "config-unset"
   | "models-list"
   | "models-status"
+  | "memory-search"
   | "tasks-list"
   | "tasks-audit"
   | "channels-list"
@@ -724,7 +725,12 @@ export const cliCommandCatalog: readonly CliCommandCatalogEntry[] = [
   {
     commandPath: ["memory", "search"],
     exact: true,
-    policy: { configGuard: "skip" },
+    policy: {
+      configGuard: "skip",
+      loadPlugins: ({ argv }) => hasFlag(argv, "--local"),
+      networkProxy: "bypass",
+    },
+    route: { id: "memory-search" },
   },
   {
     commandPath: ["memory", "status"],

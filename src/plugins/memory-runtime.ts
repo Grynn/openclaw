@@ -31,6 +31,7 @@ type MemorySearchAuthorization = Parameters<
 type WorkspaceMemoryPathClassification = Parameters<
   NonNullable<MemoryPluginRuntime["classifyWorkspaceMemoryPaths"]>
 >[0];
+type MemorySearchRecall = Parameters<NonNullable<MemoryPluginRuntime["recordSearchRecalls"]>>[0];
 type MemoryRuntimeOwner = { runtime: MemoryRuntime; standalone?: true };
 const enrolledStandaloneMemoryRuntimes = new WeakSet<MemoryRuntime>();
 let standaloneMemoryRegistrySlot:
@@ -183,9 +184,20 @@ export async function getActiveMemorySearchManagerCore(params: {
     setStandaloneMemoryManagerActive(true);
   }
   const result = await owner.runtime.getMemorySearchManager(params);
+  const recordSearchRecalls = owner.runtime.recordSearchRecalls
+    ? async (recall: MemorySearchRecall): Promise<void> => {
+        // Search may await across a config reload. Old hits must never be written
+        // through a replacement runtime with different ownership or policy.
+        if (ensureMemoryRuntime(params)?.runtime !== owner.runtime) {
+          return;
+        }
+        await owner.runtime.recordSearchRecalls?.(recall);
+      }
+    : undefined;
   return {
     ...result,
     manager: result.manager ? normalizeRegisteredMemoryManager(result.manager) : null,
+    ...(recordSearchRecalls ? { recordSearchRecalls } : {}),
   };
 }
 

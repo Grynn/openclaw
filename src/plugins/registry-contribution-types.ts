@@ -258,6 +258,13 @@ export type MemoryPluginRuntime = {
     drain(): Promise<void | { errors: readonly unknown[] }>;
     resume(): void;
   };
+  /** Persist plugin-owned recall signals for an operator search. */
+  recordSearchRecalls?(params: {
+    cfg: OpenClawConfig;
+    agentId: string;
+    query: string;
+    results: MemorySearchResult[];
+  }): Promise<void>;
   closeMemorySearchManager?(params: { cfg: OpenClawConfig; agentId: string }): Promise<void>;
   closeAllMemorySearchManagers?(): Promise<void>;
 };

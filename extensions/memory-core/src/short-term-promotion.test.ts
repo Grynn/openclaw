@@ -936,6 +936,51 @@ describe("short-term promotion", () => {
     });
   }
 
+  it("omits untrusted candidates before ranking and dreaming work", async (workspaceDir) => {
+    await recordMemoryRecalls(workspaceDir, "promotion trust boundary", [
+      memoryRecallResult(
+        "memory/2026-04-01.md",
+        1,
+        1,
+        0.99,
+        "Untrusted router note must not become durable memory.",
+        {
+          provenance: {
+            originClass: "untrusted",
+            sessionKind: "interactive",
+            observedAt: Date.parse("2026-04-01T12:00:00.000Z"),
+          },
+        },
+      ),
+      memoryRecallResult(
+        "memory/2026-04-02.md",
+        1,
+        1,
+        0.8,
+        "Gateway maintenance requires an authorized restart.",
+        {
+          provenance: {
+            originClass: "agent",
+            sessionKind: "interactive",
+            observedAt: Date.parse("2026-04-02T12:00:00.000Z"),
+          },
+        },
+      ),
+    ]);
+
+    const ranked = await rankAllCandidates(workspaceDir);
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0]?.path).toBe("memory/2026-04-02.md");
+    expect(ranked[0] && isPromotionOriginBlocked(ranked[0])).toBe(false);
+
+    const applyRanked = await rankAllCandidates(workspaceDir, { includeBlockedOrigins: true });
+    expect(applyRanked.map((candidate) => candidate.path)).toEqual([
+      "memory/2026-04-01.md",
+      "memory/2026-04-02.md",
+    ]);
+    expect(applyRanked[0] && isPromotionOriginBlocked(applyRanked[0])).toBe(true);
+  });
+
   it("reads only light-staged keys that have not already gone through REM", async (workspaceDir) => {
     const nowMs = Date.parse("2026-04-05T10:00:00.000Z");
     await recordMemoryRecalls(

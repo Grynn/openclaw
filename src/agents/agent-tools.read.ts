@@ -709,16 +709,22 @@ async function appendMemoryFlushContent(params: {
   sandbox?: MemoryFlushAppendOnlyWriteOptions["sandbox"];
   signal?: AbortSignal;
   assertCurrent: () => void;
-}) {
+}): Promise<boolean> {
+  // The caller already resolved the novel suffix. Resolving again here would
+  // trim the leading blank line that separates the appended section.
+  const content = params.content;
+  if (!content) {
+    return false;
+  }
   if (!params.sandbox) {
     const root = await fsRoot(params.root);
     params.assertCurrent();
-    await root.append(params.relativePath, params.content, {
+    await root.append(params.relativePath, content, {
       mkdir: true,
       prependNewlineIfNeeded: true,
       assertBeforeMutation: params.assertCurrent,
     });
-    return;
+    return true;
   }
 
   const existing = await readOptionalUtf8File({
@@ -728,8 +734,8 @@ async function appendMemoryFlushContent(params: {
     signal: params.signal,
   });
   const separator =
-    existing.length > 0 && !existing.endsWith("\n") && !params.content.startsWith("\n") ? "\n" : "";
-  const next = `${existing}${separator}${params.content}`;
+    existing.length > 0 && !existing.endsWith("\n") && !content.startsWith("\n") ? "\n" : "";
+  const next = `${existing}${separator}${content}`;
   const parent = path.posix.dirname(params.relativePath);
   params.assertCurrent();
   if (parent && parent !== ".") {
@@ -747,6 +753,33 @@ async function appendMemoryFlushContent(params: {
     mkdir: true,
     signal: params.signal,
   });
+  return true;
+}
+
+/**
+ * Models occasionally pass the complete file snapshot to an append-only memory
+ * write. Appending that snapshot duplicates every prior section. Keep this
+ * boundary idempotent by stripping an exact existing-file prefix and rejecting
+ * an exact payload replay. Comparisons normalize only line endings and outer
+ * whitespace; novel prose is never fuzzy-matched or rewritten.
+ */
+function resolveNovelMemoryFlushContent(existing: string, proposed: string): string {
+  const existingNormalized = existing.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
+  const proposedNormalized = proposed.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
+  if (!proposedNormalized) {
+    return "";
+  }
+  if (!existingNormalized) {
+    return proposedNormalized;
+  }
+  if (proposedNormalized === existingNormalized) {
+    return "";
+  }
+  if (proposedNormalized.startsWith(`${existingNormalized}\n`)) {
+    const suffix = proposedNormalized.slice(existingNormalized.length);
+    return /\n\s*$/u.test(existing) ? suffix.replace(/^\n/u, "") : suffix;
+  }
+  return proposedNormalized;
 }
 
 /** Restrict a write tool to appending memory-flush content to one path. */
@@ -796,26 +829,41 @@ export function wrapToolMemoryFlushAppendOnlyWrite(
         sandbox: options.sandbox,
         signal,
       });
+      const novelContent = resolveNovelMemoryFlushContent(contentBefore, content);
+      if (!novelContent) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `No new content to append to ${options.relativePath}.`,
+            },
+          ],
+          details: { changed: false },
+        };
+      }
       const separator =
-        contentBefore.length > 0 && !contentBefore.endsWith("\n") && !content.startsWith("\n")
+        contentBefore.length > 0 &&
+        !contentBefore.endsWith("\n") &&
+        !novelContent.startsWith("\n")
           ? "\n"
           : "";
-      const commit = () =>
-        appendMemoryFlushContent({
+      const commit = async () => {
+        await appendMemoryFlushContent({
           absolutePath: allowedAbsolutePath,
           root: options.root,
           relativePath: options.relativePath,
-          content,
+          content: novelContent,
           sandbox: options.sandbox,
           signal,
           assertCurrent,
         });
+      };
       const memoryWriteProvenance = options.memoryWriteProvenance;
       if (memoryWriteProvenance && (await memoryWriteProvenance.classifies(allowedAbsolutePath))) {
         await memoryWriteProvenance.write({
           absolutePath: allowedAbsolutePath,
           contentBefore,
-          contentAfter: `${contentBefore}${separator}${content}`,
+          contentAfter: `${contentBefore}${separator}${novelContent}`,
           commit,
         });
       } else {
@@ -825,7 +873,12 @@ export function wrapToolMemoryFlushAppendOnlyWrite(
       // This wrapper inherits the write tool's output schema, so report only
       // the authoritative `changed`; deriving `created` before append is racy.
       return {
-        content: [{ type: "text", text: `Appended content to ${options.relativePath}.` }],
+        content: [
+          {
+            type: "text",
+            text: `Appended content to ${options.relativePath}.`,
+          },
+        ],
         details: { changed: true },
       };
     },

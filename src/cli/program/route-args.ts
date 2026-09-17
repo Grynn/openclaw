@@ -236,6 +236,57 @@ export function parseGatewayHealthRouteArgs(argv: string[]) {
   };
 }
 
+/** Parse Gateway-backed memory searches while leaving local/help shapes to Commander. */
+export function parseMemorySearchRouteArgs(argv: string[]) {
+  if (hasFlag(argv, "--local")) {
+    return null;
+  }
+  const positionals = getRoutedCommandPositionals(argv, {
+    commandPath: ["memory", "search"],
+    booleanFlags: ["--json", "--local"],
+    valueFlags: ["--query", "--agent", "--max-results", "--min-score"],
+  });
+  if (!positionals || positionals.length > 1) {
+    return null;
+  }
+  const queryFlag = parseOptionalFlagValue(argv, "--query");
+  const agent = parseOptionalFlagValue(argv, "--agent");
+  const maxResults = parseOptionalFlagValue(argv, "--max-results");
+  const minScore = parseOptionalFlagValue(argv, "--min-score");
+  if (!queryFlag.ok || !agent.ok || !maxResults.ok || !minScore.ok) {
+    return null;
+  }
+  const query = (queryFlag.value ?? positionals[0] ?? "").trim();
+  if (!query) {
+    return null;
+  }
+  let parsedMaxResults: number | undefined;
+  if (maxResults.value !== undefined) {
+    parsedMaxResults = parseStrictPositiveInteger(maxResults.value);
+    if (parsedMaxResults === undefined) {
+      return null;
+    }
+  }
+  let parsedMinScore: number | undefined;
+  if (minScore.value !== undefined) {
+    const normalized = minScore.value.trim();
+    if (!/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(normalized)) {
+      return null;
+    }
+    parsedMinScore = Number(normalized);
+    if (!Number.isFinite(parsedMinScore)) {
+      return null;
+    }
+  }
+  return {
+    query,
+    agent: agent.value?.trim() || undefined,
+    maxResults: parsedMaxResults,
+    minScore: parsedMinScore,
+    json: hasFlag(argv, "--json"),
+  };
+}
+
 /** Parse `openclaw sessions` filters for JSON/list route execution. */
 export function parseSessionsRouteArgs(argv: string[]) {
   const positionals = getRoutedCommandPositionals(argv, {

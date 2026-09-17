@@ -42,6 +42,7 @@ import {
 import { readMemoryShadowIdentity } from "./manager-shadow-task.js";
 import { MemoryManagerSourceSyncOps } from "./manager-source-sync-ops.js";
 import { MEMORY_INDEX_META_KEY, type MemorySyncProgressState } from "./manager-sync-base.js";
+import { MEMORY_SYNC_DEFERRED, type MemorySyncOutcome } from "./manager-sync-outcome.js";
 import {
   markMemoryTargetArchiveFilesDirty,
   runMemoryTargetedSessionSync,
@@ -177,7 +178,8 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
     );
   }
 
-  protected async runSync(params?: MemorySyncParams) {
+  protected async runSync(params?: MemorySyncParams): Promise<MemorySyncOutcome> {
+    this.fullReindexRetryWasDeferred = false;
     const hasTargetSessionRequest = this.hasRequestedTargetSessionSync(params);
     let needsFullReindex = Boolean(params?.force && !hasTargetSessionRequest);
     try {
@@ -201,6 +203,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
       // the vector extension before text and FTS indexing can proceed.
       const vectorReady = syncProvider ? await this.ensureVectorReady() : false;
       const meta = this.readMeta();
+      await this.seedEmbeddingCacheFromChunks(this.db, meta);
       // Resolve and index a targeted session against one corpus snapshot. A reset
       // between separate enumerations could otherwise replace the chosen identity.
       const targetSessionSync = hasTargetSessionRequest
@@ -286,14 +289,24 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
         !hasTargetArchiveFiles;
       const canRunRetryFullReindex =
         indexIdentity.status !== "missing" || needsInitialIndex || canRebuildMissingIdentity;
+      const retryFullReindexRequested = this.memoryFullRetryDirty || this.sessionsFullRetryDirty;
+      const retryFullReindexBackedOff =
+        retryFullReindexRequested && !params?.force && !this.canRetryFailedFullReindex();
       needsFullReindex =
         (params?.force && !hasTargetArchiveFiles) ||
         needsInitialIndex ||
         needsMissingIdentityReindex ||
         needsExplicitIdentityReindex ||
         needsRuntimeVersionReindex ||
-        (this.memoryFullRetryDirty && canRunRetryFullReindex) ||
-        (this.sessionsFullRetryDirty && indexIdentity.status !== "valid" && canRunRetryFullReindex);
+        (this.memoryFullRetryDirty && canRunRetryFullReindex && !retryFullReindexBackedOff) ||
+        (this.sessionsFullRetryDirty &&
+          indexIdentity.status !== "valid" &&
+          canRunRetryFullReindex &&
+          !retryFullReindexBackedOff);
+      if (retryFullReindexBackedOff && !needsFullReindex) {
+        this.fullReindexRetryWasDeferred = true;
+        return MEMORY_SYNC_DEFERRED;
+      }
       const needsFullSessionReindex = needsFullReindex || this.sessionsFullRetryDirty;
       if (indexIdentity.status !== "valid" && !needsFullReindex) {
         this.dirty = true;
@@ -421,6 +434,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
         await this.pruneEmbeddingCacheIfNeeded();
       }
     }
+    return undefined;
   }
 
   protected shouldFallbackOnError(err: unknown): boolean {
@@ -689,6 +703,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
       // Cache-only rebuilds bypass insertion-time eviction; prune the canonical
       // cache only after successful publication so failed rebuilds retain their work.
       await this.pruneEmbeddingCacheIfNeeded();
+      this.clearFullReindexRetryBackoff();
     } catch (err) {
       this.restoreReindexRetryState(originalRetryState);
       this.markFailedFullReindexRetry({

@@ -253,6 +253,25 @@ describe("method scope resolution", () => {
     ).toEqual({ allowed: true });
   });
 
+  it("requires write scope only when memory search records recall state", () => {
+    expect(resolveLeastPrivilegeOperatorScopesForMethod("memory.search", {})).toEqual([
+      "operator.read",
+    ]);
+    expect(
+      resolveLeastPrivilegeOperatorScopesForMethod("memory.search", { recordRecall: true }),
+    ).toEqual(["operator.write"]);
+    expect(
+      authorizeOperatorScopesForMethod("memory.search", ["operator.read"], {
+        recordRecall: true,
+      }),
+    ).toEqual({ allowed: false, missingScope: "operator.write" });
+    expect(
+      authorizeOperatorScopesForMethod("memory.search", ["operator.write"], {
+        recordRecall: true,
+      }),
+    ).toEqual({ allowed: true });
+  });
+
   it("accepts dedicated Talk access and preserves operator.write compatibility", () => {
     expect(authorizeOperatorScopesForMethod("talk.client.create", ["operator.talk"])).toEqual({
       allowed: true,

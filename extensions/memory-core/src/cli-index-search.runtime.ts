@@ -46,6 +46,7 @@ import {
   resolveShortTermRecallStorePath,
 } from "./short-term-promotion.js";
 const { accent, heading, info, muted, success, warn } = theme;
+
 function formatSourceLabel(source: string, workspaceDir: string): string {
   if (source === "memory") {
     return shortenHomeInString(
@@ -398,6 +399,7 @@ export async function runMemoryPromote(
           recencyHalfLifeDays: dreaming.recencyHalfLifeDays,
           maxAgeDays: gatherAllForApply ? undefined : dreaming.maxAgeDays,
           includePromoted: Boolean(opts.includePromoted),
+          includeBlockedOrigins: gatherAllForApply,
         });
       } catch (err) {
         throw new Error(`Memory promote ranking failed: ${formatErrorMessage(err)}`, {

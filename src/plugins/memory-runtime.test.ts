@@ -450,6 +450,28 @@ describe("memory runtime handles", () => {
     expect(mocks.loadPluginRegistryHandle).not.toHaveBeenCalled();
   });
 
+  it("records recalls only through the runtime generation acquired with the search manager", async () => {
+    const recordSearchRecalls = vi.fn(async () => undefined);
+    const runtime = { ...createRuntime(), recordSearchRecalls } satisfies MemoryPluginRuntime;
+    mocks.getMemoryRuntime.mockReturnValue(runtime);
+    const acquired = await getActiveMemorySearchManagerCore({
+      cfg: memoryConfig,
+      agentId: "main",
+    });
+    const recall = {
+      cfg: memoryConfig,
+      agentId: "main",
+      query: "generation ownership",
+      results: [],
+    };
+
+    await acquired.recordSearchRecalls?.(recall);
+    mocks.getMemoryRuntime.mockReturnValue(createRuntime());
+    await acquired.recordSearchRecalls?.(recall);
+
+    expect(recordSearchRecalls).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves statusless reads as successful while preserving manager lifecycle", async () => {
     const canonicalEmpty = {
       status: "ok",

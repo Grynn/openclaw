@@ -443,6 +443,24 @@ function anchorDatabasePathWithoutNormalizing(pathname: string): string {
   return `${cwd}${cwd.endsWith(path.sep) ? "" : path.sep}${platformPath}`;
 }
 
+function resolveMissingAgentDatabasePathIdentity(lexicalPath: string): AgentDatabasePathIdentity {
+  // Registry locators ignore input separator runs; expanded symlink targets
+  // retain raw missing suffixes, including `missing/../live.sqlite`.
+  const rootPath = path.parse(lexicalPath).root;
+  const observed = resolvePathPrefixSync(
+    rootPath + lexicalPath.slice(rootPath.length).split(path.sep).filter(Boolean).join(path.sep),
+  );
+  const parentRealPath = observed.existingPath;
+  const parentStat = statSync(parentRealPath, { bigint: true });
+  return {
+    lexicalPath,
+    parentDevice: parentStat.dev,
+    parentInode: parentStat.ino,
+    parentRealPath,
+    unresolvedSuffix: observed.unresolvedSegments.join(path.sep),
+  };
+}
+
 function resolveAgentDatabasePathIdentity(pathname: string): AgentDatabasePathIdentity {
   // `path.resolve` collapses `..` before symlinks are inspected, but the filesystem
   // resolves `link/..` from the link target. Anchor relative input without rewriting tokens.
@@ -450,32 +468,22 @@ function resolveAgentDatabasePathIdentity(pathname: string): AgentDatabasePathId
   try {
     const realPath = realpathSync.native(lexicalPath);
     const stat = statSync(realPath, { bigint: true });
-    return {
-      lexicalPath,
-      realPath,
-      device: stat.dev,
-      inode: stat.ino,
-    };
+    // A cached normalization alias can resolve briefly after its final link is gone.
+    // Zero links means the leaf is gone, so it keys like any other missing path.
+    if (stat.nlink !== 0n) {
+      return {
+        lexicalPath,
+        realPath,
+        device: stat.dev,
+        inode: stat.ino,
+      };
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
     }
-    // Registry locators ignore input separator runs; expanded symlink targets
-    // retain raw missing suffixes, including `missing/../live.sqlite`.
-    const rootPath = path.parse(lexicalPath).root;
-    const observed = resolvePathPrefixSync(
-      rootPath + lexicalPath.slice(rootPath.length).split(path.sep).filter(Boolean).join(path.sep),
-    );
-    const parentRealPath = observed.existingPath;
-    const parentStat = statSync(parentRealPath, { bigint: true });
-    return {
-      lexicalPath,
-      parentDevice: parentStat.dev,
-      parentInode: parentStat.ino,
-      parentRealPath,
-      unresolvedSuffix: observed.unresolvedSegments.join(path.sep),
-    };
   }
+  return resolveMissingAgentDatabasePathIdentity(lexicalPath);
 }
 
 function areSameAgentDatabasePathIdentities(

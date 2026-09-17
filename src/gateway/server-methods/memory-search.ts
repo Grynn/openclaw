@@ -92,6 +92,14 @@ export const memorySearchHandlers: GatewayRequestHandlers = {
       );
       return;
     }
+    if (record.recordRecall !== undefined && typeof record.recordRecall !== "boolean") {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "recordRecall must be a boolean when provided"),
+      );
+      return;
+    }
 
     const cfg = context.getRuntimeConfig();
     const hasAgentId = Object.hasOwn(record, "agentId");
@@ -126,12 +134,12 @@ export const memorySearchHandlers: GatewayRequestHandlers = {
     }
     let acquired: Awaited<ReturnType<typeof getActiveMemorySearchManagerCore>>;
     try {
-      // Use the transient CLI lifecycle so request cleanup cannot close a shared manager.
-      // manager.search owns the same lazy/on-search sync behavior as the existing CLI path.
+      // Reuse the gateway-owned manager. Its watcher keeps the index current, while a
+      // transient CLI manager must rescan and hash the full corpus on every request.
+      // Gateway shutdown/config reload owns cleanup for this shared lifecycle.
       acquired = await getActiveMemorySearchManagerCore({
         cfg,
         agentId,
-        purpose: "cli",
       });
     } catch (error) {
       respond(
@@ -144,7 +152,7 @@ export const memorySearchHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    const { manager, error: acquireError } = acquired;
+    const { manager, error: acquireError, recordSearchRecalls } = acquired;
     if (!manager) {
       respond(
         false,
@@ -161,6 +169,11 @@ export const memorySearchHandlers: GatewayRequestHandlers = {
       }>({ dirName: "memory-core", artifactBasename: "search-api.js" });
       readRebuildWarning = captureMemoryRebuildNotice(manager.status());
       const results = await manager.search(query, searchOptions);
+      if (record.recordRecall === true && recordSearchRecalls) {
+        await recordSearchRecalls({ cfg, agentId, query, results }).catch(() => {
+          // Recall tracking is best-effort and must not fail an otherwise valid search.
+        });
+      }
       const status = manager.status();
       const staleness = resolveMemorySearchStaleness(status, agentId);
       const warning = [staleness?.warning, readRebuildWarning()]
@@ -186,8 +199,6 @@ export const memorySearchHandlers: GatewayRequestHandlers = {
             .join(" "),
         ),
       );
-    } finally {
-      await manager.close?.().catch(() => {});
     }
   },
 };
