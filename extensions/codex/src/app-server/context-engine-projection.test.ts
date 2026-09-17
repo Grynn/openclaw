@@ -445,7 +445,6 @@ describe("projectContextEngineAssemblyForCodex", () => {
       expect(result.prePromptMessageCount).toBe(messages.length);
     },
   );
-
   it("can scale the rendered context cap for larger Codex context windows", async () => {
     const result = await projectContextEngineAssemblyForCodex({
       assembledMessages: Array.from({ length: 12 }, (_, index) =>
@@ -752,6 +751,21 @@ describe("projectContextEngineAssemblyForCodex", () => {
         reserveTokens: 40_000,
       }),
     ).toBe(160_000);
+  });
+
+  it("only narrows the token-derived projection cap", () => {
+    expect(
+      resolveCodexContextEngineProjectionMaxChars({
+        contextTokenBudget: 258_400,
+        contextProjectionMaxChars: 304_000,
+      }),
+    ).toBe(304_000);
+    expect(
+      resolveCodexContextEngineProjectionMaxChars({
+        contextTokenBudget: 80_000,
+        contextProjectionMaxChars: 500_000,
+      }),
+    ).toBe(240_000);
   });
 
   it("caps very large runtime budgets to a bounded projection size", async () => {
