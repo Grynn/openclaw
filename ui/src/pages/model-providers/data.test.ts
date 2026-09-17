@@ -454,6 +454,37 @@ describe("buildModelProviderCards", () => {
     expect(firstCard(cards).auth).toMatchObject({ kind: "missing", profileCount: 1 });
   });
 
+  it("reports an available runtime-owned credential route without inventing direct auth", () => {
+    const cards = buildModelProviderCards({
+      ...EMPTY_INPUT,
+      models: [
+        catalogEntry({
+          provider: "anthropic",
+          available: true,
+          agentRuntime: { id: "claude-cli", source: "model" },
+        }),
+        catalogEntry({
+          provider: "anthropic",
+          id: "anthropic/unavailable",
+          available: false,
+          agentRuntime: { id: "private-runtime", source: "model" },
+        }),
+      ],
+      authStatus: authStatus([
+        {
+          provider: "anthropic",
+          displayName: "Claude",
+          status: "missing",
+          profiles: [],
+        },
+      ]),
+    });
+
+    expect(firstCard(cards).availableAgentRuntimeIds).toEqual(["claude-cli"]);
+    expect(firstCard(cards).profiles).toEqual([]);
+    expect(firstCard(cards).apiKey).toBeUndefined();
+  });
+
   it("preserves missing MiniMax OAuth beside a separate API key", () => {
     const cards = buildModelProviderCards({
       ...EMPTY_INPUT,

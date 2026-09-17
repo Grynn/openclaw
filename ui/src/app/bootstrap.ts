@@ -63,6 +63,7 @@ import { createConnectionBootstrapCoordinator } from "./connection-bootstrap.ts"
 import type { ApplicationNavigationOptions, ApplicationContext } from "./context.ts";
 import { createScopeUpgradeCapability } from "./device-scope-upgrade.ts";
 import { startGatewayPageActivation } from "./gateway-page-activation.ts";
+import { waitForGatewayClient } from "./gateway-readiness.ts";
 import { createApplicationGateway } from "./gateway-store.ts";
 import { createNativeChatDrafts } from "./native-bridge.ts";
 import { startNativeLinkRouting } from "./native-link-routing.ts";
@@ -637,6 +638,18 @@ export function bootstrapApplication(): ApplicationRuntime {
         if (initialFirstRunDecision) {
           steps.push(() => initialFirstRunDecision);
         }
+        // Route loaders own the authenticated application graph. Keep every route
+        // dormant through a rejected first attempt; reconnects retain the one start.
+        steps.push(() =>
+          waitForGatewayClient(gateway, startupLifecycle.signal).then(
+            () => undefined,
+            (error: unknown) => {
+              if (!startupLifecycle.signal.aborted) {
+                throw error;
+              }
+            },
+          ),
+        );
         steps.push(async () => {
           const pendingNavigation = pendingRouterStartNavigation;
           pendingRouterStartNavigation = null;

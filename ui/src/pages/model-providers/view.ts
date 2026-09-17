@@ -21,12 +21,12 @@ import {
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
 import { t } from "../../i18n/index.ts";
 import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
-import { formatUiExternalText } from "../../lib/format-error.ts";
 import { formatCompactTokenCount, formatCost, formatTimeMs } from "../../lib/format.ts";
 import { MODEL_SETTINGS_TARGET_IDS } from "../config/route-data.ts";
 import "../../styles/model-providers.css";
 import "../../styles/usage.css";
 import type { ModelProviderRowMessage } from "./config-mutation.ts";
+import { renderCredentialSummary, renderProbeResult } from "./credentials-view.ts";
 import type {
   DefaultModelSelection,
   ModelPickerEntry,
@@ -166,83 +166,6 @@ function renderLocalCost(card: ModelProviderCard, costDays: number) {
   `;
 }
 
-function renderCredentialSummary(card: ModelProviderCard, agentLabel: string) {
-  const oauthCount = card.profiles.filter((profile) => profile.type === "oauth").length;
-  const tokenCount = card.profiles.filter((profile) => profile.type === "token").length;
-  const apiProfileCount = card.profiles.filter((profile) => profile.type === "api_key").length;
-  const parts = [];
-  if (oauthCount > 0) {
-    parts.push(t("modelProviders.credentials.oauth", { count: String(oauthCount) }));
-  }
-  if (tokenCount > 0) {
-    parts.push(t("modelProviders.credentials.tokenProfiles", { count: String(tokenCount) }));
-  }
-  if (card.apiKey?.source === "config") {
-    parts.push(t("modelProviders.credentials.configKey"));
-  } else if (card.apiKey?.source === "env") {
-    parts.push(
-      card.apiKey.envVar
-        ? t("modelProviders.credentials.envKeyNamed", { name: card.apiKey.envVar })
-        : t("modelProviders.credentials.envKey"),
-    );
-  } else if (apiProfileCount > 0) {
-    parts.push(t("modelProviders.credentials.profileKey", { count: String(apiProfileCount) }));
-  }
-  return html`
-    <div class="model-providers__credentials">
-      <span>${t("modelProviders.credentials.label", { agent: agentLabel })}</span>
-      <strong
-        >${parts.length > 0 ? parts.join(" · ") : t("modelProviders.credentials.none")}</strong
-      >
-    </div>
-  `;
-}
-
-function renderProbeResult(result: ModelsProbeResult | undefined) {
-  if (!result) {
-    return nothing;
-  }
-  const hasWarnings =
-    result.status === "ok" && result.results.some((target) => target.status !== "ok");
-  const presentation = hasWarnings ? "warning" : result.status === "ok" ? "success" : "error";
-  return html`
-    <div class="model-providers__probe model-providers__probe--${presentation}" role="status">
-      <div class="model-providers__probe-summary">
-        <strong
-          >${
-            hasWarnings
-              ? t("modelProviders.probe.status.partial")
-              : t(`modelProviders.probe.status.${result.status}`)
-          }</strong
-        >
-        ${
-          result.latencyMs !== undefined
-            ? html`<span
-                >${t("modelProviders.probe.latency", { ms: String(result.latencyMs) })}</span
-              >`
-            : nothing
-        }
-      </div>
-      ${result.error ? html`<div>${formatUiExternalText(result.error)}</div>` : nothing}
-      ${result.results.map(
-        (target) => html`
-          <div class="model-providers__probe-target">
-            <span>${target.label}</span>
-            <span>
-              ${t(`modelProviders.probe.status.${target.status}`)}${
-                target.latencyMs !== undefined
-                  ? ` · ${t("modelProviders.probe.latency", { ms: String(target.latencyMs) })}`
-                  : ""
-              }
-            </span>
-            ${target.error ? html`<small>${formatUiExternalText(target.error)}</small>` : nothing}
-          </div>
-        `,
-      )}
-    </div>
-  `;
-}
-
 function renderKeyEditor(card: ModelProviderCard, props: ModelProvidersViewProps) {
   if (props.keyEditorProvider !== card.id) {
     return nothing;
@@ -255,7 +178,13 @@ function renderKeyEditor(card: ModelProviderCard, props: ModelProvidersViewProps
   return html`
     <div class="model-providers__inline-form">
       <label class="field">
-        <span>${t("modelProviders.apiKey.label")}</span>
+        <span
+          >${t(
+            card.availableAgentRuntimeIds.length > 0
+              ? "modelProviders.apiKey.directLabel"
+              : "modelProviders.apiKey.label",
+          )}</span
+        >
         <input
           type="password"
           autocomplete="off"
@@ -338,7 +267,13 @@ function renderProviderActions(card: ModelProviderCard, props: ModelProvidersVie
                 title=${keyBlocked}
                 @click=${() => props.onOpenKeyEditor(card.id)}
               >
-                ${t("modelProviders.apiKey.set")}
+                ${card.hasConfigApiKey
+                  ? t("modelProviders.apiKey.replace")
+                  : t(
+                      card.availableAgentRuntimeIds.length > 0
+                        ? "modelProviders.apiKey.setDirect"
+                        : "modelProviders.apiKey.set",
+                    )}
               </button>
             `
       }

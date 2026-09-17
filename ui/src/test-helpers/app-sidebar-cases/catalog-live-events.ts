@@ -3,10 +3,63 @@ import type { SessionsCatalogListResult } from "../../../../packages/gateway-pro
 import { createDeferred as deferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationGatewaySnapshot } from "../../app/context.ts";
-import { catalogPage, createGatewayHarness, createSessions, mountSidebar } from "../app-sidebar.ts";
+import {
+  catalogPage,
+  createContext,
+  createGatewayHarness,
+  createSessions,
+  mountSidebar,
+  type SidebarLifecycleState,
+} from "../app-sidebar.ts";
+import { createApplicationContextProvider } from "../application-context.ts";
 import "../../components/app-sidebar.ts";
 
 describe("AppSidebar session catalog pagination", () => {
+  it("defers catalog scans while the navigation surface is hidden", async () => {
+    vi.useFakeTimers();
+    try {
+      const request = vi.fn().mockResolvedValue(catalogPage([]));
+      const gateway = createGatewayHarness({ request } as unknown as GatewayBrowserClient);
+      gateway.publish({
+        hello: {
+          features: { methods: ["sessions.catalog.list"] },
+        } as ApplicationGatewaySnapshot["hello"],
+      });
+      const context = createContext(gateway.gateway, createSessions("main", ["agent:main:main"]));
+      const provider = createApplicationContextProvider(context);
+      const sidebar = document.createElement("openclaw-app-sidebar") as SidebarLifecycleState & {
+        sessionCatalogSurfaceVisible: boolean;
+      };
+      sidebar.connected = true;
+      sidebar.sessionCatalogSurfaceVisible = false;
+      provider.append(sidebar);
+      document.body.append(provider);
+      await sidebar.updateComplete;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(request).not.toHaveBeenCalled();
+
+      sidebar.sessionCatalogSurfaceVisible = true;
+      await sidebar.updateComplete;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(request).toHaveBeenCalledTimes(1);
+
+      sidebar.sessionCatalogSurfaceVisible = false;
+      await sidebar.updateComplete;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(request).toHaveBeenCalledTimes(1);
+
+      sidebar.sessionCatalogSurfaceVisible = true;
+      await sidebar.updateComplete;
+      await vi.advanceTimersByTimeAsync(49);
+      expect(request).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(request).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+
   it("does not queue another scan when focus returns during the startup scan", async () => {
     vi.useFakeTimers();
     try {

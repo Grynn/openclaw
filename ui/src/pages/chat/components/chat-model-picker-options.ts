@@ -8,6 +8,7 @@ import {
 import "../../../components/tooltip.ts";
 import { t } from "../../../i18n/index.ts";
 import { registerModelControlsEnglish } from "../../../i18n/locales/en-model-controls.ts";
+import { formatAgentRuntimeLabel } from "../../../lib/agent-runtime-label.ts";
 import { formatContextTokenCapacity } from "../../../lib/format.ts";
 import type { ModelRuntimeEntry } from "../../../lib/model-runtime-choice.ts";
 
@@ -65,24 +66,6 @@ export type ChatModelPickerTargetGroup = {
   options: readonly { label: string; value: string }[];
   status: "loading" | "ready" | "error";
 };
-
-// Known models.list runtime ids; mirrors src/status/agent-runtime-label.ts,
-// which cannot be imported here (it drags terminal sanitizers into the bundle).
-const AGENT_RUNTIME_LABELS: Readonly<Record<string, string>> = {
-  "claude-cli": "Claude CLI",
-  codex: "Codex",
-  "codex-cli": "Codex",
-  "google-gemini-cli": "Gemini CLI",
-  openclaw: "OpenClaw",
-};
-
-function formatAgentRuntimeLabel(id: string): string {
-  const normalized = id.trim().toLowerCase();
-  return (
-    AGENT_RUNTIME_LABELS[normalized] ??
-    `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)}`
-  );
-}
 
 function formatModelLabel(option: ChatModelPickerOption): string {
   const prefixes = [

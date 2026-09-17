@@ -629,6 +629,48 @@ describe("renderModelProviders", () => {
     },
   );
 
+  it("identifies runtime-managed credentials while keeping direct API setup optional", () => {
+    const container = mount(
+      props({
+        cards: [
+          card({
+            id: "anthropic",
+            displayName: "Claude",
+            apiKey: undefined,
+            credentialProviderIds: [],
+            auth: { kind: "missing", profileCount: 0 },
+            availableAgentRuntimeIds: ["claude-cli"],
+            catalogStatus: "ready",
+          }),
+        ],
+      }),
+    );
+
+    const provider = container.querySelector('[data-provider-id="anthropic"]');
+    expect(text(provider)).toContain("Managed by Claude CLI");
+    expect(text(provider)).toContain("Ready");
+    expect(text(provider)).not.toContain("Not configured");
+    expect(text(provider)).not.toContain("Not signed in");
+    expect(button(provider!, "Set direct API key")).toBeDefined();
+    expect(button(provider!, "Test connection")).toBeUndefined();
+  });
+
+  it("keeps a missing credential error when the provider has no usable route", () => {
+    const container = mount(
+      props({
+        cards: [
+          card({
+            auth: { kind: "missing", profileCount: 0 },
+            modelCount: 1,
+            availableModelCount: 0,
+          }),
+        ],
+      }),
+    );
+
+    expect(text(container.querySelector('[data-provider-id="openai"]'))).toContain("Not signed in");
+  });
+
   it("does not report an unverified API key as ready", () => {
     const container = mount(
       props({

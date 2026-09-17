@@ -554,6 +554,22 @@ function controlUiPrecompressedAssetsPlugin(buildOutDir: string): Plugin {
   };
 }
 
+export function controlUiCloudflareScriptBypassPlugin(): Plugin {
+  return {
+    name: "control-ui-cloudflare-script-bypass",
+    apply: "build",
+    transformIndexHtml: {
+      order: "post",
+      handler(html) {
+        return html.replace(
+          /<script\b(?![^>]*\bdata-cfasync\s*=)/giu,
+          '<script data-cfasync="false"',
+        );
+      },
+    },
+  };
+}
+
 function collectControlUiAssetManifestEntries(
   buildOutDir: string,
   assetsRoot = path.join(buildOutDir, "assets"),
@@ -681,6 +697,7 @@ export default function controlUiViteConfig(
       controlUiSocialCardPlugin(),
       controlUiLocaleModulesPlugin(),
       controlUiBrowserOnlySharedModuleAliases(),
+      controlUiCloudflareScriptBypassPlugin(),
       controlUiPrecompressedAssetsPlugin(buildOutDir),
       controlUiBuildOutputPlugin(buildInfo.buildId, buildOutDir),
       controlUiAssetManifestPlugin(buildOutDir),

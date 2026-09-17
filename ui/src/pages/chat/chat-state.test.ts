@@ -5323,7 +5323,11 @@ describe("refreshChatModelAuthStatus", () => {
       await refreshChatModelAuthStatus(state);
       applySelectedChatAgent(state, "research");
 
-      expect(request).toHaveBeenCalledWith("models.authStatus", { agentId: "work" });
+      expect(request).toHaveBeenCalledWith(
+        "models.authStatus",
+        { agentId: "work" },
+        { signal: expect.any(AbortSignal) },
+      );
       expect(request).toHaveBeenCalledOnce();
       expect(state.assistantAgentId).toBe("main");
       expect(state.modelAuthStatusResult).toBe(result);
@@ -5376,8 +5380,8 @@ describe("refreshChatModelAuthStatus", () => {
       expect(state.modelAuthStatusResult).toBeNull();
       expect(state.modelAuthStatusError).toBeNull();
       expect(request.mock.calls.filter(([method]) => method === "models.authStatus")).toEqual([
-        ["models.authStatus", { agentId: "main" }],
-        ["models.authStatus", { agentId: "work" }],
+        ["models.authStatus", { agentId: "main" }, { signal: expect.any(AbortSignal) }],
+        ["models.authStatus", { agentId: "work" }, { signal: expect.any(AbortSignal) }],
       ]);
       expect(refreshSessions).toHaveBeenCalledWith(
         expect.objectContaining({ agentId: "work", force: true }),

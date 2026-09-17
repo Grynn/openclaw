@@ -172,10 +172,11 @@ describe("loadModelProvidersData", () => {
 
     const result = await loadModelProvidersData(client, { refresh: true, agentId: "writer" });
 
-    expect(request).toHaveBeenCalledWith("models.authStatus", {
-      refresh: true,
-      agentId: "writer",
-    });
+    expect(request).toHaveBeenCalledWith(
+      "models.authStatus",
+      { refresh: true, agentId: "writer" },
+      { signal: expect.any(AbortSignal) },
+    );
     expect(request.mock.calls.filter(([method]) => method === "models.list")).toEqual([
       ["models.list", { view: "configured", agentId: "writer", refresh: true }],
     ]);

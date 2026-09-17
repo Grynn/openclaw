@@ -267,6 +267,7 @@ export function renderApplicationShell(host: ShellViewHost) {
       enabledRouteIds: host.enabledRouteIds(),
       sessionKey: host.activeSessionKey,
       connected: gatewayConnected,
+      sessionCatalogSurfaceVisible: !navigationSurfaceHidden,
       offline: gatewaySnapshot.offlineStable,
       restartPending: gatewaySnapshot.restartPending === true,
       suspensionPhase: gatewaySnapshot.suspensionPhase,

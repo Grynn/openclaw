@@ -363,6 +363,7 @@ const enSettings = {
       envKey: "API key from environment",
       envKeyNamed: "API key from environment ({name})",
       profileKey: "API key profiles: {count}",
+      runtimeManaged: "Managed by {runtime}",
       none: "Not configured",
     },
     profiles: {
@@ -391,9 +392,12 @@ const enSettings = {
     },
     apiKey: {
       label: "API key",
+      directLabel: "Direct API key",
       placeholder: "Enter provider API key",
       replacePlaceholder: "Secret saved. Enter a new key to replace it.",
       set: "Set API key",
+      setDirect: "Set direct API key",
+      replace: "Replace key",
       remove: "Remove key",
       saved: "Secret saved.",
       removed: "Saved API keys removed.",

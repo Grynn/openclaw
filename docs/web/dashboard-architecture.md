@@ -514,6 +514,8 @@ RPCs (core method table, typebox schemas in `gateway-protocol`):
   `operator.read`. It accepts managed script-enabled Canvas documents up to 2 MiB,
   creates no board state, and returns no capability ticket.
 - `board.get { sessionKey }` → tabs + widget metadata and native props (no document bytes) — `operator.read`
+- `board.metadata { sessionKeys[] }` → bounded per-session board presence + revision
+  outcomes (including isolated errors) — `operator.read`
 - `board.update { sessionKey, ops[] }` — tab CRUD/reorder, widget move/resize/
   remove/unpin, dock state, focus-tab — `operator.write`
 - `board.widget.put { sessionKey, name, content, declared?, placement? }` —

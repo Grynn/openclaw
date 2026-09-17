@@ -159,6 +159,7 @@ function createFilteredSessionController(
     connected: true,
     activeRouteId: "sessions",
     getRouteSessionKey: () => context.gateway.snapshot.sessionKey.trim(),
+    sessionCatalogSurfaceVisible: true,
     sessionDataContext: context,
     addController: () => undefined,
     removeController: () => undefined,

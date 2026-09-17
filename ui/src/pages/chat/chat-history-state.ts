@@ -46,6 +46,13 @@ type ChatHistoryLoadState =
     }
   | ({ phase: "failed"; message: string; retryable: boolean } & ChatHistoryLoadRequest);
 
+export type InFlightChatBranchesRequest = {
+  client: GatewayBrowserClient;
+  connectionEpoch: number;
+  key: string;
+  promise: Promise<void>;
+};
+
 type ChatHistoryPaneRequests = {
   historyVersion: number;
   branchVersion: number;
@@ -54,6 +61,7 @@ type ChatHistoryPaneRequests = {
   pendingSubscriptionReleases: Set<SessionMessageSubscription>;
   historyLoad: ChatHistoryLoadState;
   acceptedHistory?: Extract<ChatHistoryLoadState, { phase: "committed" }>;
+  inFlightBranches?: InFlightChatBranchesRequest;
   initialSnapshotHydration?: InitialChatSnapshotHydration;
 };
 

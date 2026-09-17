@@ -33,6 +33,7 @@ export abstract class AppSidebarBase extends OpenClawLightDomContentsElement {
   @property({ attribute: false }) activePluginTabId = "";
   @property({ attribute: false }) enabledRouteIds?: readonly NavigationRouteId[];
   @property({ attribute: false }) connected = false;
+  @property({ attribute: false }) sessionCatalogSurfaceVisible = true;
   @property({ attribute: false }) offline = false;
   @property({ attribute: false }) restartPending = false;
   @property({ attribute: false }) suspensionPhase: ApplicationGatewaySnapshot["suspensionPhase"];

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gateway.ts";
 import { rewindChatHistory, switchChatHistoryBranch } from "./chat-history-actions.ts";
+import { loadChatBranches } from "./chat-history-branches.ts";
 import type { ChatHistoryResult } from "./chat-history-snapshot.ts";
 import { syncSelectedSessionMessageSubscription } from "./chat-history-subscription.ts";
 import { createState, type TestState } from "./chat-history.inflight.test-support.ts";
@@ -391,6 +392,26 @@ describe("rewindChatHistory", () => {
 });
 
 describe("switchChatHistoryBranch", () => {
+  it("coalesces concurrent branch refreshes for the same session", async () => {
+    let resolveBranches!: (result: []) => void;
+    const branches = new Promise<[]>((resolve) => {
+      resolveBranches = resolve;
+    });
+    const state = createState({ messages: [] }) as TestState & {
+      sessions: { listBranches: ReturnType<typeof vi.fn> };
+    };
+    state.sessionKey = "agent:main:branches";
+    Object.assign(state.sessions, { listBranches: vi.fn().mockReturnValue(branches) });
+
+    const first = loadChatBranches(state);
+    const second = loadChatBranches(state);
+
+    expect(state.sessions.listBranches).toHaveBeenCalledOnce();
+    resolveBranches([]);
+    await Promise.all([first, second]);
+    expect(state.chatBranches).toEqual([]);
+  });
+
   it("clears the cached snapshot and refetches history plus branches", async () => {
     const state = createState({
       messages: [{ role: "assistant", content: "restored branch" }],
