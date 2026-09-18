@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { hasErrnoCode } from "../infra/errno.js";
+import { isGatewayExternallySupervised } from "../infra/gateway-supervision.js";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../infra/kysely-sync-cache-state.js";
 import {
   executeSqliteQuerySync,
@@ -255,6 +256,7 @@ export type OpenClawAgentDatabaseWorkerLeaseReceipt = {
   ownerStartTime: number | null;
   sharedStatePath: string;
   sharedStateIdentity: string;
+  externallySupervised: boolean;
 };
 
 /** Capture the exact admitted claim so its parent can finish cleanup after native Worker exit. */
@@ -282,6 +284,7 @@ export function readOpenClawAgentDatabaseWorkerLeaseReceiptFromClaim(
     ownerStartTime: row.owner_start_time,
     sharedStatePath: database.path,
     sharedStateIdentity: readDatabasePathIdentitySync(database.path).key,
+    externallySupervised: isGatewayExternallySupervised(params.env ?? process.env),
   };
 }
 
@@ -319,7 +322,10 @@ export function releaseExitedOpenClawAgentDatabaseWorkerLease(
     },
     {
       path: receipt.sharedStatePath,
-      env: { OPENCLAW_STATE_DIR: resolveOpenClawStateDirForDatabasePath(receipt.sharedStatePath) },
+      env: {
+        OPENCLAW_STATE_DIR: resolveOpenClawStateDirForDatabasePath(receipt.sharedStatePath),
+        ...(receipt.externallySupervised ? { OPENCLAW_SUPERVISOR_MODE: "external" } : {}),
+      },
     },
   );
 }

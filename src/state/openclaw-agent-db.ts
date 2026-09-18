@@ -4,7 +4,7 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { isMainThread } from "node:worker_threads";
 import { resolveStateDir } from "../config/paths.js";
-import { isGatewayExternallySupervised } from "../infra/gateway-supervision.js";
+import { resolveSupervisedStateEnvironment } from "../infra/gateway-supervision.js";
 import { enableNodeSqliteKyselyStatementCache } from "../infra/kysely-sync.js";
 import {
   openNodeSqliteDatabase,
@@ -291,12 +291,10 @@ function* openOpenClawAgentDatabaseSteps(
     cache.failures.delete(pathname);
   }
   // Lease release must retain its original state owner after ambient env changes.
-  const leaseEnvironment = {
-    OPENCLAW_STATE_DIR: resolveStateDir(options.env ?? process.env),
-    ...(isGatewayExternallySupervised(options.env ?? process.env)
-      ? { OPENCLAW_SUPERVISOR_MODE: "external" }
-      : {}),
-  };
+  const leaseEnvironment = resolveSupervisedStateEnvironment(
+    resolveStateDir(options.env ?? process.env),
+    options.env ?? process.env,
+  );
   const leaseId = claimOpenClawAgentDatabaseLease({
     agentId,
     path: pathname,

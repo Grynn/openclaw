@@ -16,6 +16,12 @@ import { sha256HexPrefixCore } from "../infra/crypto-digest.js";
 import { requireNodeSqlite, resolveImmutableSqliteFileUri } from "../infra/node-sqlite.js";
 import * as sqliteReadonlyLocation from "../infra/sqlite-snapshot-source.js";
 import { withEnv, withEnvAsync } from "../test-utils/env.js";
+import {
+  claimOpenClawAgentDatabaseLease,
+  readOpenClawAgentDatabaseWorkerLeaseReceiptFromClaim,
+  releaseExitedOpenClawAgentDatabaseWorkerLease,
+} from "./openclaw-agent-db-lease.js";
+import { resolveOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
 import { openClawStateDatabaseCache } from "./openclaw-state-db-cache.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -629,6 +635,34 @@ describe("external shared-state ownership", () => {
     expect(() => claimOpenClawStateOwnership("replacement-manager", { env: externalEnv })).toThrow(
       /already claimed by external manager gateway-supervisor/u,
     );
+  });
+
+  it("releases an exited Worker lease under the claim that admitted it", () => {
+    const fixture = claimFixture();
+    const agentPath = resolveOpenClawAgentSqlitePath({ agentId: "main", env: fixture.externalEnv });
+    const leaseId = claimOpenClawAgentDatabaseLease({
+      agentId: "main",
+      path: agentPath,
+      env: fixture.externalEnv,
+    });
+    const receipt = readOpenClawAgentDatabaseWorkerLeaseReceiptFromClaim(leaseId, {
+      agentId: "main",
+      path: agentPath,
+      env: fixture.externalEnv,
+    });
+    closeOpenClawStateDatabaseForTest();
+
+    // The parent finishes cleanup after the Worker exits, possibly from a
+    // context whose ambient env no longer carries the supervisor marker.
+    withEnv({ ...fixture.unmarkedEnv, OPENCLAW_SUPERVISOR_MODE: undefined }, () => {
+      expect(() => releaseExitedOpenClawAgentDatabaseWorkerLease(receipt)).not.toThrow();
+    });
+    const database = openOpenClawStateDatabase({ env: fixture.externalEnv });
+    expect(
+      database.db
+        .prepare("SELECT lease_id FROM agent_database_leases WHERE lease_id = ?")
+        .all(leaseId),
+    ).toEqual([]);
   });
 
   it("refuses unmarked writable opens before changing the SQLite family", () => {

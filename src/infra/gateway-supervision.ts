@@ -11,6 +11,25 @@ export function isGatewayExternallySupervised(env: NodeJS.ProcessEnv = process.e
   return env[GATEWAY_SUPERVISOR_MODE_ENV]?.trim().toLowerCase() === "external";
 }
 
+export type SupervisedStateEnvironment = {
+  OPENCLAW_STATE_DIR: string;
+  OPENCLAW_SUPERVISOR_MODE?: "external";
+};
+
+// A shared-state write made on behalf of a captured owner (lease release,
+// reclamation Worker, deferred cleanup) must carry the owner's supervisor claim:
+// once an external supervisor has claimed the state database, an unmarked
+// writable open fails closed even inside the supervised gateway itself.
+export function resolveSupervisedStateEnvironment(
+  stateDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): SupervisedStateEnvironment {
+  return {
+    OPENCLAW_STATE_DIR: stateDir,
+    ...(isGatewayExternallySupervised(env) ? { OPENCLAW_SUPERVISOR_MODE: "external" } : {}),
+  };
+}
+
 export function formatExternalSupervisorActionRequired(action: string): string {
   return [
     `OpenClaw gateway lifecycle is managed by an external supervisor (${GATEWAY_SUPERVISOR_MODE_ENV}=external).`,

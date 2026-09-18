@@ -1,6 +1,6 @@
 import path from "node:path";
 import { resolveStateDir } from "../config/state-dir.js";
-import { isGatewayExternallySupervised } from "../infra/gateway-supervision.js";
+import { resolveSupervisedStateEnvironment } from "../infra/gateway-supervision.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { captureStateDatabaseCoordinatorRuntime } from "../infra/state-database-coordinator.js";
 import { getOpenClawDatabaseMaintenanceScope } from "./openclaw-state-db-async-lifecycle.js";
@@ -13,10 +13,10 @@ export function captureOpenClawStateWorkerContext(
   options: { path?: string; env?: NodeJS.ProcessEnv } = {},
 ): OpenClawStateWorkerContext {
   const env = options.env ?? process.env;
-  const environment: SqliteWorkerStateContext["environment"] = {
-    OPENCLAW_STATE_DIR: resolveStateDir(env),
-    ...(isGatewayExternallySupervised(env) ? { OPENCLAW_SUPERVISOR_MODE: "external" } : {}),
-  };
+  const environment: SqliteWorkerStateContext["environment"] = resolveSupervisedStateEnvironment(
+    resolveStateDir(env),
+    env,
+  );
   return {
     maintenanceScope: getOpenClawDatabaseMaintenanceScope(),
     admission: captureOpenClawStateDatabaseReadAdmission(

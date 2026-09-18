@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { normalizeAgentId } from "@openclaw/normalization-core/agent-id";
+import { resolveSupervisedStateEnvironment } from "../../infra/gateway-supervision.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
@@ -95,7 +96,10 @@ function toWorkerDatabaseOptions(
   const sharedStatePath = options.database?.path ?? resolveOpenClawStateSqlitePath(sourceEnv);
   return {
     agentId: normalizeAgentId(options.agentId),
-    env: { OPENCLAW_STATE_DIR: resolveOpenClawStateDirForDatabasePath(sharedStatePath) },
+    env: resolveSupervisedStateEnvironment(
+      resolveOpenClawStateDirForDatabasePath(sharedStatePath),
+      sourceEnv,
+    ),
     path: resolveOpenClawAgentSqlitePath(options),
   };
 }
