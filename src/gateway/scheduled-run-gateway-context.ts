@@ -6,7 +6,11 @@
  * no context and fail mid-run. RPC-triggered runs already inherit a scope from
  * their caller and must keep it.
  */
-import { withPluginRuntimeGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
+import { withoutGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
+import {
+  bindGatewayContextResolver,
+  withPluginRuntimeGatewayContextResolver,
+} from "../plugins/runtime/gateway-request-scope.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 
 type ScheduledGatewayContextResolver = () => GatewayRequestContext | undefined;
@@ -20,32 +24,44 @@ type ScheduledGatewayContextResolver = () => GatewayRequestContext | undefined;
  * retired one, because a missing context fails visibly.
  */
 export function fenceScheduledGatewayContextResolver(
+  resolveGatewayContext: ScheduledGatewayContextResolver,
+): ScheduledGatewayContextResolver;
+export function fenceScheduledGatewayContextResolver(resolveGatewayContext: undefined): undefined;
+export function fenceScheduledGatewayContextResolver(
+  resolveGatewayContext: ScheduledGatewayContextResolver | undefined,
+): ScheduledGatewayContextResolver | undefined;
+export function fenceScheduledGatewayContextResolver(
   resolveGatewayContext: ScheduledGatewayContextResolver | undefined,
 ): ScheduledGatewayContextResolver | undefined {
   if (!resolveGatewayContext) {
     return undefined;
   }
-  return () => {
+  const resolveScheduledContext = () => {
     const context = resolveGatewayContext();
     return context?.resolveGatewayContext?.() ?? undefined;
   };
+  // Keep the execution fence while retaining the host identity used by shutdown.
+  bindGatewayContextResolver(resolveScheduledContext, resolveGatewayContext);
+  return resolveScheduledContext;
 }
 
 /**
  * Runs scheduler-owned work with a Gateway context.
  *
- * Detached work replaces any request scope inherited when it was queued or
- * armed. Caller-owned work must stay outside this boundary.
+ * Detached work replaces the request scope and tool caller inherited when it
+ * was queued or armed. Caller-owned work must stay outside this boundary.
  */
 export async function runWithScheduledGatewayContext<T>(params: {
   resolveGatewayContext?: ScheduledGatewayContextResolver;
   run: () => Promise<T>;
 }): Promise<T> {
-  const resolveGatewayContext = params.resolveGatewayContext;
-  if (!resolveGatewayContext) {
-    return await params.run();
-  }
-  return await withPluginRuntimeGatewayContextResolver(resolveGatewayContext, params.run, {
-    inheritRequestScope: false,
+  return await withoutGatewayToolCallerIdentity(async () => {
+    const resolveGatewayContext = params.resolveGatewayContext;
+    if (!resolveGatewayContext) {
+      return await params.run();
+    }
+    return await withPluginRuntimeGatewayContextResolver(resolveGatewayContext, params.run, {
+      inheritRequestScope: false,
+    });
   });
 }

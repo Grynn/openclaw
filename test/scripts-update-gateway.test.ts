@@ -1,186 +1,399 @@
-// Regression coverage for scripts/update-gateway.sh stop/backup/rollback flow.
-// Runs the real script in a scratch git checkout with PATH-shimmed
-// openclaw/pnpm binaries so gateway and build behavior are controlled.
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveDistArtifactLockPath } from "../scripts/lib/dist-artifact-ownership.mts";
+import { listTsdownOutputRoots } from "../scripts/tsdown-build.mts";
+import { runUpdateGatewayBuild } from "../scripts/update-gateway-build.mts";
+
+const { buildMock, lifecycleMock } = vi.hoisted(() => ({
+  buildMock: vi.fn(),
+  lifecycleMock: vi.fn(),
+}));
+vi.mock("../scripts/build-all.mts", () => ({ runBuildAllSteps: buildMock }));
+vi.mock("../scripts/lib/managed-child-process.mts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../scripts/lib/managed-child-process.mts")>()),
+  runManagedCommand: lifecycleMock,
+}));
+
+async function runTransaction(
+  stop: string,
+  restart: string,
+  fixture: {
+    root: string;
+    build: () => Promise<{ exitCode: number }>;
+    lifecycle: (command: string) => Promise<number>;
+  },
+) {
+  buildMock.mockImplementation(fixture.build);
+  lifecycleMock.mockImplementation(({ args }: { args: string[] }) => fixture.lifecycle(args[1]!));
+  const cwd = vi.spyOn(process, "cwd").mockReturnValue(fixture.root);
+  try {
+    return await runUpdateGatewayBuild(stop, restart, shimDir);
+  } finally {
+    cwd.mockRestore();
+  }
+}
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const scriptSource = path.join(repoRoot, "scripts", "update-gateway.sh");
-
 let scratch: string;
 let workdir: string;
 let shimDir: string;
 let invocationLog: string;
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
-function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
-}
-
-function writeShim(name: string, body: string): void {
+function writeShim(name: string, body: string) {
   const file = path.join(shimDir, name);
-  fs.writeFileSync(file, `#!/usr/bin/env bash\n${body}\n`);
+  fs.writeFileSync(file, `#!/bin/bash\n${body}\n`);
   fs.chmodSync(file, 0o755);
 }
 
-function runUpdater(env: Record<string, string> = {}) {
-  const childEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    ...env,
-    PATH: `${shimDir}:${process.env.PATH ?? ""}`,
-    UPDATE_TEST_LOG: invocationLog,
-  };
-  if (!Object.hasOwn(env, "OPENCLAW_UPDATE_RESTART_CMD")) {
-    delete childEnv.OPENCLAW_UPDATE_RESTART_CMD;
+function runUpdater(overrides: Record<string, string> = {}) {
+  const env = { ...process.env, ...overrides };
+  for (const name of ["OPENCLAW_UPDATE_RESTART_CMD", "OPENCLAW_UPDATE_STOP_CMD"]) {
+    if (!Object.hasOwn(overrides, name)) {
+      delete env[name];
+    }
   }
-  if (!Object.hasOwn(env, "OPENCLAW_UPDATE_STOP_CMD")) {
-    delete childEnv.OPENCLAW_UPDATE_STOP_CMD;
-  }
-  return spawnSync("bash", [path.join(workdir, "scripts", "update-gateway.sh")], {
+  return spawnSync("/bin/bash", [path.join(workdir, "scripts/update-gateway.sh")], {
     cwd: workdir,
     encoding: "utf8",
-    env: childEnv,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${process.env.PATH ?? ""}`,
+      UPDATE_TEST_LOG: invocationLog,
+      UPDATE_TEST_BIN: shimDir,
+    },
   });
 }
 
-function loggedInvocations(): string[] {
-  return fs.existsSync(invocationLog)
+const calls = () =>
+  fs.existsSync(invocationLog)
     ? fs.readFileSync(invocationLog, "utf8").trim().split("\n").filter(Boolean)
     : [];
-}
 
-describe("scripts/update-gateway.sh", () => {
+beforeEach(() => {
+  scratch = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-update-gateway-"));
+  workdir = path.join(scratch, "checkout");
+  shimDir = path.join(scratch, "bin");
+  invocationLog = path.join(scratch, "calls");
+  fs.mkdirSync(shimDir);
+});
+afterEach(() => fs.rmSync(scratch, { recursive: true, force: true }));
+
+describe("source updater lifecycle preflight", () => {
   beforeEach(() => {
-    scratch = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-update-gateway-"));
-    const origin = path.join(scratch, "origin.git");
     const seed = path.join(scratch, "seed");
-    workdir = path.join(scratch, "checkout");
-    shimDir = path.join(scratch, "bin");
-    invocationLog = path.join(scratch, "invocations.log");
-    fs.mkdirSync(shimDir);
-
-    // Seed a repo whose main branch carries the real updater script.
+    const origin = path.join(scratch, "origin.git");
     fs.mkdirSync(path.join(seed, "scripts"), { recursive: true });
-    fs.copyFileSync(scriptSource, path.join(seed, "scripts", "update-gateway.sh"));
-    fs.writeFileSync(path.join(seed, "README.md"), "scratch\n");
+    fs.copyFileSync(
+      path.join(repoRoot, "scripts/update-gateway.sh"),
+      path.join(seed, "scripts/update-gateway.sh"),
+    );
+    fs.writeFileSync(
+      path.join(seed, "package.json"),
+      JSON.stringify({ packageManager: "pnpm@12.4.0" }),
+    );
+    fs.writeFileSync(path.join(seed, ".gitignore"), "dist/\ndist-runtime/\n");
     git(seed, "init", "-q", "-b", "main");
-    git(seed, "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A");
-    git(seed, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "seed");
+    git(seed, "add", ".");
+    git(
+      seed,
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-qm",
+      "fixture",
+    );
     git(scratch, "clone", "-q", "--bare", seed, origin);
     git(scratch, "clone", "-q", origin, workdir);
-
-    // The git shim makes it possible to prove invalid lifecycle configuration
-    // exits before even a local Git probe, while delegating valid runs to Git.
+    writeShim("git", 'echo "git $*" >> "$UPDATE_TEST_LOG"\nPATH="${PATH#*:}" exec git "$@"');
     writeShim(
-      "git",
-      ['echo "git $*" >> "$UPDATE_TEST_LOG"', 'PATH="${PATH#*:}" exec git "$@"'].join("\n"),
+      "corepack",
+      'echo "corepack $*" >> "$UPDATE_TEST_LOG"\nln -s "$UPDATE_TEST_BIN/pnpm" "$3/pnpm"',
     );
-    // The gateway CLI shim records exactly how the script invokes it.
-    writeShim("openclaw", 'echo "openclaw $*" >> "$UPDATE_TEST_LOG"');
-    // pnpm shim: `install` always succeeds; `build` obeys UPDATE_TEST_FAIL_BUILD
-    // and otherwise writes fresh build output like a real clean build.
     writeShim(
       "pnpm",
-      [
-        'echo "pnpm $*" >> "$UPDATE_TEST_LOG"',
-        'if [ "$1" = "build" ]; then',
-        '  if [ "${UPDATE_TEST_FAIL_BUILD:-0}" = "1" ]; then exit 1; fi',
-        "  mkdir -p dist && echo new > dist/marker",
-        "fi",
-        "exit 0",
-      ].join("\n"),
+      'if [ "$1" = --version ]; then echo 12.4.0; exit 0; fi\necho "pnpm $*" >> "$UPDATE_TEST_LOG"\nif [ "$1" = build ]; then mkdir -p dist; echo new > dist/marker; exit "${UPDATE_TEST_BUILD_EXIT:-0}"; fi',
     );
-  });
-
-  afterEach(() => {
-    fs.rmSync(scratch, { recursive: true, force: true });
-  });
-
-  it("accepts the paired built-in defaults, stops non-interactively, and restarts", () => {
-    const result = runUpdater();
-    expect(result.status).toBe(0);
-    const calls = loggedInvocations();
-    // Default stop must be non-interactive-safe: gateway stop refuses
-    // non-interactive runs without --force, and this script's documented
-    // entry point is `ssh … scripts/update-gateway.sh`.
-    expect(calls).toContain("openclaw gateway stop --force");
-    const stopIndex = calls.indexOf("openclaw gateway stop --force");
-    const buildIndex = calls.indexOf("pnpm build");
-    expect(stopIndex).toBeGreaterThanOrEqual(0);
-    expect(buildIndex).toBeGreaterThan(stopIndex);
-    expect(calls).toContain("openclaw gateway restart");
-    expect(fs.readFileSync(path.join(workdir, "dist", "marker"), "utf8")).toBe("new\n");
-  });
-
-  it("accepts paired custom commands after trimming surrounding whitespace", () => {
-    const result = runUpdater({
-      OPENCLAW_UPDATE_RESTART_CMD: "  openclaw custom-restart\t",
-      OPENCLAW_UPDATE_STOP_CMD: "\n openclaw custom-stop  ",
-    });
-
-    expect(result.status).toBe(0);
-    const calls = loggedInvocations();
-    expect(calls).toContain("openclaw custom-stop");
-    expect(calls).toContain("openclaw custom-restart");
+    writeShim("openclaw", 'echo "openclaw $*" >> "$UPDATE_TEST_LOG"');
   });
 
   it.each([
-    ["stop only", { OPENCLAW_UPDATE_STOP_CMD: "openclaw custom-stop" }],
-    ["restart only", { OPENCLAW_UPDATE_RESTART_CMD: "openclaw custom-restart" }],
+    ["stop only", { OPENCLAW_UPDATE_STOP_CMD: "custom-stop" }],
+    ["restart only", { OPENCLAW_UPDATE_RESTART_CMD: "custom-restart" }],
+    [
+      "blank stop",
+      { OPENCLAW_UPDATE_STOP_CMD: " \t\n", OPENCLAW_UPDATE_RESTART_CMD: "custom-restart" },
+    ],
+    [
+      "blank restart",
+      { OPENCLAW_UPDATE_STOP_CMD: "custom-stop", OPENCLAW_UPDATE_RESTART_CMD: " \t\n" },
+    ],
+    [
+      "manual with automatic stop",
+      { OPENCLAW_UPDATE_STOP_CMD: "custom-stop", OPENCLAW_UPDATE_RESTART_CMD: "" },
+    ],
   ] satisfies Array<[string, Record<string, string>]>)(
-    "rejects a %s override before touching git",
+    "rejects %s before effects",
     (_name, overrides) => {
       const result = runUpdater(overrides);
-
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("must be set together");
-      expect(loggedInvocations()).toEqual([]);
+      expect(calls()).toEqual([]);
     },
   );
 
   it.each([
+    ["defaults", {}, "openclaw gateway stop --force", "openclaw gateway restart"],
     [
-      "stop",
+      "trimmed custom pair",
       {
-        OPENCLAW_UPDATE_RESTART_CMD: "openclaw custom-restart",
-        OPENCLAW_UPDATE_STOP_CMD: " \t\n",
+        OPENCLAW_UPDATE_STOP_CMD: "  custom-stop\t",
+        OPENCLAW_UPDATE_RESTART_CMD: "\ncustom-restart  ",
       },
+      "custom-stop",
+      "custom-restart",
     ],
-    [
-      "restart",
-      {
-        OPENCLAW_UPDATE_RESTART_CMD: "\n\t ",
-        OPENCLAW_UPDATE_STOP_CMD: "openclaw custom-stop",
-      },
-    ],
-  ] satisfies Array<[string, Record<string, string>]>)(
-    "rejects a whitespace-only %s command before touching git",
-    (command, overrides) => {
+  ] satisfies Array<[string, Record<string, string>, string, string]>)(
+    "passes %s to the owned build adapter",
+    (_name, overrides, stop, restart) => {
+      const realNode = process.execPath;
+      writeShim(
+        "node",
+        [
+          'if [ "$1" = --import ]; then',
+          '  printf "adapter:%s:%s:%s\\n" "$4" "$5" "$6" >> "$UPDATE_TEST_LOG"',
+          "  exit 0",
+          "fi",
+          `exec '${realNode.replaceAll("'", "'\\''")}' "$@"`,
+        ].join("\n"),
+      );
       const result = runUpdater(overrides);
-
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain(`OPENCLAW_UPDATE_${command.toUpperCase()}_CMD is blank`);
-      expect(loggedInvocations()).toEqual([]);
+      expect(result.status, result.stderr).toBe(0);
+      expect(calls().some((call) => call.startsWith(`adapter:${stop}:${restart}:`))).toBe(true);
+      expect(calls()).not.toContain("pnpm build");
     },
   );
 
-  it("restores the previous build output and restarts the gateway when the build fails", () => {
-    fs.mkdirSync(path.join(workdir, "dist"), { recursive: true });
-    fs.writeFileSync(path.join(workdir, "dist", "marker"), "old\n");
+  it.each([0, 17])("keeps exact-empty restart as manual lifecycle (build exit %s)", (exit) => {
+    const result = runUpdater({
+      OPENCLAW_UPDATE_RESTART_CMD: "",
+      UPDATE_TEST_BUILD_EXIT: String(exit),
+    });
+    expect(result.status, result.stderr).toBe(exit);
+    expect(calls()).toContain("pnpm build");
+    expect(calls().some((call) => call.startsWith("openclaw "))).toBe(false);
+  });
+});
 
-    const result = runUpdater({ UPDATE_TEST_FAIL_BUILD: "1" });
-    expect(result.status).not.toBe(0);
-    // Previous output restored so the gateway can boot on the old build.
-    expect(fs.readFileSync(path.join(workdir, "dist", "marker"), "utf8")).toBe("old\n");
-    // Recovery restart ran even though the update failed.
-    expect(loggedInvocations()).toContain("openclaw gateway restart");
-    // No backup directory residue is left in the checkout.
-    const leftovers = fs
-      .readdirSync(workdir)
-      .filter((name) => name.startsWith(".update-build-backup."));
-    expect(leftovers).toEqual([]);
+describe("source update build output transaction", () => {
+  const outputs = () => listTsdownOutputRoots();
+  const writeOutput = (output: string, value: string) => {
+    fs.mkdirSync(path.join(workdir, output), { recursive: true });
+    fs.writeFileSync(path.join(workdir, output, "marker"), value);
+  };
+  const readOutput = (output: string) =>
+    fs.readFileSync(path.join(workdir, output, "marker"), "utf8");
+  const backups = () =>
+    fs.readdirSync(workdir).filter((name) => name.startsWith(".update-build-backup."));
+  beforeEach(() => fs.mkdirSync(workdir));
+
+  it("restores every prior owned output, removes newly created output, and restarts only after restoration", async () => {
+    const oldRoots = outputs().slice(0, -1);
+    for (const output of oldRoots) {
+      writeOutput(output, `old:${output}`);
+    }
+    const events: string[] = [];
+    const code = await runTransaction("stop", "restart", {
+      root: workdir,
+      lifecycle: async (command) => {
+        expect(fs.existsSync(path.join(resolveDistArtifactLockPath(workdir), "owner.json"))).toBe(
+          true,
+        );
+        events.push(command);
+        if (command === "restart") {
+          for (const output of oldRoots) {
+            expect(readOutput(output)).toBe(`old:${output}`);
+          }
+          expect(fs.existsSync(path.join(workdir, outputs().at(-1)!))).toBe(false);
+        }
+        return 0;
+      },
+      build: async () => {
+        events.push("build");
+        for (const output of outputs()) {
+          fs.rmSync(path.join(workdir, output), { recursive: true, force: true });
+          writeOutput(output, "partial");
+        }
+        return { exitCode: 17 };
+      },
+    });
+    expect(code).toBe(17);
+    expect(events).toEqual(["stop", "build", "restart"]);
+    expect(backups()).toEqual([]);
+  });
+
+  it("restores output and reports a non-Error build rejection as an Error", async () => {
+    writeOutput("dist", "old");
+    const events: string[] = [];
+    await expect(
+      runTransaction("stop", "restart", {
+        root: workdir,
+        lifecycle: async (command) => {
+          events.push(command);
+          return 0;
+        },
+        build: async () => {
+          writeOutput("dist", "partial");
+          return vi
+            .fn<() => Promise<{ exitCode: number }>>()
+            .mockRejectedValue("compiler failed")();
+        },
+      }),
+    ).rejects.toMatchObject({ message: "Build failed", cause: "compiler failed" });
+    expect(events).toEqual(["stop", "restart"]);
+    expect(readOutput("dist")).toBe("old");
+    expect(backups()).toEqual([]);
+  });
+
+  it("leaves preserved output available to the normal build on success", async () => {
+    writeOutput("dist/control-ui", "preserved UI");
+    writeOutput("dist", "old");
+    const code = await runTransaction("stop", "restart", {
+      root: workdir,
+      lifecycle: async () => 0,
+      build: async () => {
+        expect(readOutput("dist/control-ui")).toBe("preserved UI");
+        writeOutput("dist", "new");
+        return { exitCode: 0 };
+      },
+    });
+    expect(code).toBe(0);
+    expect(readOutput("dist")).toBe("new");
+    expect(readOutput("dist/control-ui")).toBe("preserved UI");
+    expect(backups()).toEqual([]);
+  });
+
+  it("does not build or replace outputs after a failed stop", async () => {
+    writeOutput("dist", "old");
+    let built = false;
+    const code = await runTransaction("stop", "restart", {
+      root: workdir,
+      lifecycle: async () => 23,
+      build: async () => {
+        built = true;
+        return { exitCode: 0 };
+      },
+    });
+    expect(code).toBe(23);
+    expect(built).toBe(false);
+    expect(readOutput("dist")).toBe("old");
+    expect(backups()).toEqual([]);
+  });
+
+  it("retains recovery bytes instead of replacing possibly live new chunks after restart failure", async () => {
+    writeOutput("dist", "old");
+    await expect(
+      runTransaction("stop", "restart", {
+        root: workdir,
+        lifecycle: async (command) => (command === "stop" ? 0 : 29),
+        build: async () => {
+          writeOutput("dist", "new");
+          return { exitCode: 0 };
+        },
+      }),
+    ).rejects.toThrow("previous output retained");
+    expect(readOutput("dist")).toBe("new");
+    expect(backups()).toHaveLength(1);
+    expect(fs.readFileSync(path.join(workdir, backups()[0]!, "dist/marker"), "utf8")).toBe("old");
+  });
+
+  it("retains output and ownership without restarting when build writers are unjoined", async () => {
+    writeOutput("dist", "old");
+    const events: string[] = [];
+    await expect(
+      runTransaction("stop", "restart", {
+        root: workdir,
+        lifecycle: async (command) => {
+          events.push(command);
+          return 0;
+        },
+        build: async () => {
+          writeOutput("dist", "partial");
+          throw Object.assign(new Error("writer cleanup uncertain"), {
+            processTreeState: "indeterminate",
+          });
+        },
+      }),
+    ).rejects.toThrow("Build writers have not settled");
+    expect(events).toEqual(["stop"]);
+    expect(readOutput("dist")).toBe("partial");
+    expect(backups()).toHaveLength(1);
+    expect(fs.existsSync(path.join(resolveDistArtifactLockPath(workdir), "owner.json"))).toBe(true);
+  });
+
+  it("does not restart or follow a replaced output root when restoration is unsafe", async () => {
+    writeOutput("dist", "old");
+    const outside = path.join(scratch, "outside");
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "marker"), "outside");
+    const events: string[] = [];
+    await expect(
+      runTransaction("stop", "restart", {
+        root: workdir,
+        lifecycle: async (command) => {
+          events.push(command);
+          return 0;
+        },
+        build: async () => {
+          fs.rmSync(path.join(workdir, "dist"), { recursive: true });
+          fs.symlinkSync(outside, path.join(workdir, "dist"));
+          return { exitCode: 17 };
+        },
+      }),
+    ).rejects.toThrow("could not be fully restored");
+    expect(events).toEqual(["stop"]);
+    expect(fs.readFileSync(path.join(outside, "marker"), "utf8")).toBe("outside");
+    expect(backups()).toHaveLength(1);
+  });
+
+  it("restores prior output after a thrown build error and reports recovery restart failure", async () => {
+    writeOutput("dist", "old");
+    await expect(
+      runTransaction("stop", "restart", {
+        root: workdir,
+        lifecycle: async (command) => (command === "stop" ? 0 : 23),
+        build: async () => {
+          writeOutput("dist", "partial");
+          throw new Error("build failed");
+        },
+      }),
+    ).rejects.toThrow("Previous build restored, but restart failed (23)");
+    expect(readOutput("dist")).toBe("old");
+    expect(backups()).toHaveLength(1);
+  });
+
+  it("refuses a symlinked package parent before stopping the Gateway", async () => {
+    const outside = path.join(scratch, "outside");
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(workdir, "packages"));
+    const lifecycle: string[] = [];
+    await expect(
+      runTransaction("stop", "restart", {
+        root: workdir,
+        lifecycle: async (command) => {
+          lifecycle.push(command);
+          return 0;
+        },
+        build: async () => ({ exitCode: 0 }),
+      }),
+    ).rejects.toThrow("symbolic link");
+    expect(lifecycle).toEqual([]);
+    expect(fs.readdirSync(outside)).toEqual([]);
   });
 });

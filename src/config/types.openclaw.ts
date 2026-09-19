@@ -88,7 +88,7 @@ export type OpenClawConfig = {
     /** Last OpenClaw version that wrote this config. */
     lastTouchedVersion?: string;
     /** One-time doctor migrations already applied to this config. */
-    migrations?: { modelPolicyAllowlist?: true };
+    migrations?: { modelPolicyAllowlist?: true; utilityModelSeparation?: true };
   };
   /** Authentication provider/profile configuration. */
   auth?: AuthConfig;
@@ -122,7 +122,6 @@ export type OpenClawConfig = {
     lastRunCommit?: string;
     lastRunCommand?: string;
     lastRunMode?: "local" | "remote";
-    localModelLeanAutoModel?: string;
     securityAcknowledgedAt?: string;
   };
   /** Diagnostics, tracing, and stability debugging settings. */
@@ -149,12 +148,6 @@ export type OpenClawConfig = {
   ui?: {
     /** Accent color for OpenClaw UI chrome (hex). */
     seamColor?: string;
-    assistant?: {
-      /** Assistant display name for UI surfaces. */
-      name?: string;
-      /** Assistant avatar (emoji, short text, or image URL/data URI). */
-      avatar?: string;
-    };
     /**
      * Operator display preferences. Canonical config home so agents can
      * change them through the approval gate and clients stay in sync; the
@@ -162,7 +155,19 @@ export type OpenClawConfig = {
      */
     prefs?: {
       /** Control UI theme. */
-      theme?: "claw" | "knot" | "dash" | "custom";
+      theme?:
+        | "claw"
+        | "knot"
+        | "dash"
+        | "absolutely"
+        | "tide"
+        | "beacon"
+        | "phosphor"
+        | "crt"
+        | "manuscript"
+        | "rose"
+        | "miami"
+        | "custom";
       /** Light/dark preference. */
       themeMode?: "light" | "dark" | "system";
       /** User-selected Control UI accent color (#RRGGBB). */
@@ -197,6 +202,10 @@ export type OpenClawConfig = {
   nodeHost?: NodeHostConfig;
   /** Agent definitions, defaults, bindings, and runtime policy. */
   agents?: AgentsConfig;
+  /** Global root for new managed worktrees. Defaults to <state-dir>/worktrees; accepts ~. */
+  worktreeRoot?: string;
+  /** Use filesystem acceleration for new worktrees when supported (default: true). */
+  worktreeAcceleration?: boolean;
   /** Tool exposure, policy, web/media tools, exec, and code-mode settings. */
   tools?: ToolsConfig;
   /** Legacy/direct agent bindings used by runtime resolution. */
@@ -262,6 +271,10 @@ export type ResolvedSourceConfig = BrandedConfigState<"resolved-source">;
 export type RuntimeConfig = BrandedConfigState<"runtime">;
 
 export type ConfigValidationIssue = {
+  errorCode?: string;
+  fixHint?: string;
+  code?: import("../plugins/manifest-types.js").PluginDiagnosticCode;
+  source?: string;
   /** Dot-path to the invalid or legacy config value. */
   path: string;
   /** Structured validator path used internally for lossless source diagnostics. */

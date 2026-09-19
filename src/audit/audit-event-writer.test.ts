@@ -1,13 +1,17 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DecisionReceiptV1 } from "../../packages/gateway-protocol/src/index.js";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { readSqliteBusyTimeout } from "../infra/sqlite-busy-timeout.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import {
   closeOpenClawStateDatabaseForTest,
+  closeOpenClawStateDatabaseAsync,
   openOpenClawStateDatabase,
+  registerOpenClawStateDatabaseLifecycleListener,
 } from "../state/openclaw-state-db.js";
+import { claimOpenClawStateOwnership } from "../state/openclaw-state-ownership-operations.js";
+import { withEnvAsync } from "../test-utils/env.js";
 import { listAuditEvents, recordAuditEvent } from "./audit-event-store.js";
 import type { AuditEventInput } from "./audit-event-types.js";
 import { createAuditEventWriter } from "./audit-event-writer.js";
@@ -25,6 +29,32 @@ import {
   processExecutionIdentityAdmissionWork,
 } from "./execution-identity-context.js";
 import type { TrustedMessageAuditEvent } from "./message-audit-events.js";
+
+function observeNonblockingSqliteTransactions(
+  database: DatabaseSync,
+  observed: number[],
+): () => void {
+  const originalExecDescriptor = Object.getOwnPropertyDescriptor(database, "exec");
+  const originalExec = database.exec.bind(database);
+  database.exec = (sql: string) => {
+    if (sql === "BEGIN IMMEDIATE") {
+      const busyTimeout = readSqliteBusyTimeout(database);
+      observed.push(busyTimeout);
+      if (busyTimeout !== 0) {
+        throw new Error(`audit writer attempted a blocking SQLite transaction (${busyTimeout} ms)`);
+      }
+    }
+    return originalExec(sql);
+  };
+  return () => {
+    if (originalExecDescriptor) {
+      Object.defineProperty(database, "exec", originalExecDescriptor);
+      return;
+    }
+    const ownDatabaseMethod: { exec?: DatabaseSync["exec"] } = database;
+    delete ownDatabaseMethod.exec;
+  };
+}
 
 function defineObjectPrototypeProperties(descriptors: PropertyDescriptorMap): void {
   // oxlint-disable-next-line no-extend-native -- Exercise hostile prototype pollution across the real clone boundary.
@@ -140,12 +170,55 @@ function captureWork(envelope: ExecutionIdentityAdmissionEnvelope) {
   return { kind: "capture" as const, envelope };
 }
 
-afterEach(() => {
+const tempDirs = createTempDirTracker();
+afterEach(async () => {
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
+  tempDirs.cleanup();
 });
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("audit event writer", () => {
+  it("preserves external supervision for claimed state writes", async () => {
+    const stateDir = tempDirs.make("openclaw-audit-writer-external-");
+    const supervisedDatabase = {
+      env: {
+        ...process.env,
+        OPENCLAW_STATE_DIR: stateDir,
+        OPENCLAW_SUPERVISOR_MODE: "external",
+      },
+    };
+    claimOpenClawStateOwnership("gateway-test-supervisor", supervisedDatabase);
+    closeOpenClawStateDatabaseForTest();
+    const write = async (runId: string, supervisorMode: string | undefined) => {
+      const errors: string[] = [];
+      await withEnvAsync({ OPENCLAW_SUPERVISOR_MODE: supervisorMode }, async () => {
+        const writer = createAuditEventWriter({ stateDir, onError: (error) => errors.push(error) });
+        await writer.ready;
+        expect(writer.record({ ...input(), sourceId: `${runId}:1:started`, runId })).toBe(true);
+        await writer.stop();
+      });
+      return errors;
+    };
+
+    const supervisedErrors = await write("supervised-run", "external");
+    expect(supervisedErrors).toEqual([]);
+    expect(
+      (await listAuditEvents({ database: supervisedDatabase, limit: 10 })).events.map(
+        (event) => event.runId,
+      ),
+    ).toEqual(["supervised-run"]);
+    await closeOpenClawStateDatabaseAsync();
+    closeOpenClawStateDatabaseForTest();
+
+    const unmarkedErrors = await write("unmarked-run", undefined);
+    expect(unmarkedErrors.some((error) => error.includes("gateway-test-supervisor"))).toBe(true);
+    expect(
+      (await listAuditEvents({ database: supervisedDatabase, limit: 10 })).events.map(
+        (event) => event.runId,
+      ),
+    ).toEqual(["supervised-run"]);
+  });
+
   it("keeps progress absent while disabled and routes enabled progress off audit_events", async () => {
     const stateDir = tempDirs.make("openclaw-audit-writer-");
     const database = { env: { OPENCLAW_STATE_DIR: stateDir } };
@@ -240,7 +313,7 @@ describe("audit event writer", () => {
     expect(JSON.stringify(errors)).not.toContain(token.contextId);
     expect(JSON.stringify(errors)).not.toContain(token.executionId);
     expect(JSON.stringify(errors)).not.toContain(token.runId);
-    expect(listAuditEvents({ database, limit: 10 }).events).toHaveLength(1);
+    expect((await listAuditEvents({ database, limit: 10 })).events).toHaveLength(1);
     expect(
       openOpenClawStateDatabase(database)
         .db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?")
@@ -262,26 +335,46 @@ describe("audit event writer", () => {
     const contender = new DatabaseSync(path);
     contender.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
     const errors: string[] = [];
-    const probeStartedAt = performance.now();
+    const observedBusyTimeouts: number[] = [];
+    let openedBusyTimeout: number | undefined;
+    let restoreExec: (() => void) | undefined;
+    const clearDatabaseListener = registerOpenClawStateDatabaseLifecycleListener((event) => {
+      if (event.kind !== "opened" || event.database.path !== path) {
+        return;
+      }
+      openedBusyTimeout = readSqliteBusyTimeout(event.database.db);
+      restoreExec = observeNonblockingSqliteTransactions(event.database.db, observedBusyTimeouts);
+    });
     const writer = createAuditEventWriter({ stateDir, onError: (error) => errors.push(error) });
 
     try {
-      const eventLoopDelay = await new Promise<number>((resolve) => {
-        setTimeout(() => resolve(performance.now() - probeStartedAt), 25);
-      });
-      expect(eventLoopDelay).toBeLessThan(250);
       await writer.ready;
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(contender.isTransaction).toBe(true);
+      expect(openedBusyTimeout).toBe(0);
+      expect(observedBusyTimeouts).not.toHaveLength(0);
+      expect(observedBusyTimeouts.every((busyTimeout) => busyTimeout === 0)).toBe(true);
       expect(writer.record({ ...input(), sourceId: "cold-owner", runId: "cold-owner" })).toBe(true);
     } finally {
-      contender.exec("ROLLBACK");
-      contender.close();
-      await writer.stop();
+      try {
+        contender.exec("ROLLBACK");
+        contender.close();
+      } finally {
+        try {
+          await writer.stop();
+        } finally {
+          restoreExec?.();
+          clearDatabaseListener();
+        }
+      }
     }
 
     expect(errors).toEqual([]);
-    expect(listAuditEvents({ database, limit: 10 }).events.map((event) => event.runId)).toContain(
-      "cold-owner",
-    );
+    expect(
+      (await listAuditEvents({ database, limit: 10 })).events.map((event) => event.runId),
+    ).toContain("cold-owner");
   });
 
   it("persists a generic decision through the bounded queue", async () => {
@@ -342,6 +435,8 @@ describe("audit event writer", () => {
     db.exec("DELETE FROM audit_identity_keys;");
     const contender = new DatabaseSync(path);
     contender.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+    const observedBusyTimeouts: number[] = [];
+    const restoreExec = observeNonblockingSqliteTransactions(db, observedBusyTimeouts);
     const clearSink = configureExecutionIdentityAdmissionSink(writer.recordExecutionIdentity);
     const admittedAt = Date.now();
 
@@ -380,11 +475,12 @@ describe("audit event writer", () => {
         accepted: true,
       });
       expect(performance.now() - startedAt).toBeLessThan(250);
-      const eventLoopProbeStartedAt = performance.now();
-      const eventLoopDelay = await new Promise<number>((resolve) => {
-        setTimeout(() => resolve(performance.now() - eventLoopProbeStartedAt), 25);
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
       });
-      expect(eventLoopDelay).toBeLessThan(250);
+      expect(contender.isTransaction).toBe(true);
+      expect(observedBusyTimeouts).not.toHaveLength(0);
+      expect(observedBusyTimeouts.every((busyTimeout) => busyTimeout === 0)).toBe(true);
       expect(readSqliteBusyTimeout(db)).toBe(5_000);
       expect(
         writer.recordExecutionIdentity({
@@ -411,12 +507,16 @@ describe("audit event writer", () => {
         contender.close();
       } finally {
         clearSink();
-        await writer.stop();
+        try {
+          await writer.stop();
+        } finally {
+          restoreExec();
+        }
       }
     }
 
     expect(errors).toEqual(["audit event queue is full (2); dropping metadata"]);
-    expect(listAuditEvents({ database, limit: 10 }).events).toHaveLength(2);
+    expect((await listAuditEvents({ database, limit: 10 })).events).toHaveLength(2);
     expect(
       inspectExecutionIdentityRun({ runId: "held-lock-run" }, { ...database, now: admittedAt }),
     ).toMatchObject({
@@ -498,9 +598,9 @@ describe("audit event writer", () => {
     }
 
     expect(errors).toEqual([]);
-    expect(listAuditEvents({ database, limit: 10 }).events.map((event) => event.runId)).toContain(
-      "sustained-contention",
-    );
+    expect(
+      (await listAuditEvents({ database, limit: 10 })).events.map((event) => event.runId),
+    ).toContain("sustained-contention");
   });
 
   it("persists owned unknown and omits inherited evidence through the queue clone boundary", async () => {

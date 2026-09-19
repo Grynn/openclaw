@@ -18,6 +18,7 @@ describe("telegram actions contract", () => {
           },
         } as OpenClawConfig,
         expectedActions: [
+          "read",
           "send",
           "poll",
           "react",
@@ -38,8 +39,9 @@ describe("telegram actions contract", () => {
       "edit",
       "delete",
       "emoji-list",
+      "read",
     ]);
-    for (const action of ["react", "edit", "delete"] as const) {
+    for (const action of ["react", "edit", "delete", "read"] as const) {
       expect(telegramPlugin.actions?.messageActionTargetAliases?.[action]).toEqual({
         aliases: ["messageId"],
         deliveryTargetAliases: [],
@@ -89,7 +91,7 @@ describe("telegram actions contract", () => {
       expect(hints?.text_markup).toBe(expectedMarkup);
       if (expectedOn) {
         expect(hints?.rules.join(" ")).toContain("Telegram rich ON");
-        expect(hints?.rules.join(" ")).toContain("Bot API 10.2 blocks");
+        expect(hints?.rules.join(" ")).toContain("Bot API 10.3 blocks");
         expect(hints?.rules.join(" ")).toContain("<details><summary>");
         expect(hints?.rules.join(" ")).toContain("Not MarkdownV2/parse_mode");
         expect(hints?.rules.join(" ")).toContain("Media https URLs only, block-level only");
@@ -262,7 +264,7 @@ describe("telegram actions contract", () => {
           channel: "telegram",
           action: "send",
           cfg: {} as OpenClawConfig,
-          params: { quoteText: "  original message  " },
+          params: { quoteText: "  original message\n  " },
         },
         to: "123456",
         payload: {
@@ -277,7 +279,7 @@ describe("telegram actions contract", () => {
       channelData: {
         telegram: {
           parseMode: "MarkdownV2",
-          quoteText: "original message",
+          quoteText: "  original message\n  ",
         },
       },
     });
@@ -299,7 +301,7 @@ describe("telegram actions contract", () => {
           channel: "telegram",
           action: "send",
           cfg: {} as OpenClawConfig,
-          params: { quote_text: "  snake case quote  " },
+          params: { quote_text: " \nsnake case quote  " },
         },
         to: "123456",
         payload: { text: "Chart", presentation },
@@ -307,7 +309,7 @@ describe("telegram actions contract", () => {
     ).toEqual({
       text: "Chart",
       presentation,
-      channelData: { telegram: { quoteText: "snake case quote" } },
+      channelData: { telegram: { quoteText: " \nsnake case quote  " } },
     });
   });
 
