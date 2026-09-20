@@ -94,6 +94,7 @@ import {
 } from "./subagent-registry-requester-yield.js";
 import { markSubagentRunPausedAfterYield } from "./subagent-registry-run-pause.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
+import { registerSettleWakeFailures } from "./subagent-settle-wake-failures.test-support.js";
 
 type LifecycleControllerParams = SubagentLifecycleOptions;
 type LifecycleController = SubagentLifecycleController;
@@ -7209,4 +7210,7 @@ describe("requester settle wake trigger", () => {
     }
   });
 });
+
+registerSettleWakeFailures({ createRunEntry, createLifecycleController, waitForLifecycleState });
+
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -231,6 +231,71 @@ const completeRequesterSettleWakeBatch = (
   }
 };
 
+// Settlement rejects the whole batch when its completion owner can no longer be
+// validated: the durable row drifted from the in-memory record, the cohort or
+// rearm generation moved, or the task lookup is unavailable. Every one of those
+// rolls the write back, so the 60s sweeper re-ran the identical rejection
+// forever without advancing any durable state. Bound it: back off a few times,
+// then drop the wake. The child's result already lives on the registry row;
+// only the requester's courtesy wake is abandoned.
+const MAX_REQUESTER_SETTLE_WAKE_SETTLE_FAILURES = 3;
+const REQUESTER_SETTLE_WAKE_SETTLE_FAILURE_DELAYS_MS = [60_000, 300_000] as const;
+
+function abandonUnsettleableRequesterSettleWake(
+  context: SubagentLifecycleWakeContext,
+  entries: readonly SubagentRunRecord[],
+  rearmGeneration: number | undefined,
+  reason: string,
+): void {
+  const params = context.options;
+  if (!isCurrentRequesterSettleWakeBatch(context, entries, rearmGeneration)) {
+    return;
+  }
+  const failureCount =
+    Math.max(...entries.map((entry) => entry.requesterSettleWake?.settleFailureCount ?? 0), 0) + 1;
+  const exhausted = failureCount >= MAX_REQUESTER_SETTLE_WAKE_SETTLE_FAILURES;
+  const retryDelayMs = REQUESTER_SETTLE_WAKE_SETTLE_FAILURE_DELAYS_MS[failureCount - 1];
+  for (const entry of entries) {
+    const wake = entry.requesterSettleWake;
+    if (!wake) {
+      continue;
+    }
+    entry.requesterSettleWake =
+      exhausted || retryDelayMs === undefined
+        ? undefined
+        : {
+            ...wake,
+            settleFailureCount: failureCount,
+            nextAttemptAt: Math.max(wake.nextAttemptAt ?? 0, Date.now() + retryDelayMs),
+            lastError: reason,
+          };
+  }
+  // Best-effort persistence: the in-memory clear already stops the sweep loop,
+  // and a throwing writer must not resurrect the failure that got us here.
+  params.persist(...entries.map((entry) => entry.runId));
+  for (const entry of entries) {
+    if (entry.requesterSettleWake !== undefined) {
+      continue;
+    }
+    const retryTimer = context.getRequesterSettleWakeTimer(entry.runId);
+    if (retryTimer) {
+      clearTimeout(retryTimer.timer);
+      context.deleteRequesterSettleWakeTimer(entry.runId);
+    }
+    clearGatewayContextResolver(entry);
+    params.resumedRuns.delete(entry.runId);
+  }
+  if (exhausted || retryDelayMs === undefined) {
+    // The reason belongs in the message, not only in meta: the default log
+    // renderer drops warn metadata, and without it an operator watching this
+    // loop for days cannot tell which settlement invariant kept rejecting.
+    params.warn(
+      `requester settle wake abandoned after ${failureCount} settlement failures: ${reason}`,
+      { failureCount, runIds: entries.map((entry) => maskLifecycleIdentifier(entry.runId, "run")) },
+    );
+  }
+}
+
 const persistRequesterSettleWakePending = (
   context: SubagentLifecycleWakeContext,
   entry: SubagentRunRecord,
@@ -416,11 +481,20 @@ export function scheduleRequesterSettleWake(
             error: safeError.message,
           });
         } catch (settleError) {
+          const safeSettleError = buildSafeLifecycleErrorMeta(settleError);
           params.warn("failed to persist requester settle wake rejection", {
-            error: buildSafeLifecycleErrorMeta(settleError),
+            error: safeSettleError,
             runId: maskLifecycleIdentifier(runId, "run"),
             requesterSessionKey: maskLifecycleIdentifier(requesterSessionKey, "session"),
           });
+          // Settlement rejected the batch outright. Bound the retry instead of
+          // re-running the identical rejection on every sweep forever.
+          abandonUnsettleableRequesterSettleWake(
+            context,
+            admittedBatch,
+            admittedWake.rearmGeneration,
+            safeSettleError.message ?? "requester settle wake settlement failed",
+          );
         }
       })
       .finally(() => {
