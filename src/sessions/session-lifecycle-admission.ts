@@ -35,6 +35,7 @@ export {
   type SessionWorkAdmissionLease,
 } from "./session-work-admission-handoff.js";
 export {
+  isSessionWorkRestartInterruptReason,
   waitForSessionWorkAdmissionRelease,
   type SessionWorkAdmissionInterrupt,
 } from "./session-work-admission-interruption.js";

@@ -1,8 +1,6 @@
 // Tests reply turn admission decisions for active, queued, and aborted runs.
-import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "../../agents/main-session-recovery/main-session-recovery-admission.js";
 import * as restartRecovery from "../../agents/main-session-recovery/main-session-restart-recovery.js";
 import { SESSION_RESTART_RECOVERY_TOMBSTONE_ERROR_CODE } from "../../config/sessions/lifecycle.js";
@@ -10,7 +8,6 @@ import {
   deleteSessionEntryLifecycle,
   loadSessionEntry,
   replaceSessionEntry,
-  replaceSessionEntrySync,
 } from "../../config/sessions/session-accessor.js";
 import * as sessionAccessor from "../../config/sessions/session-accessor.js";
 import * as sessionEntryAccessor from "../../config/sessions/session-accessor.sqlite-entry.js";
@@ -41,7 +38,13 @@ import {
   type ReplyOperation,
 } from "./reply-run-registry.js";
 import { testing } from "./reply-run-registry.test-support.js";
-import { admitReplyTurn, runWithReplyOperationLifecycleAdmission } from "./reply-turn-admission.js";
+import { runWithReplyOperationLifecycleAdmission } from "./reply-turn-admission.js";
+import {
+  admitTestReplyOperation,
+  admitTestReplyTurn,
+  createSessionStore,
+  createSessionStoreFor,
+} from "./reply-turn-admission.test-support.js";
 
 const recoveryOwnerReleaseMocks = vi.hoisted(() => ({
   beforeRelease: vi.fn(async () => {}),
@@ -77,43 +80,11 @@ vi.mock(
   }),
 );
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-
 function createTestReplyOperation(
   overrides: Omit<Parameters<typeof createReplyOperation>[0], "resetTriggered"> &
     Partial<Pick<Parameters<typeof createReplyOperation>[0], "resetTriggered">>,
 ) {
   return createReplyOperation({ resetTriggered: false, ...overrides });
-}
-
-function admitTestReplyTurn(
-  overrides: Omit<Parameters<typeof admitReplyTurn>[0], "kind" | "resetTriggered"> &
-    Partial<Pick<Parameters<typeof admitReplyTurn>[0], "kind" | "resetTriggered">>,
-) {
-  return admitReplyTurn({ kind: "visible", resetTriggered: false, ...overrides });
-}
-
-async function admitTestReplyOperation(params: Parameters<typeof admitTestReplyTurn>[0]) {
-  const admission = await admitTestReplyTurn(params);
-  if (admission.status !== "owned") {
-    throw new Error("Fixture requires an admitted reply operation");
-  }
-  return admission.operation;
-}
-
-function createSessionStore(entries: Record<string, object>): string {
-  const root = tempDirs.make("openclaw-reply-admission-");
-  // The store handle stays a sessions.json path; the sqlite-backed accessor
-  // resolves it to the per-agent DB, so fixtures must seed through the accessor.
-  const storePath = path.join(root, "sessions.json");
-  for (const [sessionKey, entry] of Object.entries(entries)) {
-    replaceSessionEntrySync({ sessionKey, storePath }, entry as SessionEntry);
-  }
-  return storePath;
-}
-
-function createSessionStoreFor(sessionKey: string, sessionId: string) {
-  return createSessionStore({ [sessionKey]: { sessionId, updatedAt: Date.now() } });
 }
 
 function createRecoveryGatewayContext() {
@@ -642,7 +613,7 @@ describe("reply turn admission", () => {
     });
     expect(admission.operation.result).toEqual({
       kind: "aborted",
-      code: "aborted_for_restart",
+      code: "aborted_by_user",
     });
     expect(mutationRan).toBe(false);
 
@@ -1205,7 +1176,7 @@ describe("reply turn admission", () => {
     });
     expect(admission.operation.result).toEqual({
       kind: "aborted",
-      code: "aborted_for_restart",
+      code: "aborted_by_user",
     });
     expect(mutationRan).toBe(false);
     expect(replyRunRegistry.get(sessionKey)).toBe(admission.operation);
@@ -1999,7 +1970,7 @@ describe("reply turn admission", () => {
     await vi.waitFor(() => {
       expect(reservation.abortSignal.aborted).toBe(true);
     });
-    expect(reservation.result).toEqual({ kind: "aborted", code: "aborted_for_restart" });
+    expect(reservation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
     expect(mutationRan).toBe(false);
 
     reservation.complete();
