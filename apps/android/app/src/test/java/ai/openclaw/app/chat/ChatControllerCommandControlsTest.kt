@@ -20,8 +20,11 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
 @OptIn(ExperimentalCoroutinesApi::class)
+@RunWith(RobolectricTestRunner::class)
 class ChatControllerCommandControlsTest {
   private val json = chatControllerTestJson
 
@@ -139,8 +142,10 @@ class ChatControllerCommandControlsTest {
       val controller =
         createChatController(
           requestGatewayForGateway = { gatewayId, method, _ ->
-            require(method == "chat.metadata")
-            if (gatewayId == "gateway-a") {
+            require(method == "chat.metadata" || method == "models.list")
+            if (method == "models.list") {
+              """{"models":[]}"""
+            } else if (gatewayId == "gateway-a") {
               gatewayAResponse.await()
             } else {
               commandResponse("gateway-b")
@@ -263,7 +268,7 @@ class ChatControllerCommandControlsTest {
             }
 
             else -> {
-              "{}"
+              emptyChatGatewayResponse(method)
             }
           }
         }
@@ -471,6 +476,7 @@ class ChatControllerCommandControlsTest {
       val controller =
         ChatController(
           scope = this,
+          commandOutbox = this.createChatCommandOutbox(),
           json = json,
           requestGateway = { method, _ ->
             check(method != "sessions.patch") { "archive must use its captured request lease" }
@@ -508,6 +514,8 @@ class ChatControllerCommandControlsTest {
       val controller =
         ChatController(
           scope = this,
+          commandOutbox = this.createChatCommandOutbox(),
+          cacheScope = { ChatCacheScope("gateway-test", 1L) },
           json = json,
           requestGateway = { method, _ ->
             requests += method
@@ -668,11 +676,17 @@ class ChatControllerCommandControlsTest {
     runTest {
       val controller =
         createScriptedChatController {
-          respond("sessions.list", """{"sessions":[{"key":"main","label":"Named","category":"Work","color":" BLUE "}]}""")
+          respond(
+            "sessions.list",
+            """{"sessions":[{"key":"main","label":"Named","autoLabel":"Device fallback","displayName":"Generated title","category":"Work","color":" BLUE "}]}""",
+          )
         }
 
       controller.refreshSessions()
       advanceUntilIdle()
+      val initialSession = controller.sessions.value.single()
+      assertEquals("Device fallback", initialSession.autoLabel)
+      assertEquals("Generated title", initialSession.displayName)
       assertEquals(
         "Work",
         controller.sessions.value
@@ -690,11 +704,13 @@ class ChatControllerCommandControlsTest {
       // Another client cleared the metadata; the gateway sends explicit nulls.
       controller.handleGatewayEvent(
         "sessions.changed",
-        """{"sessionKey":"main","session":{"key":"main","agentId":"main","label":null,"category":null,"color":null}}""",
+        """{"sessionKey":"main","session":{"key":"main","agentId":"main","label":null,"autoLabel":null,"displayName":null,"category":null,"color":null}}""",
       )
       advanceUntilIdle()
       val merged = controller.sessions.value.single()
       assertEquals(null, merged.label)
+      assertEquals(null, merged.autoLabel)
+      assertEquals(null, merged.displayName)
       assertEquals(null, merged.category)
       assertEquals(null, merged.color)
     }
@@ -916,7 +932,8 @@ class ChatControllerCommandControlsTest {
           respond("chat.send", """{"runId":"run-new"}""")
           respond("health", "{}")
         }
-      controller.handleGatewayEvent("health", null)
+      controller.load("main")
+      runCurrent()
 
       assertTrue(controller.sendMessageAwaitAcceptance("/new", "off", emptyList()))
 
@@ -933,7 +950,8 @@ class ChatControllerCommandControlsTest {
           respond("chat.send", """{"runId":"run-1"}""")
           respond("health", "{}")
         }
-      controller.handleGatewayEvent("health", null)
+      controller.load("main")
+      runCurrent()
 
       assertTrue(controller.sendMessageAwaitAcceptance("hello", "off", emptyList()))
       assertEquals(1, controller.pendingRunCount.value)

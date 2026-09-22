@@ -5,6 +5,12 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.types.js";
+import {
+  shouldAllowProviderOwnedThinkingReplay,
+  shouldMergeConsecutiveUserTurns,
+  validateAnthropicTurns,
+} from "./embedded-agent-helpers/turns.js";
+import type { AgentMessage } from "./runtime/index.js";
 
 vi.mock("../plugins/provider-hook-runtime.js", async () => {
   const replayHelpers = await vi.importActual<
@@ -198,11 +204,9 @@ vi.mock("../plugins/provider-hook-runtime.js", async () => {
 });
 
 let resolveTranscriptPolicy: typeof import("./transcript-policy.js").resolveTranscriptPolicy;
-let shouldAllowProviderOwnedThinkingReplay: typeof import("./transcript-policy.js").shouldAllowProviderOwnedThinkingReplay;
 describe("resolveTranscriptPolicy", () => {
   beforeAll(async () => {
-    ({ resolveTranscriptPolicy, shouldAllowProviderOwnedThinkingReplay } =
-      await import("./transcript-policy.js"));
+    ({ resolveTranscriptPolicy } = await import("./transcript-policy.js"));
   });
 
   beforeEach(() => {
@@ -643,7 +647,7 @@ describe("resolveTranscriptPolicy", () => {
       modelId: "claude-opus-4-6",
       modelApi: "anthropic-messages" as const,
       preserveSignatures: true,
-      appendOnlyRuntimeContext: true,
+      appendOnlyRuntimeContext: false,
     },
     {
       title: "Bedrock Anthropic",
@@ -651,7 +655,7 @@ describe("resolveTranscriptPolicy", () => {
       modelId: "us.anthropic.claude-opus-4-6-v1",
       modelApi: "bedrock-converse-stream" as const,
       preserveSignatures: true,
-      appendOnlyRuntimeContext: true,
+      appendOnlyRuntimeContext: false,
     },
     {
       title: "unowned Anthropic transport",
@@ -659,7 +663,7 @@ describe("resolveTranscriptPolicy", () => {
       modelId: "claude-sonnet-4-6",
       modelApi: "anthropic-messages" as const,
       preserveSignatures: true,
-      appendOnlyRuntimeContext: true,
+      appendOnlyRuntimeContext: false,
     },
     {
       title: "unowned Bedrock transport",
@@ -667,7 +671,7 @@ describe("resolveTranscriptPolicy", () => {
       modelId: "us.anthropic.claude-opus-4-6-v1",
       modelApi: "bedrock-converse-stream" as const,
       preserveSignatures: true,
-      appendOnlyRuntimeContext: true,
+      appendOnlyRuntimeContext: false,
     },
     {
       title: "Foundry Anthropic transport",
@@ -675,7 +679,7 @@ describe("resolveTranscriptPolicy", () => {
       modelId: "claude-sonnet-4-6",
       modelApi: "anthropic-messages" as const,
       preserveSignatures: true,
-      appendOnlyRuntimeContext: true,
+      appendOnlyRuntimeContext: false,
     },
     {
       title: "Google provider",
@@ -730,6 +734,59 @@ describe("resolveTranscriptPolicy", () => {
       const policy = resolveTranscriptPolicy(input);
       expect(policy.preserveSignatures).toBe(preserveSignatures);
       expect(policy.appendOnlyRuntimeContext).toBe(appendOnlyRuntimeContext);
+    },
+  );
+
+  it.each([
+    ["claude-fable-5-1", true],
+    ["claude-mythos-5-1", false],
+    ["claude-fable-5", false],
+    ["claude-mythos-5", false],
+    ["claude-opus-5", false],
+    ["claude-sonnet-5", false],
+    ["claude-opus-4-8", false],
+    ["claude-sonnet-4-6", false],
+    ["claude-haiku-4-5", false],
+  ])("scopes persisted context and user-turn merging for %s", (modelId, appendOnly) => {
+    const messages: AgentMessage[] = [
+      { role: "user", content: "First request", timestamp: 1 },
+      { role: "user", content: "Second request", timestamp: 2 },
+    ];
+    for (const modelApi of ["anthropic-messages", "bedrock-converse-stream"]) {
+      for (const provider of ["anthropic", "amazon-bedrock", "custom-proxy"]) {
+        const policy = resolveTranscriptPolicy({ provider, modelId, modelApi });
+        expect(policy.appendOnlyRuntimeContext).toBe(appendOnly);
+        const replay = validateAnthropicTurns(messages, {
+          mergeConsecutiveUserTurns: shouldMergeConsecutiveUserTurns(policy, modelApi),
+        });
+        expect(replay).toEqual(
+          appendOnly && modelApi === "anthropic-messages"
+            ? messages
+            : [
+                {
+                  role: "user",
+                  content: [
+                    { type: "text", text: "First request" },
+                    { type: "text", text: "Second request" },
+                  ],
+                  timestamp: 2,
+                },
+              ],
+        );
+      }
+    }
+  });
+
+  it.each(["claude-fable-5-1", "claude-mythos-5-1", "claude-opus-5"])(
+    "uses canonical deployment identity for unowned %s replay",
+    (canonicalModelId) => {
+      const policy = resolveTranscriptPolicy({
+        provider: "microsoft-foundry",
+        modelApi: "anthropic-messages",
+        modelId: "deployment",
+        model: makeOpenAiCompatibleReasoningModel({ params: { canonicalModelId } }),
+      });
+      expect(policy.appendOnlyRuntimeContext).toBe(canonicalModelId === "claude-fable-5-1");
     },
   );
 

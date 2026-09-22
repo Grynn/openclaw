@@ -2,8 +2,11 @@ import { html, nothing } from "lit";
 import type { SessionPermissionMode } from "../../../../../packages/gateway-protocol/src/index.js";
 import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
+import { registerModelControlsEnglish } from "../../../i18n/locales/en-model-controls.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "../../../lib/external-link.ts";
 import { restorePointerOpenedChatComposerTrigger } from "./chat-picker-overlay.ts";
+
+registerModelControlsEnglish();
 
 const PERMISSION_MODES_DOCS_URL = "https://docs.openclaw.ai/gateway/permission-modes";
 const PERMISSION_MODES = ["read-only", "guarded", "workspace", "full"] as const;
@@ -118,11 +121,11 @@ export function renderChatPermissionPicker(params: ChatPermissionPickerProps) {
       <button
         slot="trigger"
         type="button"
-        class="chat-controls__inline-select-trigger chat-controls__permission-trigger ${params.disabled
-          ? "chat-controls__inline-select-trigger--disabled"
-          : ""} ${params.mode ? "" : "chat-controls__permission-trigger--default"} ${fullAccess
-          ? "chat-controls__permission-trigger--full"
-          : ""}"
+        class="chat-controls__inline-select-trigger chat-controls__permission-trigger ${
+          params.disabled ? "chat-controls__inline-select-trigger--disabled" : ""
+        } ${params.mode ? "" : "chat-controls__permission-trigger--default"} ${
+          fullAccess ? "chat-controls__permission-trigger--full" : ""
+        }"
         data-chat-permission-select="true"
         data-chat-select-value=${params.mode ?? ""}
         aria-label=${`${t("chat.permissionControls.label")}: ${label}`}
@@ -134,9 +137,9 @@ export function renderChatPermissionPicker(params: ChatPermissionPickerProps) {
           >${modeIcon(params.mode ?? null)}</span
         >
         <span
-          class="chat-controls__inline-select-label ${fullAccess
-            ? "chat-controls__permission-label--full"
-            : ""}"
+          class="chat-controls__inline-select-label ${
+            fullAccess ? "chat-controls__permission-label--full" : ""
+          }"
         >
           ${label}
         </span>
@@ -157,17 +160,19 @@ export function renderChatPermissionPicker(params: ChatPermissionPickerProps) {
         const locked = mode === "full" && !params.canSelectFull;
         return html`
           <wa-dropdown-item
-            class="chat-controls__permission-option ${selected
-              ? "chat-controls__permission-option--selected"
-              : ""}"
+            class="chat-controls__permission-option ${
+              selected ? "chat-controls__permission-option--selected" : ""
+            }"
             value=${value}
             data-chat-permission-option=${value}
             data-chat-permission-shortcut=${String(index + 1)}
             role="menuitemradio"
             aria-checked=${selected ? "true" : "false"}
-            aria-label=${locked
-              ? `${modeLabel(mode, params.defaultMode)}. ${t("chat.permissionControls.fullRequiresAdmin")}`
-              : modeLabel(mode, params.defaultMode)}
+            aria-label=${
+              locked
+                ? `${modeLabel(mode, params.defaultMode)}. ${t("chat.permissionControls.fullRequiresAdmin")}`
+                : modeLabel(mode, params.defaultMode)
+            }
             title=${locked ? t("chat.permissionControls.fullRequiresAdmin") : nothing}
             ?disabled=${disabled || locked}
           >
@@ -179,21 +184,29 @@ export function renderChatPermissionPicker(params: ChatPermissionPickerProps) {
                 <span>${modeLabel(mode, params.defaultMode)}</span>
               </span>
               <span class="chat-controls__permission-option-description">
-                ${mode
-                  ? t(`chat.permissionControls.modes.${mode}.description`)
-                  : t("chat.permissionControls.defaultDescription")}
+                ${
+                  mode
+                    ? t(`chat.permissionControls.modes.${mode}.description`)
+                    : t("chat.permissionControls.defaultDescription")
+                }
               </span>
             </span>
             <span slot="details" class="chat-controls__permission-option-state" aria-hidden="true">
-              ${selected || locked
-                ? nothing
-                : html`<span class="chat-controls__permission-shortcut">${index + 1}</span>`}
-              ${locked
-                ? html`<span class="chat-controls__permission-lock">${icons.lock}</span>`
-                : nothing}
-              ${selected && !locked
-                ? html`<span class="chat-controls__inline-select-check">${icons.check}</span>`
-                : nothing}
+              ${
+                selected || locked
+                  ? nothing
+                  : html`<span class="chat-controls__permission-shortcut">${index + 1}</span>`
+              }
+              ${
+                locked
+                  ? html`<span class="chat-controls__permission-lock">${icons.lock}</span>`
+                  : nothing
+              }
+              ${
+                selected && !locked
+                  ? html`<span class="chat-controls__inline-select-check">${icons.check}</span>`
+                  : nothing
+              }
             </span>
           </wa-dropdown-item>
         `;

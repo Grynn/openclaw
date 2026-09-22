@@ -1,532 +1,339 @@
-import { fork, spawnSync } from "node:child_process";
-import fs from "node:fs";
+import { once } from "node:events";
+import fsSync from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { Worker } from "node:worker_threads";
+import { configureFsSafeNative, getFsSafeNativeConfig } from "@openclaw/fs-safe/config";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { resolvePathViaExistingAncestorSync } from "./boundary-path.js";
+import { sha256HexPrefixCore } from "./crypto-digest.js";
+import { tryAcquireExclusiveSqliteCoordinator } from "./sqlite-coordinator.js";
+import { captureCoordinatorDatabase } from "./sqlite-coordinator.test-support.js";
 import {
   acquireGatewayLifecycleCoordinator,
   acquireStateDatabaseCoordinator,
+  acquireStateDatabaseHandleExclusion,
   resolveStateDatabaseCoordinatorPath,
   resolveStateLifecycleRuntimeDirectory,
+  tryCreateGatewaySchemaFenceDelegate,
+  tryCreateStateLifecycleDelegate,
+  withStateDatabaseCoordinatorRuntimeDirectory,
   withStateSchemaFence,
 } from "./state-database-coordinator.js";
-import { createVitestResourceOwner } from "./vitest-resource-ownership.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-const repositoryRoot = path.resolve(import.meta.dirname, "../..");
-const resourceContextPreload = pathToFileURL(
-  path.join(repositoryRoot, "src/infra/vitest-resource-context-preload.test-support.ts"),
-).href;
-
-function withResourceContextPreload(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return { ...env, NODE_OPTIONS: `--import=${resourceContextPreload}` };
-}
 
 describe("state database coordinator", () => {
-  it("routes isolated databases through the owned root and releases its claim", () => {
-    const { ownedRoot, owner } = createStandaloneOwner("openclaw-coordinator-claim-");
-    const databasePath = path.join(ownedRoot, "state", "openclaw.sqlite");
-    const result = runCoordinatorSource(
-      `
-        import fs from "node:fs";
-        import path from "node:path";
-        const coordinatorModule = await import(${JSON.stringify(resolveCoordinatorModuleUrl())});
-        const coordinator = coordinatorModule.acquireStateDatabaseCoordinator({ databasePath: ${JSON.stringify(databasePath)}, busyTimeoutMs: 0 });
-        const claims = path.join(${JSON.stringify(ownedRoot)}, ".vitest-resource-owner", "claims");
-        const claim = path.join(claims, fs.readdirSync(claims)[0]);
-        const pendingWhileHeld = !fs.existsSync(path.join(claim, "released"));
-        coordinator.release();
-        console.log(JSON.stringify({ path: coordinator.path, pendingWhileHeld, released: fs.existsSync(path.join(claim, "released")), runtimeDirectory: coordinatorModule.resolveStateLifecycleRuntimeDirectory(${JSON.stringify(databasePath)}) }));
-      `,
-      {
-        VITEST_OPENCLAW_RESOURCE_ROOT: ownedRoot,
-        VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN: JSON.stringify([
-          { root: ownedRoot, identity: owner.identity },
-        ]),
-      },
+  it("retains final-reference cleanup without treating its rolled-back handle as ownership", () => {
+    const root = tempDirs.make("openclaw-coordinator-reference-retry-");
+    const params = { databasePath: path.join(root, "state.sqlite"), runtimeDirectory: root };
+    const { result: first, database } = captureCoordinatorDatabase(() =>
+      acquireGatewayLifecycleCoordinator(params),
     );
-
-    expect(result).toMatchObject({
-      pendingWhileHeld: true,
-      released: true,
-      runtimeDirectory: ownedRoot,
-    });
-    expect((result.path as string).startsWith(`${ownedRoot}${path.sep}`)).toBe(true);
-    expect(() => owner.assertReleased()).not.toThrow();
-  });
-
-  it("claims both the database owner and a distinct explicit coordinator owner", () => {
-    const databaseResource = createStandaloneOwner("openclaw-coordinator-database-owner-");
-    const coordinatorResource = createStandaloneOwner("openclaw-coordinator-path-owner-");
-    const databasePath = path.join(databaseResource.ownedRoot, "state", "openclaw.sqlite");
-    const coordinatorPath = path.join(
-      coordinatorResource.ownedRoot,
-      "custom-locks",
-      "gateway.lock.sqlite",
-    );
-    const result = runCoordinatorSource(
-      `
-        import fs from "node:fs";
-        import path from "node:path";
-        const coordinatorModule = await import(${JSON.stringify(resolveCoordinatorModuleUrl())});
-        const claimState = (root) => {
-          const claims = path.join(root, ".vitest-resource-owner", "claims");
-          return fs.readdirSync(claims).map((claim) => fs.existsSync(path.join(claims, claim, "released")));
-        };
-        const coordinator = coordinatorModule.acquireGatewayLifecycleCoordinator({
-          databasePath: ${JSON.stringify(databasePath)},
-          coordinatorPath: ${JSON.stringify(coordinatorPath)},
-          busyTimeoutMs: 0,
-        });
-        const held = {
-          database: claimState(${JSON.stringify(databaseResource.ownedRoot)}),
-          coordinator: claimState(${JSON.stringify(coordinatorResource.ownedRoot)}),
-        };
-        coordinator.release();
-        console.log(JSON.stringify({
-          path: coordinator.path,
-          held,
-          released: {
-            database: claimState(${JSON.stringify(databaseResource.ownedRoot)}),
-            coordinator: claimState(${JSON.stringify(coordinatorResource.ownedRoot)}),
-          },
-        }));
-      `,
-      {
-        VITEST_OPENCLAW_RESOURCE_ROOT: databaseResource.ownedRoot,
-        VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN: JSON.stringify([
-          {
-            root: databaseResource.ownedRoot,
-            identity: databaseResource.owner.identity,
-          },
-          {
-            root: coordinatorResource.ownedRoot,
-            identity: coordinatorResource.owner.identity,
-          },
-        ]),
-      },
-    );
-
-    expect(result).toEqual({
-      path: coordinatorPath,
-      held: { database: [false], coordinator: [false] },
-      released: { database: [true], coordinator: [true] },
-    });
-    expect(() => databaseResource.owner.assertReleased()).not.toThrow();
-    expect(() => coordinatorResource.owner.assertReleased()).not.toThrow();
-  });
-
-  it("releases its claim when rollback reports failure after SQLite close succeeds", () => {
-    const { ownedRoot, owner } = createStandaloneOwner("openclaw-coordinator-release-failure-");
-    const databasePath = path.join(ownedRoot, "state", "openclaw.sqlite");
-    const result = runCoordinatorSource(
-      `
-        import fs from "node:fs";
-        import path from "node:path";
-        const coordinatorModule = await import(${JSON.stringify(resolveCoordinatorModuleUrl())});
-        const { DatabaseSync } = await import("node:sqlite");
-        const coordinator = coordinatorModule.acquireStateDatabaseCoordinator({ databasePath: ${JSON.stringify(databasePath)}, busyTimeoutMs: 0 });
-        const nativeExec = DatabaseSync.prototype.exec;
-        DatabaseSync.prototype.exec = function(sql) {
-          if (sql === "ROLLBACK") throw new Error("simulated rollback failure");
-          return nativeExec.call(this, sql);
-        };
-        let errorMessage;
-        try { coordinator.release(); } catch (error) { errorMessage = error.message; }
-        DatabaseSync.prototype.exec = nativeExec;
-        const claims = path.join(${JSON.stringify(ownedRoot)}, ".vitest-resource-owner", "claims");
-        const claim = path.join(claims, fs.readdirSync(claims)[0]);
-        console.log(JSON.stringify({ errorMessage, released: fs.existsSync(path.join(claim, "released")) }));
-      `,
-      {
-        VITEST_OPENCLAW_RESOURCE_ROOT: ownedRoot,
-        VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN: JSON.stringify([
-          { root: ownedRoot, identity: owner.identity },
-        ]),
-      },
-    );
-
-    expect(result).toEqual({
-      errorMessage: expect.stringContaining("failed to release state-lifecycle coordinator"),
-      released: true,
-    });
-    expect(() => owner.assertReleased()).not.toThrow();
-  });
-
-  it("retains its claim when SQLite close does not succeed", () => {
-    const { ownedRoot, owner } = createStandaloneOwner("openclaw-coordinator-close-failure-");
-    const databasePath = path.join(ownedRoot, "state", "openclaw.sqlite");
-    const result = runCoordinatorSource(
-      `
-        import fs from "node:fs";
-        import path from "node:path";
-        const coordinatorModule = await import(${JSON.stringify(resolveCoordinatorModuleUrl())});
-        const { DatabaseSync } = await import("node:sqlite");
-        const coordinator = coordinatorModule.acquireStateDatabaseCoordinator({ databasePath: ${JSON.stringify(databasePath)}, busyTimeoutMs: 0 });
-        const nativeClose = DatabaseSync.prototype.close;
-        DatabaseSync.prototype.close = function() {
-          throw new Error("simulated close failure");
-        };
-        let errorMessage;
-        try { coordinator.release(); } catch (error) { errorMessage = error.message; }
-        DatabaseSync.prototype.close = nativeClose;
-        const claims = path.join(${JSON.stringify(ownedRoot)}, ".vitest-resource-owner", "claims");
-        const claim = path.join(claims, fs.readdirSync(claims)[0]);
-        console.log(JSON.stringify({ errorMessage, released: fs.existsSync(path.join(claim, "released")) }));
-      `,
-      {
-        VITEST_OPENCLAW_RESOURCE_ROOT: ownedRoot,
-        VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN: JSON.stringify([
-          { root: ownedRoot, identity: owner.identity },
-        ]),
-      },
-    );
-
-    expect(result).toEqual({
-      errorMessage: expect.stringContaining("failed to release state-lifecycle coordinator"),
-      released: false,
-    });
-    expect(() => owner.assertReleased()).toThrow("Unreleased Vitest resource claim");
-  });
-
-  it("fails closed without recreating an owner removed after import", () => {
-    const { ownedRoot, owner } = createStandaloneOwner("openclaw-coordinator-removed-owner-");
-    const databasePath = path.join(ownedRoot, "state", "openclaw.sqlite");
-    const result = runCoordinatorSource(
-      `
-        import fs from "node:fs";
-        const coordinatorModule = await import(${JSON.stringify(resolveCoordinatorModuleUrl())});
-        fs.rmSync(${JSON.stringify(ownedRoot)}, { recursive: true });
-        let errorCode;
-        try {
-          coordinatorModule.acquireStateDatabaseCoordinator({ databasePath: ${JSON.stringify(databasePath)}, busyTimeoutMs: 0 });
-        } catch (error) {
-          errorCode = error.code;
-        }
-        console.log(JSON.stringify({ errorCode, recreated: fs.existsSync(${JSON.stringify(ownedRoot)}) }));
-      `,
-      {
-        VITEST_OPENCLAW_RESOURCE_ROOT: ownedRoot,
-        VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN: JSON.stringify([
-          { root: ownedRoot, identity: owner.identity },
-        ]),
-      },
-    );
-
-    expect(result).toEqual({ errorCode: "ENOENT", recreated: false });
-  });
-
-  it("uses the launcher's stable production lock root", () => {
-    expect(process.env.VITEST_OPENCLAW_PRODUCTION_LOCK_ROOT).toBeTruthy();
-    expect(resolveStateLifecycleRuntimeDirectory()).toBe(
-      process.env.VITEST_OPENCLAW_PRODUCTION_LOCK_ROOT,
-    );
-  });
-
-  it("rejects a resource root without an identity-bearing chain", () => {
-    const { ownedRoot } = createStandaloneOwner("openclaw-coordinator-missing-chain-");
-    const source = `
-      let errorMessage;
-      try {
-        await import(${JSON.stringify(resolveCoordinatorModuleUrl())});
-      } catch (error) {
-        errorMessage = error.message;
-      }
-      console.log(JSON.stringify({ errorMessage }));
-    `;
-    const env = withResourceContextPreload({
-      ...process.env,
-      VITEST_OPENCLAW_RESOURCE_ROOT: ownedRoot,
-    });
-    delete env.VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN;
-    const child = spawnSync(
-      process.execPath,
-      ["--disable-warning=DEP0205", "--import", "tsx", "--input-type=module", "-e", source],
-      {
-        cwd: path.resolve(import.meta.dirname, "../.."),
-        env,
-        encoding: "utf8",
-      },
-    );
-
-    expect(child.stdout).toBe("");
-    expect(child.status).not.toBe(0);
-    expect(child.stderr).toContain(
-      "Inherited Vitest resource root requires an identity-bearing chain",
-    );
-  });
-
-  it("rejects an identity-bearing chain without its resource root", () => {
-    const { ownedRoot, owner } = createStandaloneOwner(
-      "openclaw-coordinator-missing-resource-root-",
-    );
-    const source = `
-      let errorMessage;
-      try {
-        await import(${JSON.stringify(resolveCoordinatorModuleUrl())});
-      } catch (error) {
-        errorMessage = error.message;
-      }
-      console.log(JSON.stringify({ errorMessage }));
-    `;
-    const env = withResourceContextPreload({
-      ...process.env,
-      VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN: JSON.stringify([
-        { root: ownedRoot, identity: owner.identity },
-      ]),
-    });
-    delete env.VITEST_OPENCLAW_RESOURCE_ROOT;
-    const child = spawnSync(
-      process.execPath,
-      ["--disable-warning=DEP0205", "--import", "tsx", "--input-type=module", "-e", source],
-      {
-        cwd: path.resolve(import.meta.dirname, "../.."),
-        env,
-        encoding: "utf8",
-      },
-    );
-
-    expect(child.stdout).toBe("");
-    expect(child.status).not.toBe(0);
-    expect(child.stderr).toContain("Inherited Vitest resource root chain requires its root marker");
-  });
-
-  it("rejects a validated resource lineage without a production lock root", () => {
-    const { ownedRoot, owner } = createStandaloneOwner(
-      "openclaw-coordinator-missing-production-root-",
-    );
-    const source = `
-      let errorMessage;
-      try {
-        await import(${JSON.stringify(resolveCoordinatorModuleUrl())});
-      } catch (error) {
-        errorMessage = error.message;
-      }
-      console.log(JSON.stringify({ errorMessage }));
-    `;
-    const env = withResourceContextPreload({
-      ...process.env,
-      VITEST_OPENCLAW_RESOURCE_ROOT: ownedRoot,
-      VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN: JSON.stringify([
-        { root: ownedRoot, identity: owner.identity },
-      ]),
-    });
-    delete env.VITEST_OPENCLAW_PRODUCTION_LOCK_ROOT;
-    const child = spawnSync(
-      process.execPath,
-      ["--disable-warning=DEP0205", "--import", "tsx", "--input-type=module", "-e", source],
-      {
-        cwd: path.resolve(import.meta.dirname, "../.."),
-        env,
-        encoding: "utf8",
-      },
-    );
-
-    expect(child.stdout).toBe("");
-    expect(child.status).not.toBe(0);
-    expect(child.stderr).toContain(
-      "Inherited Vitest resource lineage requires a production lock root",
-    );
-  });
-
-  it("rejects stale resource lineage in the process preload", () => {
-    const root = tempDirs.make("openclaw-coordinator-stale-preload-");
-    const staleRoot = path.join(root, "missing-owner");
-    const env = withResourceContextPreload({
-      ...process.env,
-      VITEST_OPENCLAW_RESOURCE_ROOT: staleRoot,
-      VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN: JSON.stringify([
-        { root: staleRoot, identity: "00000000-0000-0000-0000-000000000000" },
-      ]),
-    });
-    const child = spawnSync(
-      process.execPath,
-      [
-        "--input-type=module",
-        "-e",
-        `await import(${JSON.stringify(resolveCoordinatorModuleUrl())})`,
-      ],
-      {
-        cwd: repositoryRoot,
-        env,
-        encoding: "utf8",
-      },
-    );
-
-    expect(child.stdout).toBe("");
-    expect(child.status).not.toBe(0);
-    expect(child.stderr).toContain(`Invalid inherited Vitest resource root: ${staleRoot}`);
-  });
-
-  it("ignores an unpaired production lock root marker", () => {
-    const changedHome = tempDirs.make("openclaw-unpaired-production-root-");
-    const spoofedRoot = path.join(changedHome, "spoofed-locks");
-    const result = runCoordinatorSource(
-      `
-        const coordinatorModule = await import(${JSON.stringify(resolveCoordinatorModuleUrl())});
-        console.log(JSON.stringify({ runtimeDirectory: coordinatorModule.resolveStateLifecycleRuntimeDirectory() }));
-      `,
-      {
-        VITEST_OPENCLAW_PRODUCTION_LOCK_ROOT: spoofedRoot,
-        HOME: changedHome,
-        USERPROFILE: changedHome,
-      },
-      ["VITEST_OPENCLAW_RESOURCE_ROOT", "VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN"],
-    );
-    const expectedRoot =
-      process.platform === "win32"
-        ? path.join(changedHome, "AppData", "Local", "OpenClaw", "locks")
-        : "/tmp";
-
-    expect(result).toEqual({ runtimeDirectory: expectedRoot });
-  });
-
-  it("ignores unrelated resource-owner metadata outside the captured root", () => {
-    const globalRuntime = resolveStateLifecycleRuntimeDirectory();
-    fs.mkdirSync(globalRuntime, { recursive: true });
-    const root = tempDirs.make(
-      "openclaw-unrelated-resource-owner-",
-      fs.realpathSync(globalRuntime),
-    );
-    const runtimeAncestor = path.join(root, "runtime-ancestor");
-    const metadata = path.join(runtimeAncestor, ".vitest-resource-owner");
-    fs.mkdirSync(path.join(metadata, "claims"), { recursive: true });
-    fs.writeFileSync(path.join(metadata, "owner"), "not-a-valid-owner");
-    const runtimeDirectory = path.join(runtimeAncestor, "runtime");
-    const databasePath = path.join(root, "state", "openclaw.sqlite");
-    const coordinator = acquireStateDatabaseCoordinator({
-      databasePath,
-      runtimeDirectory,
-      busyTimeoutMs: 0,
+    const last = acquireGatewayLifecycleCoordinator(params);
+    const close = vi.spyOn(database, "close").mockImplementationOnce(() => {
+      throw new Error("Fixture native close remains open");
     });
     try {
-      expect(coordinator.path.startsWith(`${runtimeDirectory}${path.sep}`)).toBe(true);
+      first.release();
+      expect(first.closed).toBe(true);
+      expect(close).not.toHaveBeenCalled();
+      expect(() => last.release()).toThrow("failed to release gateway-lifecycle coordinator");
+      expect(last.closed).toBe(false);
+      expect(database.isOpen).toBe(true);
+      expect(database.isTransaction).toBe(false);
+      expect(() => acquireGatewayLifecycleCoordinator(params)).toThrow("cleanup is pending");
+      expect(
+        tryCreateGatewaySchemaFenceDelegate({ ...params, actorId: "pending" }),
+      ).toBeUndefined();
+      first.release();
+      expect(close).toHaveBeenCalledTimes(1);
+      last.release();
+      expect(last.closed).toBe(true);
+      expect(close).toHaveBeenCalledTimes(2);
+      acquireGatewayLifecycleCoordinator(params).release();
     } finally {
-      coordinator.release();
+      close.mockRestore();
+      first.release();
+      last.release();
     }
   });
 
-  it("keeps external databases on the stable global coordinator and contends there", () => {
-    const globalRuntime = resolveStateLifecycleRuntimeDirectory();
-    fs.mkdirSync(globalRuntime, { recursive: true });
-    const root = tempDirs.make("openclaw-external-state-", fs.realpathSync(globalRuntime));
-    const databasePath = path.join(root, "state", "openclaw.sqlite");
-    fs.mkdirSync(path.dirname(databasePath), { recursive: true });
-    const coordinator = acquireGatewayLifecycleCoordinator({ databasePath, busyTimeoutMs: 0 });
-    const expectedStatePath = resolveStateDatabaseCoordinatorPath({
-      databasePath,
-      runtimeDirectory: globalRuntime,
-      uid: process.getuid?.(),
-    });
-    const expectedPath = expectedStatePath.replace("state-lifecycle.", "gateway-lifecycle.");
-
+  it("retains a Gateway worker fence until worker exit while sealing shutdown admission", async () => {
+    const root = tempDirs.make("openclaw-gateway-worker-fence-");
+    const params = {
+      databasePath: path.join(root, "state", "openclaw.sqlite"),
+      runtimeDirectory: path.join(root, "runtime"),
+      actorId: "shared-state-test",
+    };
+    // An actor can open before Gateway startup without opening a coordinator on main.
+    const realpath = vi.spyOn(fsSync.realpathSync, "native");
     try {
-      expect(resolveStateLifecycleRuntimeDirectory(databasePath)).toBe(globalRuntime);
-      expect(coordinator.path).toBe(expectedPath);
-      const child = runCoordinatorPeer(databasePath, path.join(root, "changed-tmp"));
-      expect(child).toMatchObject({
-        runtimeDirectory: globalRuntime,
-        errorName: "StateDatabaseCoordinatorContentionError",
-      });
+      expect(tryCreateGatewaySchemaFenceDelegate(params)).toBeUndefined();
+      expect(tryCreateStateLifecycleDelegate(params)).toBeUndefined();
+      expect(realpath).not.toHaveBeenCalled();
     } finally {
-      coordinator.release();
-      fs.rmSync(expectedPath, { force: true });
+      realpath.mockRestore();
     }
-  });
+    expect(fsSync.existsSync(params.runtimeDirectory)).toBe(false);
+    expect(
+      withStateSchemaFence(params, () => tryCreateGatewaySchemaFenceDelegate(params)),
+    ).toBeUndefined();
 
-  it("inherits one resource root across child TMPDIR and VITEST changes", () => {
-    const ownedRoot = fs.realpathSync(process.env.VITEST_OPENCLAW_RESOURCE_ROOT!);
-    const root = tempDirs.make("openclaw-stable-resource-root-");
-    const databasePath = path.join(root, "state", "openclaw.sqlite");
-    const coordinator = acquireGatewayLifecycleCoordinator({ databasePath, busyTimeoutMs: 0 });
-    try {
-      expect(runCoordinatorPeer(databasePath, path.join(root, "changed-tmp"))).toMatchObject({
-        runtimeDirectory: ownedRoot,
-        errorName: "StateDatabaseCoordinatorContentionError",
-      });
-    } finally {
-      coordinator.release();
+    const gateway = acquireGatewayLifecycleCoordinator(params);
+    const nestedGateway = acquireGatewayLifecycleCoordinator(params);
+    const delegation = tryCreateGatewaySchemaFenceDelegate(params);
+    expect(delegation).toBeDefined();
+    if (!delegation) {
+      nestedGateway.release();
+      gateway.release();
+      throw new Error("Gateway did not retain its worker fence");
     }
-  });
-
-  it("keeps owned coordination in post-setup spawned and forked descendants", async () => {
-    const ownedRoot = fs.realpathSync(process.env.VITEST_OPENCLAW_RESOURCE_ROOT!);
-    expect(process.env.NODE_OPTIONS).toBe(`--import=${resourceContextPreload}`);
-    const fixtureRoot = tempDirs.make("openclaw-post-setup-descendant-");
-    const databasePath = path.join(ownedRoot, "post-setup-descendant", "openclaw.sqlite");
-    const entry = path.join(fixtureRoot, "probe.mts");
-    fs.writeFileSync(
-      entry,
-      `
-        import fs from "node:fs";
-        import path from "node:path";
-        const coordinatorModule = await import(${JSON.stringify(resolveCoordinatorModuleUrl())});
-        const claims = path.join(${JSON.stringify(ownedRoot)}, ".vitest-resource-owner", "claims");
-        const before = new Set(fs.readdirSync(claims));
-        const coordinator = coordinatorModule.acquireGatewayLifecycleCoordinator({
-          databasePath: ${JSON.stringify(databasePath)},
-          busyTimeoutMs: 0,
-        });
-        const added = fs.readdirSync(claims).filter((claim) => !before.has(claim));
-        const pending = added.length === 1 && !fs.existsSync(path.join(claims, added[0], "released"));
-        coordinator.release();
-        console.log(JSON.stringify({
-          path: coordinator.path,
-          pending,
-          released: added.length === 1 && fs.existsSync(path.join(claims, added[0], "released")),
-          runtimeDirectory: coordinatorModule.resolveStateLifecycleRuntimeDirectory(${JSON.stringify(databasePath)}),
-        }));
-      `,
-    );
-    const execArgv = ["--disable-warning=DEP0205", "--import", "tsx"];
-    const spawned = spawnSync(process.execPath, [...execArgv, entry], {
-      cwd: repositoryRoot,
-      env: process.env,
-      encoding: "utf8",
-    });
-    expect(spawned.stderr).toBe("");
-    expect(spawned.status).toBe(0);
-
-    const forked = fork(entry, [], {
-      cwd: repositoryRoot,
-      env: process.env,
-      execArgv,
-      silent: true,
-    });
-    let forkedOutput = "";
-    let forkedErrors = "";
-    forked.stdout!.on("data", (chunk) => {
-      forkedOutput += chunk;
-    });
-    forked.stderr!.on("data", (chunk) => {
-      forkedErrors += chunk;
-    });
-    const forkedExit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-      (resolve) => {
-        forked.once("exit", (code, signal) => resolve({ code, signal }));
+    const worker = new Worker(
+      new URL("./state-database-coordinator.worker.test-support.mjs", import.meta.url),
+      {
+        execArgv: [],
+        workerData: {
+          params,
+          port: delegation.port,
+          sourceLoaderUrl: import.meta.resolve("tsx/esm/api"),
+          coordinatorUrl: new URL("./state-database-coordinator.ts", import.meta.url).href,
+        },
+        transferList: [delegation.port],
       },
     );
-    expect(forkedErrors).toBe("");
-    expect(forkedExit).toEqual({ code: 0, signal: null });
+    const ask = async (message: string) => {
+      const response = once(worker, "message");
+      worker.postMessage(message, []);
+      return (await response)[0];
+    };
+    try {
+      expect(await once(worker, "message")).toEqual(["ready"]);
+      expect(await ask("plain")).toEqual({ error: "StateSchemaMutationConflictError" });
+      expect(await ask("delegated")).toEqual({ result: "schema admitted" });
 
-    for (const output of [spawned.stdout, forkedOutput]) {
-      const result = JSON.parse(output) as {
-        path: string;
-        pending: boolean;
-        released: boolean;
-        runtimeDirectory: string;
+      gateway.release();
+      expect(await ask("delegated")).toEqual({ result: "schema admitted" });
+      nestedGateway.release();
+      expect(tryCreateGatewaySchemaFenceDelegate(params)).toBeUndefined();
+      expect(await ask("delegated")).toEqual({ error: "StateSchemaMutationConflictError" });
+      expect(tryAcquireExclusiveSqliteCoordinator(gateway.path)).toBeNull();
+
+      const exited = once(worker, "exit");
+      worker.postMessage("close", []);
+      expect(await exited).toEqual([0]);
+      // Port closure alone does not release broker-owned custody.
+      expect(tryAcquireExclusiveSqliteCoordinator(gateway.path)).toBeNull();
+      delegation.release();
+      const next = tryAcquireExclusiveSqliteCoordinator(gateway.path);
+      expect(next).not.toBeNull();
+      next?.release();
+    } finally {
+      await worker.terminate();
+      delegation.release();
+      nestedGateway.release();
+      gateway.release();
+    }
+  });
+
+  it("uses the captured coordinator runtime directory across worker preparation", async () => {
+    const root = tempDirs.make("openclaw-coordinator-runtime-scope-");
+    const original = resolveStateLifecycleRuntimeDirectory();
+    await withStateDatabaseCoordinatorRuntimeDirectory(root, async () => {
+      await Promise.resolve();
+      const params = {
+        databasePath: path.join(root, "state", "openclaw.sqlite"),
       };
-      expect(result).toMatchObject({ pending: true, released: true, runtimeDirectory: ownedRoot });
-      expect(result.path.startsWith(`${ownedRoot}${path.sep}`)).toBe(true);
+      const { result: coordinator, database } = captureCoordinatorDatabase(() =>
+        acquireStateDatabaseCoordinator(params),
+      );
+      let delegation: ReturnType<typeof tryCreateStateLifecycleDelegate>;
+      try {
+        delegation = tryCreateStateLifecycleDelegate({ ...params, actorId: "state-worker" });
+        expect(delegation).toBeDefined();
+        expect(coordinator.path).toBe(
+          resolveStateDatabaseCoordinatorPath({
+            ...params,
+            runtimeDirectory: root,
+            uid: typeof process.getuid === "function" ? process.getuid() : undefined,
+          }),
+        );
+      } finally {
+        delegation?.release();
+        coordinator.release();
+        expect(database.isOpen).toBe(false);
+      }
+    });
+    expect(resolveStateLifecycleRuntimeDirectory()).toBe(original);
+  });
+
+  it.each([
+    [false, false],
+    [false, true],
+    [true, false],
+    [true, true],
+  ])(
+    "bounds component path probes with explicit coordinator %s and existing database %s",
+    (explicit, existing) => {
+      const root = tempDirs.make("openclaw-state-coordinator-path-work-");
+      const params = {
+        databasePath: path.join(root, "state", "openclaw.sqlite"),
+        runtimeDirectory: root,
+        uid: typeof process.getuid === "function" ? process.getuid() : undefined,
+        coordinatorPath: explicit ? path.join(root, "custom", "coordinator.sqlite") : undefined,
+      };
+      const nativeMode = getFsSafeNativeConfig().mode;
+      // fs-safe's Bun realpath workaround bypasses node:fs spies until oven-sh/bun#42374.
+      // Select its portable path so this probe-count assertion observes the realpath owner.
+      if (process.versions.bun) {
+        configureFsSafeNative({ mode: "off" });
+      }
+      const resolvePath = vi.spyOn(fsSync, "realpathSync");
+      try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          params.databasePath = path.join(root, `state-${attempt}`, "openclaw.sqlite");
+          if (existing) {
+            fsSync.mkdirSync(path.dirname(params.databasePath));
+            fsSync.writeFileSync(params.databasePath, "");
+          }
+          const expectedPath =
+            params.coordinatorPath ?? resolveStateDatabaseCoordinatorPath(params);
+          resolvePath.mockClear();
+          const coordinator = acquireStateDatabaseCoordinator(params);
+          try {
+            expect(coordinator.path).toBe(expectedPath);
+            expect(resolvePath).toHaveBeenCalledTimes(existing ? 0 : 1);
+          } finally {
+            coordinator.release();
+          }
+        }
+      } finally {
+        resolvePath.mockRestore();
+        if (process.versions.bun) {
+          configureFsSafeNative({ mode: nativeMode });
+        }
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "preserves the shipped path identity with native failure %s",
+    (failNative) => {
+      const root = tempDirs.make("openclaw-coordinator-identity-");
+      const target = path.join(root, "target");
+      const alias = path.join(root, "alias");
+      fsSync.mkdirSync(target);
+      fsSync.writeFileSync(path.join(target, "state.sqlite"), "");
+      fsSync.symlinkSync(target, alias, process.platform === "win32" ? "junction" : "dir");
+      const paths = [target, alias, path.join(alias, "missing")];
+      if (process.platform === "win32") {
+        paths.push(
+          target.toUpperCase(),
+          target.replace(/^[A-Z]:/, (drive) => drive.toLowerCase()),
+        );
+      }
+      const legacyPaths = paths.map((directory) => {
+        const databasePath = path.join(directory, "state.sqlite");
+        const canonical = resolvePathViaExistingAncestorSync(databasePath);
+        return {
+          databasePath,
+          runtimeDirectory: directory,
+          expected: path.join(
+            resolvePathViaExistingAncestorSync(directory),
+            "openclaw-state-locks-42",
+            `state-lifecycle.${sha256HexPrefixCore(canonical, 8)}.lock.sqlite`,
+          ),
+        };
+      });
+      const native = failNative
+        ? vi.spyOn(fsSync.realpathSync, "native").mockImplementation(() => {
+            throw new Error("native path resolution unavailable");
+          })
+        : undefined;
+      try {
+        for (const { expected, ...params } of legacyPaths) {
+          expect(resolveStateDatabaseCoordinatorPath({ ...params, uid: 42 })).toBe(expected);
+        }
+      } finally {
+        native?.mockRestore();
+      }
+    },
+  );
+
+  it("resolves lifecycle paths after the current write authority callback", () => {
+    const root = tempDirs.make("openclaw-state-coordinator-authority-path-");
+    const params = {
+      databasePath: path.join(root, "state", "openclaw.sqlite"),
+      runtimeDirectory: path.join(root, "initial-runtime"),
+      uid: typeof process.getuid === "function" ? process.getuid() : undefined,
+    };
+    const nextRuntime = path.join(root, "next-runtime");
+    const expectedPath = resolveStateDatabaseCoordinatorPath({
+      ...params,
+      runtimeDirectory: nextRuntime,
+    });
+    const exclusion = acquireStateDatabaseHandleExclusion(params);
+    let changeRuntime = false;
+    try {
+      exclusion.runWithCanonicalWrites(
+        () => {
+          if (changeRuntime) {
+            params.runtimeDirectory = nextRuntime;
+          }
+        },
+        () => {
+          changeRuntime = true;
+          const coordinator = acquireStateDatabaseCoordinator(params);
+          try {
+            expect(coordinator.path).toBe(expectedPath);
+          } finally {
+            coordinator.release();
+          }
+        },
+      );
+    } finally {
+      exclusion.release();
     }
   });
+
+  it.each([
+    ["state", acquireStateDatabaseCoordinator],
+    ["Gateway", acquireGatewayLifecycleCoordinator],
+  ] as const)(
+    "reacquires an existing %s coordinator without filesystem changes",
+    async (_, acquire) => {
+      const root = tempDirs.make("openclaw-lifecycle-coordinator-noop-");
+      const params = {
+        databasePath: path.join(root, "state", "openclaw.sqlite"),
+        runtimeDirectory: root,
+      };
+      const first = acquire(params);
+      const coordinatorPath = first.path;
+      first.release();
+      const directory = path.dirname(coordinatorPath);
+      const beforeDirectory = await fs.stat(directory, { bigint: true });
+      const beforeFile = await fs.stat(coordinatorPath, { bigint: true });
+      const next = acquire(params);
+      try {
+        expect(await fs.readdir(directory)).toEqual([path.basename(coordinatorPath)]);
+        const afterDirectory = await fs.stat(directory, { bigint: true });
+        const afterFile = await fs.stat(coordinatorPath, { bigint: true });
+        for (const key of ["ino", "mode", "size", "mtimeNs", "ctimeNs"] as const) {
+          expect(afterDirectory[key]).toBe(beforeDirectory[key]);
+          expect(afterFile[key]).toBe(beforeFile[key]);
+        }
+      } finally {
+        next.release();
+      }
+    },
+  );
 
   it("reference-counts same-process owners", async () => {
     const root = tempDirs.make("openclaw-state-database-coordinator-");
     const databasePath = path.join(root, "selected-state", "state", "openclaw.sqlite");
     const runtimeDirectory = path.join(root, "runtime");
-    await fs.promises.mkdir(path.dirname(databasePath), { recursive: true });
+    await fs.mkdir(path.dirname(databasePath), { recursive: true });
     const first = acquireStateDatabaseCoordinator({
       databasePath,
       runtimeDirectory,
@@ -553,7 +360,7 @@ describe("state database coordinator", () => {
     const root = tempDirs.make("openclaw-gateway-lifecycle-coordinator-");
     const databasePath = path.join(root, "state", "openclaw.sqlite");
     const runtimeDirectory = path.join(root, "runtime");
-    await fs.promises.mkdir(path.dirname(databasePath), { recursive: true });
+    await fs.mkdir(path.dirname(databasePath), { recursive: true });
     const gateway = acquireGatewayLifecycleCoordinator({
       databasePath,
       runtimeDirectory,
@@ -573,7 +380,7 @@ describe("state database coordinator", () => {
     const root = tempDirs.make("openclaw-gateway-schema-owner-");
     const databasePath = path.join(root, "state", "openclaw.sqlite");
     const runtimeDirectory = path.join(root, "runtime");
-    await fs.promises.mkdir(path.dirname(databasePath), { recursive: true });
+    await fs.mkdir(path.dirname(databasePath), { recursive: true });
     const gateway = acquireGatewayLifecycleCoordinator({
       databasePath,
       runtimeDirectory,
@@ -588,73 +395,3 @@ describe("state database coordinator", () => {
     }
   });
 });
-
-function runCoordinatorPeer(databasePath: string, changedTmp: string) {
-  fs.mkdirSync(changedTmp, { recursive: true });
-  const moduleUrl = pathToFileURL(
-    path.join(import.meta.dirname, "state-database-coordinator.ts"),
-  ).href;
-  const source = `
-    process.env.TMPDIR = ${JSON.stringify(changedTmp)};
-    process.env.TMP = ${JSON.stringify(changedTmp)};
-    process.env.TEMP = ${JSON.stringify(changedTmp)};
-    process.env.HOME = ${JSON.stringify(changedTmp)};
-    process.env.USERPROFILE = ${JSON.stringify(changedTmp)};
-    delete process.env.VITEST;
-    const coordinator = await import(${JSON.stringify(moduleUrl)});
-    const runtimeDirectory = coordinator.resolveStateLifecycleRuntimeDirectory(${JSON.stringify(databasePath)});
-    let errorName;
-    try {
-      coordinator.acquireGatewayLifecycleCoordinator({ databasePath: ${JSON.stringify(databasePath)}, busyTimeoutMs: 0 });
-    } catch (error) {
-      errorName = error?.name;
-    }
-    console.log(JSON.stringify({ runtimeDirectory, errorName }));
-  `;
-  const env = withResourceContextPreload({ ...process.env });
-  delete env.VITEST;
-  const child = spawnSync(
-    process.execPath,
-    ["--disable-warning=DEP0205", "--import", "tsx", "--input-type=module", "-e", source],
-    { cwd: repositoryRoot, env, encoding: "utf8" },
-  );
-  expect(child.stderr).toBe("");
-  expect(child.status).toBe(0);
-  return JSON.parse(child.stdout) as { runtimeDirectory: string; errorName?: string };
-}
-
-function resolveCoordinatorModuleUrl(): string {
-  return pathToFileURL(path.join(import.meta.dirname, "state-database-coordinator.ts")).href;
-}
-
-function createStandaloneOwner(prefix: string) {
-  const globalRuntime = resolveStateLifecycleRuntimeDirectory();
-  fs.mkdirSync(globalRuntime, { recursive: true });
-  const outerRoot = tempDirs.make(prefix, fs.realpathSync(globalRuntime));
-  const ownedRoot = path.join(outerRoot, "owned");
-  fs.mkdirSync(ownedRoot);
-  return { ownedRoot, owner: createVitestResourceOwner(ownedRoot) };
-}
-
-function runCoordinatorSource(
-  source: string,
-  envOverrides: NodeJS.ProcessEnv,
-  removedEnvKeys: string[] = [],
-) {
-  const env = withResourceContextPreload({ ...process.env, ...envOverrides });
-  for (const key of removedEnvKeys) {
-    delete env[key];
-  }
-  const child = spawnSync(
-    process.execPath,
-    ["--disable-warning=DEP0205", "--import", "tsx", "--input-type=module", "-e", source],
-    {
-      cwd: repositoryRoot,
-      env,
-      encoding: "utf8",
-    },
-  );
-  expect(child.stderr).toBe("");
-  expect(child.status).toBe(0);
-  return JSON.parse(child.stdout) as Record<string, unknown>;
-}

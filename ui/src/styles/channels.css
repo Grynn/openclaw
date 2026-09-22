@@ -68,6 +68,12 @@
   object-fit: cover;
 }
 
+.channels-cover--icon img {
+  width: 96px;
+  height: 96px;
+  border-radius: var(--radius-lg);
+}
+
 .channels-cover--fallback {
   background: linear-gradient(135deg, var(--channels-art-a), var(--channels-art-b));
   color: rgb(255 255 255 / 92%);
@@ -382,11 +388,6 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-}
-
-.channels-wizard__link,
-.channels-wizard__link:hover {
-  text-decoration: none;
 }
 
 .channels-wizard__footer {

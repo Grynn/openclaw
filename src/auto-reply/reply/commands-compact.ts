@@ -19,11 +19,12 @@ import {
 import { resolveOwnerPromptNumbers } from "../../agents/owner-display.js";
 import { resolveManualCompactionCliTarget } from "../../agents/session-runtime-compat.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
-import { resolveSessionAuthProfileOverrideSource } from "../../config/sessions/auth-profile-override-provenance.js";
+import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth-profile-override-provenance.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { rejectUnauthorizedCommand } from "./command-gates.js";
 import type { CommandHandler, CommandHandlerResult } from "./commands-types.js";
@@ -343,7 +344,7 @@ export const handleCompactCommand: CommandHandler = async (params) => {
       model: params.model,
       authProfileId:
         compactionCliTarget.cliSessionBinding?.authProfileId ?? expectedSession.authProfileOverride,
-      authProfileIdSource: resolveSessionAuthProfileOverrideSource(expectedSession),
+      authProfileIdSource: resolveCollapsedSessionAuthPinSource(expectedSession),
       contextTokenBudget,
       agentHarnessId: compactionCliTarget.agentHarnessId,
       cliSessionId: compactionCliTarget.cliSessionId,
@@ -436,7 +437,9 @@ export const handleCompactCommand: CommandHandler = async (params) => {
   const line = reason
     ? `${compactLabel}: ${reason} • ${contextSummary}`
     : `${compactLabel} • ${contextSummary}`;
-  runtime.enqueueSystemEvent(line, { sessionKey: params.sessionKey });
+  runtime.enqueueSystemEvent(line, {
+    sessionKey: resolveSystemEventQueueKey(params.sessionKey, sessionAgentId),
+  });
   return {
     shouldContinue: false,
     sessionCompaction: {

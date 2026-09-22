@@ -1,9 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import type {
-  WorkerSessionsSpawnParams,
-  WorkerSessionToolResult,
-} from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
-import type { WorkerSkillWorkshopParams } from "../../../packages/gateway-protocol/src/schema/worker-skill-workshop.js";
+import type { WorkerSessionsSpawnParams } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import { buildSubagentExecutionSessionSpawnContext } from "../../agents/subagents/spawn/subagent-spawn-execution-identity.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import {
@@ -11,6 +7,7 @@ import {
   callInProcessGatewayToolWithCreation,
   type AgentToolGatewayRequestCaller,
   type InProcessGatewayCaller,
+  runWithGatewayToolCleanupContext,
   withAgentToolGatewayRuntimeIdentity,
 } from "../../agents/tools/in-process-gateway.js";
 import { runWithScopedSessionAccess } from "../../agents/tools/scoped-session-access.js";
@@ -31,16 +28,13 @@ import type { WorkerEnvironmentService } from "./service.js";
 import {
   createWorkerPortalToolExecutor,
   type WorkerPortalToolExecutorDependencies,
-  type WorkerPortalToolRequest,
 } from "./worker-portal-tool-executor.js";
-import {
-  applyWorkerSessionToolPolicy,
-  type WorkerSessionOperationRequest,
-} from "./worker-session-tool-policy.js";
+import { applyWorkerSessionToolPolicy } from "./worker-session-tool-policy.js";
 import {
   serializeWorkerSessionToolResult as serializeResult,
   workerSessionToolErrorResult as errorResult,
   WorkerSessionToolOutcomeUnknownError,
+  type WorkerSessionToolExecutor,
 } from "./worker-session-tool-result.js";
 import { executeWorkerSessionSend } from "./worker-session-tool-send.js";
 import {
@@ -51,16 +45,6 @@ import {
   type WorkerSessionToolSource as ExactSource,
 } from "./worker-session-tool-topology.js";
 import { invokeWorkerSkillAuthoring } from "./worker-skill-authoring.js";
-
-type WorkerSessionToolRequest =
-  | WorkerPortalToolRequest
-  | WorkerSessionOperationRequest
-  | {
-      identity: WorkerConnectionIdentity;
-      signal?: AbortSignal;
-      toolName: "skill_workshop";
-      request: WorkerSkillWorkshopParams;
-    };
 
 type WorkerSessionToolAuthority = {
   assertSource: () => void;
@@ -92,7 +76,7 @@ export function createWorkerSessionToolExecutor(params: {
   environments: Pick<WorkerEnvironmentService, "get">;
   dispatchChild: WorkerPlacementDispatchContract["dispatch"];
   portals: WorkerPortalToolExecutorDependencies["portals"];
-}) {
+}): WorkerSessionToolExecutor {
   const inFlight = new Map<string, Promise<string>>();
   const executePortal = createWorkerPortalToolExecutor(params);
 
@@ -204,12 +188,10 @@ export function createWorkerSessionToolExecutor(params: {
     ): Promise<T> => {
       if (method !== "sessions.create") {
         // Cleanup settles the already-created child even after its source closes.
-        return await callAgentToolGatewayRequest<T>({
-          method,
-          params: requestParams,
-          ...(operation.signal ? { signal: operation.signal } : {}),
-          timeoutMs: null,
-        });
+        return await runWithGatewayToolCleanupContext(
+          () => callAgentToolGatewayRequest<T>({ method, params: requestParams, timeoutMs: null }),
+          params.resolveGatewayContext,
+        );
       }
       assertSource();
       let loaded = loadGatewaySessionEntryReadOnly(operation.childSessionKey, {
@@ -459,7 +441,7 @@ export function createWorkerSessionToolExecutor(params: {
     });
   };
 
-  return async (request: WorkerSessionToolRequest): Promise<WorkerSessionToolResult> => {
+  return async (request) => {
     const source = exactSource({ identity: request.identity, placements: params.placements });
     if (request.toolName === "skill_workshop") {
       if (!params.placements.isWorkerTurnToolAuthorized(source.turnClaim, "skill_workshop")) {

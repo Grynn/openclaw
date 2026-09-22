@@ -316,6 +316,14 @@ export function assertVitestResourceContextSafeNodeArgv(
     throw new Error("Invalid owned Vitest Node child entry boundary");
   }
   assertNoUnsafeNodeStartupHooks(args.slice(0, entryIndex), "Node argv");
+  if (entry !== "--" && entry !== "-" && entry.startsWith("-")) {
+    // Eval/print do not end Node option parsing (print may also omit its source).
+    // Keep hook-shaped literal operands behind an explicit `--`; do not duplicate
+    // Node's evolving flag-arity table to guess where an eval argument begins.
+    const tail = args.slice(entryIndex + 1);
+    const separator = tail.indexOf("--");
+    assertNoUnsafeNodeStartupHooks(separator < 0 ? tail : tail.slice(0, separator), "Node argv");
+  }
 }
 
 // Node's NODE_OPTIONS grammar uses literal-space delimiters, double quotes,

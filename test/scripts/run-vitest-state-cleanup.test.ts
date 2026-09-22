@@ -4,8 +4,8 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
-import { afterEach, expect, it, vi } from "vitest";
-import type { JsonTestResults } from "vitest/reporters";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
+import type { JsonTestResults } from "vitest/node";
 import packageJson from "../../package.json" with { type: "json" };
 import { runManagedCommand } from "../../scripts/lib/managed-child-process.mts";
 import { resolveVitestHomeSelection } from "../../scripts/lib/vitest-home-selection.mts";
@@ -29,20 +29,27 @@ import {
 } from "../../src/infra/vitest-resource-context.test-support.js";
 import {
   applyVitestResourceContextToChildEnv,
+  getVitestResourceContext,
   type VitestResourceContextDescriptor,
   VITEST_RESOURCE_CONTEXT_SYMBOL,
 } from "../../src/infra/vitest-resource-ownership.js";
 import { resolveOpenClawStateSqlitePath } from "../../src/state/openclaw-state-db.paths.js";
+import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { createFixtureLifetime } from "../helpers/fixture-lifetime.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { installTestEnv } from "../test-env.js";
 import { proveNestedRetention } from "./nested-retention.test-support.js";
+import { createPreparedWorkerCompiler } from "./vitest-worker-artifacts.prepared.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const nestedLifetime = createFixtureLifetime();
 afterEach(() => nestedLifetime.cleanup());
 const repoRoot = path.resolve(import.meta.dirname, "../..");
 const posixIt = process.platform === "win32" ? it.skip : it;
+const testNodeExecPath = resolveTestNodeExecPath();
+const preparedCompiler = process.platform === "win32" ? undefined : createPreparedWorkerCompiler();
+beforeAll(() => preparedCompiler?.prepare());
+afterAll(() => preparedCompiler?.cleanup());
 
 function isProcessAlive(pid: number): boolean {
   try {
@@ -76,11 +83,11 @@ const counterfactualFailure = "counterfactual first-file failure after allocatio
 const fixtureTests = [
   [
     "tui-pty-harness.e2e.test.ts",
-    "opens actual fallback SQLite and retains it until the worker finishes",
+    "opens actual fallback SQLite and retains it until file drainage",
   ],
   [
     "tui-pty-local.e2e.test.ts",
-    "keeps the same worker namespace alive across files and module resets",
+    "keeps the worker namespace and stored rows across file drainage and module resets",
   ],
 ] as const;
 
@@ -104,7 +111,12 @@ function expectFixtureResults(
           ? intentionalFailure
           : undefined;
     const expectedStatus = failure ? "failed" : "passed";
-    expect(file.status, file.name).toBe(expectedStatus);
+    const childFailureMessages = file.assertionResults
+      .flatMap(({ failureMessages }) => failureMessages ?? [])
+      .join("\n");
+    expect(file.status, `${file.name}\n${file.message}\n${childFailureMessages}`).toBe(
+      expectedStatus,
+    );
     expect(file.message, file.name).toBe("");
     expect(
       file.assertionResults.map(
@@ -330,6 +342,7 @@ it(${JSON.stringify(fixtureTests[0][1])}, () => {
   closeOpenClawStateDatabaseForTest();
   expect(first.db.isOpen).toBe(false);
   const reopened = openOpenClawStateDatabase();
+  reopened.db.exec("CREATE TABLE worker_lifetime_sentinel(value TEXT); INSERT INTO worker_lifetime_sentinel VALUES ('retained')");
   const fallback = openOpenClawStateDatabase({ env: {} });
   expect(fallback.path).toBe(fallbackPath);
   const explicit = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: ${JSON.stringify(path.dirname(path.dirname(explicitPath)))} } });
@@ -353,12 +366,14 @@ const { openOpenClawStateDatabase } = await import(${databaseModule});
 const resources = await allocateResources();
 it(${JSON.stringify(fixtureTests[1][1])}, () => {
   expect(process.pid).toBe(previous.pid);
-  expect(previous.reopened.db.isOpen).toBe(true);
-  expect(previous.explicit.db.isOpen).toBe(true);
-  expect(previous.fallback.db.isOpen).toBe(true);
+  expect(previous.reopened.db.isOpen).toBe(false);
+  expect(previous.explicit.db.isOpen).toBe(false);
+  expect(previous.fallback.db.isOpen).toBe(false);
   expect(assertHomeBoundary()).toBe(previous.fallback.path);
   const current = openOpenClawStateDatabase();
   expect(current.path).toBe(previous.reopened.path);
+  expect(current.db === previous.reopened.db).toBe(false);
+  expect(current.db.prepare("SELECT value FROM worker_lifetime_sentinel").get().value).toBe("retained");
   expect(current.db.prepare("SELECT count(*) AS count FROM sqlite_schema").get().count).toBeGreaterThan(0);
   expect(fs.existsSync(current.path)).toBe(true);
   expect(resources.home).toBe(previous.resources.home);
@@ -503,12 +518,22 @@ process.exitCode = (await completion).code ?? 1;`,
                     "--",
                     ...vitestArgs,
                   ];
+    // Keep each real runner's generation and cleanup independent; reuse only compiled bytes.
+    const childEnv =
+      preparedCompiler && (route === "main" || route === "batch")
+        ? preparedCompiler.env(env, "node")
+        : env;
     try {
       const result = await new Promise<{ code: ExecException["code"]; output: string }>(
         (resolve) => {
-          execFile(process.execPath, args, { cwd: root, env }, (error, stdout, stderr) => {
-            resolve({ code: error ? error.code : 0, output: stdout + stderr });
-          });
+          execFile(
+            testNodeExecPath,
+            args,
+            { cwd: root, env: childEnv },
+            (error, stdout, stderr) => {
+              resolve({ code: error ? error.code : 0, output: stdout + stderr });
+            },
+          );
         },
       );
       expect(result.code, result.output).toBe(failRun ? 1 : 0);
@@ -520,6 +545,7 @@ process.exitCode = (await completion).code ?? 1;`,
           acknowledged: true,
           code: null,
           signal: "SIGKILL",
+          deadline: { delay: 60_000, liveTimers: 1, stopped: true, advanced: 1, error: null },
         });
       }
       const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8")) as {
@@ -628,6 +654,10 @@ it.each([
   { args: ["run", "--project=unit"], expected: "live-aware" },
   { args: ["run", "--config", "test/vitest/vitest.live.config.ts"], expected: "live-aware" },
   {
+    args: ["run", "--config", "test/vitest/vitest.package-contract.config.ts"],
+    expected: "live-aware",
+  },
+  {
     args: ["run", "--config", "test/vitest/vitest.full-core-runtime.config.ts", "--project=*"],
     expected: "live-aware",
   },
@@ -723,7 +753,7 @@ it.each([
     });
     expect(homeMode).toBe(expected);
     const spec = {
-      command: process.execPath,
+      command: testNodeExecPath,
       nodeEntryIndex: 1,
       args: [
         "--input-type=module",
@@ -763,11 +793,11 @@ console.log(JSON.stringify({ namespace: os.tmpdir(), homes: [os.homedir(), homed
       Array(4).fill(expected === "hermetic" ? path.join(observed.namespace, "home") : home),
     );
     expect(observed.live).toBe(expected === "hermetic" ? undefined : "1");
-    expect(observed.productionLockRoot).toBe(
-      process.platform === "win32"
-        ? path.join(home, "AppData", "Local", "OpenClaw", "locks")
-        : "/tmp",
-    );
+    const inheritedContext = getVitestResourceContext();
+    if (inheritedContext?.kind !== "owned") {
+      throw new Error("expected inherited owned Vitest context");
+    }
+    expect(observed.productionLockRoot).toBe(inheritedContext.productionRuntimeDirectory);
     expect(fs.existsSync(home)).toBe(true);
     expect(fs.existsSync(observed.namespace)).toBe(process.platform === "win32");
   },
@@ -778,7 +808,7 @@ it("retains native home after child and pipes close when descendants cannot be v
   const parent = createVitestResourceOwner(root);
   const log = vi.spyOn(console, "error").mockImplementation(() => {});
   const { child, completion } = spawnOwnedVitestProcess({
-    command: process.execPath,
+    command: testNodeExecPath,
     nodeEntryIndex: 1,
     args: [
       "--input-type=module",
@@ -1005,7 +1035,7 @@ it("publishes one cloneable context for the process and execArgv-empty Workers",
     `,
     { eval: true, execArgv: [] },
   );
-  const observed = await new Promise<{
+  const response = new Promise<{
     globalPublished: boolean;
     kind: string;
     launcherOwners: Array<{ root: string; identity: string }>;
@@ -1016,18 +1046,23 @@ it("publishes one cloneable context for the process and execArgv-empty Workers",
     worker.once("message", resolve);
     worker.once("error", reject);
   });
-  expect(observed).toEqual({
-    globalPublished: false,
-    kind: "owned",
-    launcherOwners: descriptor.owners,
-    launcherProductionRuntimeDirectory: descriptor.productionRuntimeDirectory,
-    owners: descriptor.owners.map(({ root, identity }) => ({
-      root,
-      identity,
-      claimType: "function",
-    })),
-    productionRuntimeDirectory: descriptor.productionRuntimeDirectory,
-  });
+  try {
+    const observed = await response;
+    expect(observed).toEqual({
+      globalPublished: false,
+      kind: "owned",
+      launcherOwners: descriptor.owners,
+      launcherProductionRuntimeDirectory: descriptor.productionRuntimeDirectory,
+      owners: descriptor.owners.map(({ root, identity }) => ({
+        root,
+        identity,
+        claimType: "function",
+      })),
+      productionRuntimeDirectory: descriptor.productionRuntimeDirectory,
+    });
+  } finally {
+    await worker.terminate();
+  }
 });
 
 it("composes complete owned context into child env and rejects partial or conflicting tuples", () => {
@@ -1154,32 +1189,6 @@ it("retains only the trusted lifecycle preload through test environment setup", 
     } else {
       process.env.NODE_OPTIONS = originalNodeOptions;
     }
-  }
-});
-
-it("keeps the test-only environment parser out of the production coordinator graph", () => {
-  const coordinatorSource = fs.readFileSync(
-    path.join(repoRoot, "src/infra/state-database-coordinator.ts"),
-    "utf8",
-  );
-  const ownershipSource = fs.readFileSync(
-    path.join(repoRoot, "src/infra/vitest-resource-ownership.ts"),
-    "utf8",
-  );
-  for (const testSupportModule of [
-    "vitest-resource-context.test-support",
-    "vitest-resource-context-preload.test-support",
-  ]) {
-    expect(coordinatorSource).not.toContain(testSupportModule);
-    expect(ownershipSource).not.toContain(testSupportModule);
-  }
-  for (const marker of [
-    VITEST_OPENCLAW_RESOURCE_ROOT,
-    VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN,
-    VITEST_OPENCLAW_PRODUCTION_LOCK_ROOT,
-  ]) {
-    expect(coordinatorSource).not.toContain(marker);
-    expect(ownershipSource).not.toContain(marker);
   }
 });
 
@@ -1348,6 +1357,49 @@ it("allows loader-shaped application arguments after a declared Node entry scrip
   });
   await expect(completion).resolves.toMatchObject({ code: 0 });
   expect(JSON.parse(fs.readFileSync(launched, "utf8"))).toEqual(["--loader", "application-value"]);
+});
+
+it.each([
+  ["eval source", ["-e", "0"]],
+  ["print source", ["-p", "0"]],
+  ["print without source", ["-p"]],
+] as const)("rejects startup hooks after %s before allocation", (_name, entry) => {
+  const root = tempDirs.make("oc-vt-eval-hook-");
+  const hook = path.join(root, "hook.cjs");
+  const launched = path.join(root, "launched");
+  fs.writeFileSync(hook, `require("node:fs").writeFileSync(${JSON.stringify(launched)}, "ran");`);
+
+  expect(() =>
+    spawnOwnedVitestProcess({
+      command: testNodeExecPath,
+      nodeEntryIndex: 0,
+      args: [...entry, "--require", hook],
+      homeMode: "tooling",
+      options: { env: { TMPDIR: root }, stdio: "ignore" },
+    }),
+  ).toThrow("Node argv require hooks are unsafe");
+  expect(fs.existsSync(launched)).toBe(false);
+  expect(fs.readdirSync(root)).toEqual(["hook.cjs"]);
+});
+
+it("preserves explicit eval application arguments after the Node separator", async () => {
+  const root = tempDirs.make("oc-vt-eval-application-");
+  const receipt = path.join(root, "argv.json");
+  const { completion } = spawnOwnedVitestProcess({
+    command: testNodeExecPath,
+    nodeEntryIndex: 0,
+    args: [
+      "-e",
+      `require("node:fs").writeFileSync(${JSON.stringify(receipt)}, JSON.stringify(process.argv.slice(1)));`,
+      "--",
+      "--require",
+      "application-value",
+    ],
+    homeMode: "tooling",
+    options: { env: { TMPDIR: root }, stdio: "ignore" },
+  });
+  await expect(completion).resolves.toMatchObject({ code: 0 });
+  expect(JSON.parse(fs.readFileSync(receipt, "utf8"))).toEqual(["--require", "application-value"]);
 });
 
 it("requires a valid explicit entry boundary for Node runtime options before allocating", () => {
@@ -1565,7 +1617,7 @@ it("removes only its namespace when spawning fails before acquiring a PID", asyn
   const options = { env: { TMPDIR: root }, stdio: "ignore" as const };
   expect(() => spawnOwnedVitestProcess({ command: "", args: [], options })).toThrow();
   const { child, completion } = spawnOwnedVitestProcess({
-    command: process.execPath,
+    command: testNodeExecPath,
     args: [],
     options: { ...options, cwd: path.join(root, "missing") },
   });
@@ -1643,7 +1695,7 @@ posixIt.each([
   const parent = createVitestResourceOwner(root);
   const receipt = path.join(root, "namespace");
   const { completion } = spawnOwnedVitestProcess({
-    command: process.execPath,
+    command: testNodeExecPath,
     nodeEntryIndex: 1,
     args: [
       "--input-type=module",
@@ -1697,13 +1749,13 @@ posixIt("rejects resource registration before allocating inputs or launching wor
   const env = { TMPDIR: root, TMP: root, TEMP: root };
   expect(() =>
     spawnOwnedVitestProcess({
-      command: process.execPath,
+      command: testNodeExecPath,
       args,
       nodeEntryIndex: 0,
       options: { env },
     }),
   ).toThrow();
-  await expect(runManagedCommand({ bin: process.execPath, args, env })).rejects.toThrow();
+  await expect(runManagedCommand({ bin: testNodeExecPath, args, env })).rejects.toThrow();
   for (const [key, value] of Object.entries(env)) {
     vi.stubEnv(key, value);
   }
@@ -1743,7 +1795,7 @@ posixIt(
     createVitestResourceOwner(root);
     const receipt = path.join(root, "namespace");
     const { child, completion } = spawnOwnedVitestProcess({
-      command: process.execPath,
+      command: testNodeExecPath,
       nodeEntryIndex: 0,
       args: [
         "-e",

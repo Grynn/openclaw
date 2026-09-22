@@ -6,7 +6,7 @@ export function runBuiltCli(
   tempHome: string,
   args: string[],
   envOverrides: NodeJS.ProcessEnv = {},
-  options: { inheritEnvironment?: boolean } = {},
+  options: { inheritEnvironment?: boolean; execArgv?: string[] } = {},
 ) {
   const env: NodeJS.ProcessEnv = {
     ...(options.inheritEnvironment === false ? { PATH: process.env.PATH } : process.env),
@@ -22,7 +22,7 @@ export function runBuiltCli(
   applyVitestResourceContextToChildEnv(env);
 
   const entry = path.resolve(process.cwd(), "openclaw.mjs");
-  return spawnSync(process.execPath, [entry, ...args], {
+  return spawnSync(process.execPath, [...(options.execArgv ?? []), entry, ...args], {
     cwd: process.cwd(),
     env,
     encoding: "utf8",

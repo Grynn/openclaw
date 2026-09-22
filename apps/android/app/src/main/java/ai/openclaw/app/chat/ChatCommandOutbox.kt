@@ -218,9 +218,6 @@ sealed interface ChatOutboxEnqueueResult {
  * switch cannot re-scope rows mid-operation.
  */
 interface ChatCommandOutbox {
-  val supportsBranchCoordination: Boolean
-    get() = false
-
   /** All rows for [gatewayId] with attachment metadata, strictly createdAt-ordered. */
   suspend fun load(gatewayId: String): List<ChatOutboxItem>
 
@@ -305,27 +302,27 @@ interface ChatCommandOutbox {
   suspend fun branchState(
     gatewayId: String,
     scope: ChatOutboxScope,
-  ): ChatOutboxBranchState? = null
+  ): ChatOutboxBranchState?
 
   /** Installs the session-mutation lease only when this scope has no unconfirmed delivery. */
   suspend fun beginSessionMutation(
     gatewayId: String,
     scope: ChatOutboxScope,
     nowMs: Long,
-  ): ChatOutboxMutationLease? = null
+  ): ChatOutboxMutationLease?
 
   suspend fun cancelSessionMutation(
     gatewayId: String,
     scope: ChatOutboxScope,
     lease: ChatOutboxMutationLease,
-  ): Boolean = false
+  ): Boolean
 
   /** Demotes and returns the same-transaction baseline used to classify later enqueues. */
   suspend fun demoteSessionMutationToReconciliationState(
     gatewayId: String,
     scope: ChatOutboxScope,
     lease: ChatOutboxMutationLease? = null,
-  ): ChatOutboxBranchState? = null
+  ): ChatOutboxBranchState?
 
   /**
    * Returns committed authority. History publication never adopts earlier input; branch listing
@@ -338,7 +335,7 @@ interface ChatCommandOutbox {
     activeLeafEntryId: String?,
     activeTranscriptEntryIds: Set<String>,
     lastError: String,
-  ): ChatOutboxBranchState? = null
+  ): ChatOutboxBranchState?
 
   suspend fun confirmBranchChange(
     gatewayId: String,
@@ -346,7 +343,7 @@ interface ChatCommandOutbox {
     activeLeafEntryId: String?,
     lastError: String,
     lease: ChatOutboxMutationLease? = null,
-  ): Boolean = false
+  ): Boolean
 
   /** Drops queued commands for a deleted session so they cannot send into a dead session. */
   suspend fun deleteForSession(
@@ -643,8 +640,6 @@ internal interface ChatOutboxDao {
 class RoomChatCommandOutbox internal constructor(
   private val database: ClientStateDatabase,
 ) : ChatCommandOutbox {
-  override val supportsBranchCoordination: Boolean = true
-
   internal data class DeliveryState(
     val attemptVersion: Int,
     val branchEpoch: Int,
@@ -663,13 +658,12 @@ class RoomChatCommandOutbox internal constructor(
       rows.map { row ->
         val scope = row.branchScope()
         ensureBranchScopeLocked(gateway, scope)
-        ensureDeliveryStateLocked(row.id, gateway, scope)
+        val branch = ensureDeliveryStateLocked(row, scope)
         val delivery = checkNotNull(readDeliveryStateLocked(row.id))
-        val branch = checkNotNull(readBranchStateLocked(gateway, scope))
         row.toItem(
           attachments = attachmentsByCommand[row.id].orEmpty(),
           deliveryState = delivery,
-          scopeBranchEpoch = branch.epoch,
+          scopeBranchEpoch = checkNotNull(branch).epoch,
         )
       }
     }
@@ -851,7 +845,7 @@ class RoomChatCommandOutbox internal constructor(
     database.withWriteTransaction {
       ensureBranchStorageLocked()
       val dao = database.outboxDao()
-      val row = dao.allCommands().firstOrNull { it.id == id } ?: return@withWriteTransaction 0
+      val row = dao.command(id) ?: return@withWriteTransaction 0
       val delivery = readDeliveryStateLocked(id) ?: return@withWriteTransaction 0
       if (delivery.attemptVersion != expectedAttemptVersion) return@withWriteTransaction 0
       val scope = row.branchScope()
@@ -884,7 +878,7 @@ class RoomChatCommandOutbox internal constructor(
           ?: throw IllegalStateException("cannot pin an ownerless outbox row")
       val previousScope = row.branchScope()
       ensureBranchScopeLocked(row.gatewayId, previousScope)
-      ensureDeliveryStateLocked(id, row.gatewayId, previousScope)
+      ensureDeliveryStateLocked(row, previousScope)
       val delivery = checkNotNull(readDeliveryStateLocked(id))
       val nextScope = ChatOutboxScope(key, owner)
       ensureBranchScopeLocked(row.gatewayId, nextScope)
@@ -1232,7 +1226,7 @@ class RoomChatCommandOutbox internal constructor(
       for (row in sendingRows) {
         val scope = row.branchScope()
         ensureBranchScopeLocked(row.gatewayId, scope)
-        ensureDeliveryStateLocked(row.id, row.gatewayId, scope)
+        ensureDeliveryStateLocked(row, scope)
       }
       usePrepared(
         "UPDATE outbox_delivery_state SET hadUnacknowledgedSend = 1 WHERE commandId IN " +
@@ -1326,27 +1320,24 @@ class RoomChatCommandOutbox internal constructor(
   }
 
   private suspend fun PooledConnection.ensureDeliveryStateLocked(
-    commandId: String,
-    gatewayId: String,
+    command: OutboxCommandEntity,
     scope: ChatOutboxScope,
-  ) {
-    val branchEpoch = readBranchStateLocked(gatewayId, scope)?.epoch ?: 0
-    val command = database.outboxDao().command(id = commandId)
+  ): ChatOutboxBranchState? {
+    val branch = readBranchStateLocked(command.gatewayId, scope)
     val hadUnacknowledgedSend =
-      command?.let { row ->
-        ChatOutboxStatus.fromDb(row.status) == ChatOutboxStatus.Failed &&
-          chatOutboxDisplayError(row.lastError) == OUTBOX_DELIVERY_UNCONFIRMED_ERROR
-      } == true
+      ChatOutboxStatus.fromDb(command.status) == ChatOutboxStatus.Failed &&
+        chatOutboxDisplayError(command.lastError) == OUTBOX_DELIVERY_UNCONFIRMED_ERROR
     usePrepared(
       "INSERT OR IGNORE INTO outbox_delivery_state(" +
         "commandId, attemptVersion, branchEpoch, parkedWasAccepted, hadUnacknowledgedSend" +
         ") VALUES (?, 1, ?, 0, ?)",
     ) { statement ->
-      statement.bindText(1, commandId)
-      statement.bindInt(2, branchEpoch)
+      statement.bindText(1, command.id)
+      statement.bindInt(2, branch?.epoch ?: 0)
       statement.bindBoolean(3, hadUnacknowledgedSend)
       statement.step()
     }
+    return branch
   }
 
   private suspend fun PooledConnection.insertDeliveryStateLocked(

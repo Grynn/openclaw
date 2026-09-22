@@ -1,9 +1,10 @@
 /** Prunes expired per-run cron sessions and archives unreferenced transcripts. */
 import path from "node:path";
+import { hasDescendantRunAwaitingSettle } from "../agents/subagents/registry/subagent-registry-read.js";
 import { parseDurationMs } from "../cli/parse-duration.js";
 import {
   applySessionEntryLifecycleMutation,
-  listSessionEntriesCore,
+  listSessionEntriesReadOnly,
   loadExactSessionEntryReadOnly,
   type SessionEntryLifecycleRemoval,
 } from "../config/sessions/session-accessor.js";
@@ -12,7 +13,9 @@ import type { CronConfig } from "../config/types.cron.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
+import { isCompetingSessionWorkAdmissionActive } from "../sessions/session-lifecycle-admission.js";
 import { buildPendingGeneratedMediaSessionKeySet } from "../tasks/task-status-access.js";
+import { deleteCronSessionViaGateway } from "./isolated-agent/session-cleanup.js";
 import { resolveCronAgentSessionKey } from "./isolated-agent/session-key.js";
 import type { Logger } from "./service/state.js";
 
@@ -73,6 +76,15 @@ export async function removeCronJobBaseSession(params: {
   if (!existing) {
     return false;
   }
+  const sessionId = existing.sessionId.trim();
+  if (sessionId) {
+    return await deleteCronSessionViaGateway({
+      agentSessionKey: sessionKey,
+      sessionId,
+      lifecycleRevision: existing.lifecycleRevision,
+      sessionUpdatedAt: existing.updatedAt,
+    });
+  }
   const result = await applySessionEntryLifecycleMutation({
     agentId: params.agentId,
     storePath: params.sessionStorePath,
@@ -92,6 +104,7 @@ export async function sweepCronRunSessions(params: {
   agentId: string;
   /** Resolved session-store target, interpreted by the SQLite accessor. */
   sessionStorePath: string;
+  isAgentAvailable?: (agentId: string) => boolean;
   nowMs?: number;
   log: Logger;
 }): Promise<ReaperResult> {
@@ -120,13 +133,31 @@ export async function sweepCronRunSessions(params: {
   let pruned = 0;
   let transcriptCleanupError: unknown;
   try {
+    if (params.isAgentAvailable?.(params.agentId) === false) {
+      params.log.debug({ agentId: params.agentId }, "cron-reaper: skipped unavailable agent");
+      return { swept: false, pruned: 0 };
+    }
     const cutoff = now - retentionMs;
     const requestedOwner = normalizeAgentId(params.agentId);
     let pendingMediaSessionKeys: Set<string> | undefined;
     const removals: SessionEntryLifecycleRemoval[] = [];
     // The accessor keeps agentId logical for admission checks and resolves a shared
     // store's physical database owner internally through its SQLite scope.
-    for (const { sessionKey, entry } of listSessionEntriesCore({
+    //
+    // Use the read-only listing here, not listSessionEntriesCore. The reaper only
+    // reads rows to decide removals; the writable open runs a synchronous
+    // `PRAGMA integrity_check` plus foreign-key check on every open, and this sweep
+    // fires per agent id every MIN_SWEEP_INTERVAL_MS, so on a large fleet it re-checks
+    // every agent database on the main thread and stalls the event loop (see #142476).
+    // The read-only open skips that gate. It also stays off the writable open's
+    // handle-cache path, which evicts an LRU handle and releases its lease through a
+    // write transaction on the shared state database, serialized on the state
+    // coordinator: a warm cache does not make this sweep cheap either, because the
+    // eviction cost is paid per open whether or not the file is reopened.
+    // The default "full" projection still returns owned entries that are safe to hold
+    // across the await below, and the actual pruning write
+    // (applySessionEntryLifecycleMutation) keeps its own integrity gate.
+    for (const { sessionKey, entry } of listSessionEntriesReadOnly({
       agentId: params.agentId,
       storePath,
     })) {
@@ -145,9 +176,17 @@ export async function sweepCronRunSessions(params: {
         // Build one unordered snapshot only when an expired continuation needs it.
         // Fresh rows and stores without continuations never touch the task registry.
         pendingMediaSessionKeys ??= buildPendingGeneratedMediaSessionKeySet();
-        if (pendingMediaSessionKeys.has(sessionKey)) {
+        if (pendingMediaSessionKeys.has(sessionKey) || hasDescendantRunAwaitingSettle(sessionKey)) {
           continue;
         }
+      }
+      // Skip known-busy rows so one active generation cannot abort idle sibling cleanup.
+      // The shared deletion guard still closes the race between selection and commit.
+      if (
+        entry.sessionId &&
+        isCompetingSessionWorkAdmissionActive(storePath, [sessionKey, entry.sessionId])
+      ) {
+        continue;
       }
       removals.push({
         sessionKey,
@@ -167,6 +206,19 @@ export async function sweepCronRunSessions(params: {
         agentId: params.agentId,
         storePath,
         removals,
+        beforeCommitInTransaction: () => {
+          // Descendants can acquire the continuation while deletion preparation awaits.
+          for (const removal of removals) {
+            if (
+              removal.expectedEntry?.cronRunContinuation &&
+              hasDescendantRunAwaitingSettle(removal.sessionKey)
+            ) {
+              throw new Error(
+                `Cannot prune cron run continuation while subagents await settlement for ${removal.sessionKey}`,
+              );
+            }
+          }
+        },
         ...(archiveRetentionMs == null
           ? {}
           : {

@@ -84,7 +84,8 @@ export function spawnOwnedVitestProcess(spec: {
   };
   let child;
   try {
-    const containingRoot = fs.realpathSync(env.TMPDIR || env.TMP || env.TEMP || tmpdir());
+    // Native realpath expands Windows short names before children create filesystem watchers.
+    const containingRoot = fs.realpathSync.native(env.TMPDIR || env.TMP || env.TEMP || tmpdir());
     // An intermediate runner can die before publishing its own cleanup result.
     // Its containing owner must already hold the obligation before allocation.
     const containingOwner = findVitestResourceOwner(containingRoot);
@@ -110,6 +111,11 @@ export function spawnOwnedVitestProcess(spec: {
       [VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN]: JSON.stringify(resourceRoots),
       [VITEST_OPENCLAW_PRODUCTION_LOCK_ROOT]: productionLockRoot,
     };
+    if (mode !== "tooling") {
+      // The tooling shim avoids the shared tsx cache. Test children have this owned
+      // temp namespace, so source subprocesses can reuse transforms until cleanup.
+      delete childEnv.TSX_DISABLE_CACHE;
+    }
     if (mode !== "tooling" && !(policy.live && policy.allowRealHome)) {
       const nativeHome = path.join(tempRoot, "home");
       fs.mkdirSync(nativeHome);
@@ -149,7 +155,7 @@ export function spawnOwnedVitestProcess(spec: {
           `[vitest] retained temporary namespace ${tempRoot}; descendant completion is unverified on this non-group launch. Stop the remaining writers before removing this exact directory.`,
         );
       }
-      return result;
+      return { ...result, groupJoined: verifiedGroup };
     } catch (error) {
       // A failed parent receipt can follow successful child disposal. Report
       // the still-owned ancestor, not a child directory already removed.

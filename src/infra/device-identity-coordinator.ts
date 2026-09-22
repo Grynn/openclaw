@@ -3,10 +3,10 @@ import {
   resolveDeviceIdentityCoordinatorPath,
   resolveDeviceIdentityCoordinatorPaths,
 } from "./device-identity-coordinator-paths.js";
-import { tryAcquireExclusiveSqliteCoordinator } from "./node-sqlite.js";
 import {
   ensurePrivateSqliteCoordinatorDirectory,
   SqliteCoordinatorError,
+  tryAcquireExclusiveSqliteCoordinator,
 } from "./sqlite-coordinator.js";
 import {
   acquireStateDatabaseCoordinator,
@@ -90,7 +90,7 @@ export function acquireDeviceIdentityCoordinator(params: DeviceIdentityCoordinat
   }
   const stateCoordinatorPath = resolveStateDatabaseCoordinatorPath({
     databasePath: params.databasePath,
-    runtimeDirectory: resolveStateLifecycleRuntimeDirectory(),
+    runtimeDirectory: resolveStateLifecycleRuntimeDirectory(params.databasePath),
     uid: typeof process.getuid === "function" ? process.getuid() : undefined,
   });
   const coordinators: Array<{ release: () => void }> = [];
