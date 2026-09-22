@@ -241,11 +241,12 @@ export async function runReclamationWorkerPort(
         async (options) => {
           if (request.type === "close") {
             const cleanup = await closeDatabase();
-            if (pooledTask) {
-              if (!cleanup.settled) {
-                throw new Error("Canonical validation task could not close its agent database");
-              }
-              // Keep native close under this task's coordinator and parent's writer admission.
+            if (pooledTask && !cleanup.settled) {
+              throw new Error("Canonical validation task could not close its agent database");
+            }
+            if (cleanup.settled) {
+              // Both pooled and standalone workers must close native shared state before
+              // acknowledging retirement, while the parent's writer admission is held.
               closeOpenClawStateDatabaseByPath(request.coordination.databasePath);
             }
             return {

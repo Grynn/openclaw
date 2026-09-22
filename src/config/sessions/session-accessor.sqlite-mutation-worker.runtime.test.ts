@@ -29,7 +29,9 @@ vi.mock("../../infra/kysely-sync-cache-state.js", () => ({
 }));
 vi.mock("../../state/openclaw-agent-canonical-validation-receipt.js", () => ({}));
 vi.mock("../../state/openclaw-agent-db-readonly-open.js", () => ({}));
-vi.mock("../../state/openclaw-state-db-cache.js", () => ({}));
+vi.mock("../../state/openclaw-state-db-cache.js", () => ({
+  closeOpenClawStateDatabaseByPath: () => {},
+}));
 vi.mock("../../state/openclaw-agent-db-identity.js", () => ({
   createOpenClawAgentDatabaseClaim: () => ({ assertCurrent() {}, release() {} }),
 }));
