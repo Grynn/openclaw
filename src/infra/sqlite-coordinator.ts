@@ -151,6 +151,8 @@ const coordinatorPool = resolveGlobalSingleton(
     exitCloseRegistered: false,
     closeOnExit: closeIdleCoordinatorsOnExit,
   }),
+  () => closeIdleCoordinatorPool(),
+  "close-only",
 );
 const {
   runInCoordinatorPoolContext,
@@ -238,20 +240,17 @@ function closeIdleCoordinatorsOnExit() {
   }
 }
 
-/** Dispose a removed runtime's idle connections after its active owners have settled. */
-export function closeIdleSqliteCoordinators(rootPath: string): void {
-  const root = path.resolve(rootPath);
+function closeIdleCoordinatorPool(include?: (location: string) => boolean): void {
   const databases = new Map(
     [...failedIdleCloses].filter(
       ([database, location]) =>
-        isPathInside(root, location) ||
-        failedAcquisitionSettlements
-          .get(database)
-          ?.paths.some((owned) => isPathInside(root, owned)),
+        !include ||
+        include(location) ||
+        failedAcquisitionSettlements.get(database)?.paths.some(include),
     ),
   );
   for (const [location] of idleCoordinators) {
-    if (!isPathInside(root, location)) {
+    if (include && !include(location)) {
       continue;
     }
     const idle = takeIdleCoordinator(location);
@@ -268,7 +267,7 @@ export function closeIdleSqliteCoordinators(rootPath: string): void {
     }
   }
   for (const settlement of noHandleSettlements.values()) {
-    if (!settlement.paths.some((owned) => isPathInside(root, owned))) {
+    if (include && !settlement.paths.some(include)) {
       continue;
     }
     try {
@@ -278,6 +277,12 @@ export function closeIdleSqliteCoordinators(rootPath: string): void {
     }
   }
   throwSqliteLifecycleErrors(errors, "Idle SQLite coordinator cleanup failed");
+}
+
+/** Dispose a removed runtime's idle connections after its active owners have settled. */
+export function closeIdleSqliteCoordinators(rootPath: string): void {
+  const root = path.resolve(rootPath);
+  closeIdleCoordinatorPool((location) => isPathInside(root, location));
 }
 
 function readCoordinatorIdentity(location: string): fs.BigIntStats | undefined {

@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { serialize } from "node:v8";
 import { INCOGNITO_AGENT_SQLITE_BASENAME } from "../state/openclaw-agent-db.paths.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../state/openclaw-state-db-contract.js";
+import { resolveRuntimeProcessEntrypointUrl } from "./runtime-process-url.js";
 import type {
   PreparedSqliteWorkerOpen,
   SqliteWorkerStoreOptions,
@@ -59,9 +60,13 @@ export function captureSqliteWorkerOpen(
     throw new Error("Owned SQLite Worker admission requires an existing physical identity");
   }
   assertOpening?.();
+  const carrier = resolveRuntimeProcessEntrypointUrl("sqliteStore");
+  const carrierUrl = options.runtimeGeneration?.resolve(carrier) ?? carrier;
   return {
     ...native,
     ...(preparation !== undefined ? { preparation: serialize(preparation) } : {}),
+    runtimeGeneration: options.runtimeGeneration,
+    carrierUrl,
     createAdmission:
       createAdmission && inCaller ? (operation) => inCaller(createAdmission, operation) : undefined,
     assertCurrent: assertOpening,
@@ -235,12 +240,16 @@ export function assertSqliteWorkerActorReusable(
   moduleUrl: string,
   inputHash: string,
   stateContext: SqliteWorkerStateContext | undefined,
+  runtimeGeneration: Actor["runtimeGeneration"],
 ): void {
   if (actor.slot.failed) {
     throw actor.slot.failed;
   }
   if (actor.moduleUrl !== moduleUrl || actor.inputHash !== inputHash) {
     throw new Error("SQLite database already belongs to another worker backend");
+  }
+  if (actor.runtimeGeneration !== runtimeGeneration) {
+    throw new Error("SQLite worker runtime generation changed; close its actor first");
   }
   if (actor.stateContext?.existingSchemaPath !== stateContext?.existingSchemaPath) {
     throw new Error("Shared-state worker schema policy changed; close its actor first");
