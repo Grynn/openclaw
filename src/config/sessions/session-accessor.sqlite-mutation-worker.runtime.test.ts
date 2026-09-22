@@ -11,6 +11,11 @@ import type {
   SqliteReclamationWorkerRequest,
 } from "./session-accessor.sqlite-reclamation-worker.js";
 
+const native = vi.hoisted(() => ({
+  closeShared: vi.fn((_pathname: string) => {}),
+  reclaim: vi.fn(() => ({ kind: "maintenance-statistics", value: true })),
+}));
+
 const gc = vi.hoisted(() => ({
   pending: undefined as (() => void) | undefined,
   collect: vi.fn(),
@@ -30,7 +35,7 @@ vi.mock("../../infra/kysely-sync-cache-state.js", () => ({
 vi.mock("../../state/openclaw-agent-canonical-validation-receipt.js", () => ({}));
 vi.mock("../../state/openclaw-agent-db-readonly-open.js", () => ({}));
 vi.mock("../../state/openclaw-state-db-cache.js", () => ({
-  closeOpenClawStateDatabaseByPath: () => {},
+  closeOpenClawStateDatabaseByPath: native.closeShared,
 }));
 vi.mock("../../state/openclaw-agent-db-identity.js", () => ({
   createOpenClawAgentDatabaseClaim: () => ({ assertCurrent() {}, release() {} }),
@@ -69,7 +74,7 @@ vi.mock("./session-accessor.sqlite-worker-coordination.js", () => ({
   ) => run(options),
 }));
 vi.mock("./session-accessor.sqlite-reclamation.js", () => ({
-  reclaimSqliteSessionInTransaction: () => ({ kind: "maintenance-statistics", value: true }),
+  reclaimSqliteSessionInTransaction: native.reclaim,
 }));
 vi.mock("./session-accessor.sqlite-reclamation-commit.js", () => ({
   markSqliteReclamationSettled: () => {},
@@ -159,5 +164,70 @@ it("keeps idle collection after buffered admission replies and cancels it for th
       gc.pending = undefined;
       gc.collect.mockClear();
     }
+  }
+});
+
+it("preserves request and native cleanup failures without acknowledging settled close", async () => {
+  const requestFailure = new Error("reclamation request failed");
+  const closeFailure = new Error("shared native close failed");
+  native.reclaim.mockImplementationOnce(() => {
+    throw requestFailure;
+  });
+  native.closeShared.mockImplementationOnce(() => {
+    throw closeFailure;
+  });
+  const { port1: parentPort, port2: worker } = new MessageChannel();
+  const replies = on(parentPort, "message");
+  const sent = vi.spyOn(worker, "postMessage");
+  const databaseOptions = { agentId: "fixture", path: "/fixture/agent.sqlite", env: {} };
+  const coordination = {
+    actorId: "fixture",
+    databasePath: "/fixture/state.sqlite",
+    stateContext: {
+      environment: { OPENCLAW_STATE_DIR: "/fixture" },
+      coordinatorRuntime: { directory: "/fixture/runtime", keepAlive: false },
+    },
+  };
+  const running = runReclamationWorkerPort(worker, databaseOptions);
+  const rejected = expect(running).rejects.toMatchObject({
+    errors: [requestFailure, closeFailure],
+    cause: requestFailure,
+  });
+  try {
+    parentPort.postMessage(
+      {
+        type: "reclaim",
+        operationId: 1,
+        commitGate: new SharedArrayBuffer(4),
+        plan: { kind: "maintenance-statistics", databaseOptions, materializedPlans: [] },
+        coordination,
+      } satisfies SqliteReclamationWorkerRequest,
+      [],
+    );
+    const [admission]: unknown[] = (await replies.next()).value ?? [];
+    assert.ok(isRecord(admission));
+    expect(admission.type).toBe("admission-request");
+    parentPort.postMessage(
+      {
+        type: "admission",
+        operationId: admission.operationId,
+        admissionId: admission.admissionId,
+        allowed: true,
+      },
+      [],
+    );
+    await rejected;
+    expect(native.closeShared).toHaveBeenCalledWith(coordination.databasePath);
+    expect(sent.mock.calls.map(([message]) => message)).not.toContainEqual(
+      expect.objectContaining({ type: "closed", settled: true }),
+    );
+  } finally {
+    await replies.return?.();
+    parentPort.close();
+    worker.close();
+    await running.catch(() => undefined);
+    sent.mockRestore();
+    native.closeShared.mockReset();
+    native.reclaim.mockReset().mockReturnValue({ kind: "maintenance-statistics", value: true });
   }
 });

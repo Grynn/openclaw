@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { MessagePort } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../../infra/kysely-sync-cache-state.js";
+import { createSqliteLifecycleAggregateError } from "../../infra/sqlite-coordinator.js";
 import { sqliteReaderDatabasePathKey } from "../../infra/sqlite-reader-lifecycle.js";
 import { onSqliteWalCheckpoint } from "../../infra/sqlite-wal-checkpoint.js";
 import { cancelWorkerIdleGc, scheduleWorkerIdleGc } from "../../infra/worker-idle-gc.js";
@@ -198,11 +199,16 @@ export async function runReclamationWorkerPort(
       } satisfies SqliteReclamationWorkerMessage);
     }
   });
-  const closeDatabase = async () => {
+  const closeDatabase = async (stateDatabasePath: string) => {
     checkpointResultOwnedByRequest = false;
     const cleanup = await settleReclamationDatabase(databaseOptions.path);
     claim?.release();
     claim = undefined;
+    if (cleanup.settled) {
+      // Normal close and failed requests both retire their native shared-state handle
+      // before acknowledging settlement, while the parent's writer admission is held.
+      closeOpenClawStateDatabaseByPath(stateDatabasePath);
+    }
     return cleanup;
   };
   try {
@@ -240,14 +246,9 @@ export async function runReclamationWorkerPort(
         databaseOptions,
         async (options) => {
           if (request.type === "close") {
-            const cleanup = await closeDatabase();
+            const cleanup = await closeDatabase(request.coordination.databasePath);
             if (pooledTask && !cleanup.settled) {
               throw new Error("Canonical validation task could not close its agent database");
-            }
-            if (cleanup.settled) {
-              // Both pooled and standalone workers must close native shared state before
-              // acknowledging retirement, while the parent's writer admission is held.
-              closeOpenClawStateDatabaseByPath(request.coordination.databasePath);
             }
             return {
               type: "closed",
@@ -405,7 +406,15 @@ export async function runReclamationWorkerPort(
               validation,
             } satisfies SqliteMutationWorkerMessage<typeof result>;
           } catch (error) {
-            failureCleanup = await closeDatabase();
+            try {
+              failureCleanup = await closeDatabase(request.coordination.databasePath);
+            } catch (cleanupError) {
+              throw createSqliteLifecycleAggregateError(
+                [error, cleanupError],
+                "SQLite session reclamation and Worker cleanup failed",
+                error,
+              );
+            }
             if (failureCleanup.settled) {
               markSqliteReclamationSettled(commitGate);
             } else {

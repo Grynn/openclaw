@@ -251,7 +251,9 @@ describe("Telegram model callback loopback", () => {
         `Model changed to <b>${PROVIDER}/${MODEL}</b>`,
       );
     } finally {
-      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+      const closed = new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
       server.closeAllConnections();
       await closed;
       await closeOpenClawAgentDatabasesAsync();
