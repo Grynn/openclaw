@@ -853,6 +853,7 @@ describe("cross-OS release checks workflow", () => {
       "scripts",
       "packages/normalization-core",
       "src/infra/file-read.ts",
+      "src/infra/vitest-resource-ownership.ts",
     ]) {
       const target = join(fixture, source);
       mkdirSync(dirname(target), { recursive: true });

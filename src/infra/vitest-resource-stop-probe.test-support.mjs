@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { subscribe } from "node:diagnostics_channel";
 import fs from "node:fs";
 
-export function installPauseAfterAcknowledgementProbe(receiptPath) {
+export default function installPauseAfterAcknowledgementProbe(receiptPath) {
   const schedule = globalThis.setTimeout;
   const cancel = globalThis.clearTimeout;
   const deadlines = new Map();

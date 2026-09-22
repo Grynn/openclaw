@@ -56,6 +56,7 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
   it("launches the current TypeScript child runner directly with Node", () => {
     expect(resolveShardChildCommand(["one.config.ts"], "/runtime/node")).toEqual({
       command: "/runtime/node",
+      nodeEntryIndex: 2,
       args: ["--import", "tsx", "scripts/test-projects.mts", "one.config.ts"],
     });
   });
@@ -65,6 +66,7 @@ describe("scripts/ci-run-node-test-shard.mts", () => {
     expect(entrypoint).toBe("scripts/test-projects.mjs");
     expect(resolveShardChildCommand(["one.config.ts"], "/runtime/node", entrypoint)).toEqual({
       command: "/runtime/node",
+      nodeEntryIndex: 0,
       args: ["scripts/test-projects.mjs", "one.config.ts"],
     });
   });

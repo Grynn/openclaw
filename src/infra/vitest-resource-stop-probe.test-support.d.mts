@@ -1,1 +1,1 @@
-export function installPauseAfterAcknowledgementProbe(receiptPath: string): void;
+export default function installPauseAfterAcknowledgementProbe(receiptPath: string): void;
