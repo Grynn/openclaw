@@ -338,8 +338,10 @@ describe("ManagedWorktreeService garbage collection", () => {
         "--input-type=module",
         "--eval",
         `import { ManagedWorktreeService } from ${JSON.stringify(new URL("./service.ts", import.meta.url).href)};
+         const {closeOpenClawStateDatabaseAsync} = await import(${JSON.stringify(new URL("../../state/openclaw-state-db.ts", import.meta.url).href)});
          const service = new ManagedWorktreeService({ now: () => ${now} });
-         console.log(JSON.stringify(await service.gc()));`,
+         try { console.log(JSON.stringify(await service.gc())); }
+         finally { await closeOpenClawStateDatabaseAsync(); }`,
       ],
       env,
       60_000,

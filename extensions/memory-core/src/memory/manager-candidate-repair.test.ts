@@ -15,9 +15,9 @@ describe("automatic candidates during provenance repair", () => {
     closeAllMemorySearchManagers,
   });
 
-  it.each([false, true])(
+  it.for([false, true])(
     "returns promptly while a large rebuild is pending (startup catch-up: %s)",
-    async (startupCatchup) => {
+    async (startupCatchup, { signal }) => {
       const projectKey = "github.com/example/project";
       await fs.writeFile(
         path.join(fixture.paths.workspace, "MEMORY.md"),
@@ -61,38 +61,38 @@ describe("automatic candidates during provenance repair", () => {
       await initial.close();
 
       const gate = createDeferred<void>();
+      const batchEntered = createDeferred<void>();
       fixture.provider.providerRuntimeBatchGate = gate.promise;
+      fixture.provider.providerRuntimeBatchEntered = () => batchEntered.resolve();
       const upgraded = await fixture.getFreshManager(cfg);
       const candidates: Promise<unknown>[] = [];
+      const aborted = createDeferred<never>();
+      const abort = () => aborted.reject(signal.reason);
+      signal.addEventListener("abort", abort, { once: true });
       try {
+        signal.throwIfAborted();
         expect(upgraded.status().custom?.indexIdentity).toMatchObject({
           status: "mismatched",
           reason: "index provenance classifier changed",
         });
         if (startupCatchup) {
-          await vi.waitFor(() => expect(fixture.provider.providerRuntimeActiveBatchCalls).toBe(1), {
-            timeout: 10_000,
-          });
+          await Promise.race([batchEntered.promise, aborted.promise]);
         }
-        let completed = 0;
         for (const lookup of [
           () => upgraded.listCuratedProjectCandidates({ activeProjectKeys: [projectKey] }),
           () => upgraded.listTriggerCandidates({ activeProjectKeys: [projectKey] }),
         ]) {
-          candidates.push(
-            lookup().then((results) => {
-              completed += 1;
-              return results;
-            }),
-          );
+          candidates.push(lookup());
         }
-        await vi.waitFor(() => expect(completed).toBe(2));
-        expect(await Promise.all(candidates)).toEqual([[], []]);
-        await vi.waitFor(() => expect(fixture.provider.providerRuntimeActiveBatchCalls).toBe(1), {
-          timeout: 10_000,
-        });
+        // The closed provider gate proves neither lookup waits for the rebuild.
+        // Worker startup and filesystem preparation have no one-second contract.
+        expect(await Promise.race([Promise.all(candidates), aborted.promise])).toEqual([[], []]);
+        await Promise.race([batchEntered.promise, aborted.promise]);
+        expect(fixture.provider.providerRuntimeActiveBatchCalls).toBe(1);
         expect(upgraded.status().dirty).toBe(true);
       } finally {
+        signal.removeEventListener("abort", abort);
+        fixture.provider.providerRuntimeBatchEntered = null;
         gate.resolve();
         await Promise.allSettled(candidates);
       }

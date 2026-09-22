@@ -41,6 +41,10 @@ import {
 import { withEnvAsync } from "../test-utils/env.js";
 import { buildSystemRunApprovalPlan } from "./invoke-system-run-plan.js";
 import { handleSystemRunInvoke } from "./invoke-system-run.js";
+import {
+  createMutableScriptOperandFixture,
+  createRuntimeScriptOperandFixture,
+} from "./invoke-system-run.script-fixture.test-support.js";
 
 type HandleSystemRunInvokeOptions = Parameters<typeof handleSystemRunInvoke>[0];
 
@@ -285,76 +289,6 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
         message: "SYSTEM_RUN_DENIED: approval state could not be persisted",
       },
     });
-  }
-
-  function createMutableScriptOperandFixture(tmp: string): {
-    command: string[];
-    scriptPath: string;
-    initialBody: string;
-    changedBody: string;
-  } {
-    if (process.platform === "win32") {
-      const scriptPath = path.join(tmp, "run.js");
-      return {
-        command: [process.execPath, "./run.js"],
-        scriptPath,
-        initialBody: 'console.log("SAFE");\n',
-        changedBody: 'console.log("PWNED");\n',
-      };
-    }
-    const scriptPath = path.join(tmp, "run.sh");
-    return {
-      command: ["/bin/sh", "./run.sh"],
-      scriptPath,
-      initialBody: "#!/bin/sh\necho SAFE\n",
-      changedBody: "#!/bin/sh\necho PWNED\n",
-    };
-  }
-
-  function createRuntimeScriptOperandFixture(
-    tmp: string,
-    runtime: "bun" | "deno" | "jiti" | "tsx",
-  ): {
-    command: string[];
-    scriptPath: string;
-    initialBody: string;
-    changedBody: string;
-  } {
-    const scriptPath = path.join(tmp, "run.ts");
-    const initialBody = 'console.log("SAFE");\n';
-    const changedBody = 'console.log("PWNED");\n';
-    switch (runtime) {
-      case "bun":
-        return {
-          command: ["bun", "run", "./run.ts"],
-          scriptPath,
-          initialBody,
-          changedBody,
-        };
-      case "deno":
-        return {
-          command: ["deno", "run", "-A", "--allow-read", "--", "./run.ts"],
-          scriptPath,
-          initialBody,
-          changedBody,
-        };
-      case "jiti":
-        return {
-          command: ["jiti", "./run.ts"],
-          scriptPath,
-          initialBody,
-          changedBody,
-        };
-      case "tsx":
-        return {
-          command: ["tsx", "./run.ts"],
-          scriptPath,
-          initialBody,
-          changedBody,
-        };
-    }
-    const unsupportedRuntime: never = runtime;
-    throw new Error(`unsupported runtime fixture: ${String(unsupportedRuntime)}`);
   }
 
   function buildNestedEnvShellCommand(params: { depth: number; payload: string }): string[] {

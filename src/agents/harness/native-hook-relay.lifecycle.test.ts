@@ -1,5 +1,5 @@
 import { Agent, Server, request } from "node:http";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, expect, it, vi } from "vitest";
 import * as mutableFileBinding from "../../infra/system-run-approval-binding.js";
 import {
   initializeGlobalHookRunner,
@@ -7,6 +7,7 @@ import {
 } from "../../plugins/hook-runner-global.js";
 import { createMockPluginRegistry } from "../../plugins/hooks.test-fixtures.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createAdmittedHostCapabilityTestFixture } from "./host-capability.test-support.js";
 import * as relayBridge from "./native-hook-relay-bridge.js";
@@ -22,6 +23,10 @@ import {
   resolveNativeHookRelayDeferredToolApproval,
   testing,
 } from "./native-hook-relay.js";
+
+afterAll(async () => {
+  await closeOpenClawStateDatabaseAsync();
+});
 
 afterEach(async () => {
   await testing.clearNativeHookRelaysForTests();

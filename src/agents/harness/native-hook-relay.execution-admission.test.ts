@@ -6,6 +6,7 @@ import {
 import { createMockPluginRegistry } from "../../plugins/hooks.test-fixtures.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
+import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.js";
 import {
   invokeNativeHookRelay,
   registerNativeHookRelay,
@@ -20,6 +21,7 @@ afterEach(async () => {
   resetGlobalHookRunner();
   setActivePluginRegistry(createEmptyPluginRegistry());
   await testing.clearNativeHookRelaysForTests();
+  await closeOpenClawStateDatabaseAsync();
 });
 
 describe("native hook execution admission", () => {

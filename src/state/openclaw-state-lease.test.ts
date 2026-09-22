@@ -4,9 +4,11 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
+import { captureResourceOwnedNativeProcessExit } from "../infra/vitest-resource-ownership.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type { DB as OpenClawStateKyselyDatabase } from "./openclaw-state-db.generated.js";
 import {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   runOpenClawStateWriteTransaction,
 } from "./openclaw-state-db.js";
@@ -15,7 +17,8 @@ import { withOpenClawStateLease } from "./openclaw-state-lease.js";
 
 type LeaseDatabase = Pick<OpenClawStateKyselyDatabase, "state_leases">;
 
-afterEach(() => {
+afterEach(async () => {
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
 });
 
@@ -32,16 +35,22 @@ describe("OpenClaw state lease", () => {
             [...resolveRuntimeWorkerArgv(childUrl), state.stateDir, heartbeat ?? ""],
             { stdio: ["ignore", "pipe", "pipe"] },
           );
+          const settleNativeExit =
+            child.pid === undefined
+              ? undefined
+              : captureResourceOwnedNativeProcessExit(child, { includeWorkerThreads: true });
           let output = "";
           child.stdout.on("data", (chunk) => (output += chunk));
           child.stderr.on("data", (chunk) => (output += chunk));
           child.on("error", reject);
           child.on("close", (code) => {
-            if (code !== 23) {
-              reject(new Error(`lease child exited ${code}: ${output}`));
-              return;
-            }
-            resolve(code);
+            void (async () => {
+              await settleNativeExit?.();
+              if (code !== 23) {
+                throw new Error(`lease child exited ${code}: ${output}`);
+              }
+              return code;
+            })().then(resolve, reject);
           });
         });
         expect(exitCode).toBe(23);
@@ -115,12 +124,21 @@ describe("OpenClaw state lease", () => {
           env: { ...process.env, OPENCLAW_TEST_CONSOLE: "1" },
           stdio: ["ignore", "pipe", "pipe"],
         });
+        const settleNativeExit =
+          child.pid === undefined
+            ? undefined
+            : captureResourceOwnedNativeProcessExit(child, { includeWorkerThreads: true });
         let stdout = "";
         let stderr = "";
         child.stdout.on("data", (chunk) => (stdout += chunk));
         child.stderr.on("data", (chunk) => (stderr += chunk));
         child.on("error", reject);
-        child.on("close", (code) => resolve({ code, stdout, stderr }));
+        child.on("close", (code) => {
+          void (async () => {
+            await settleNativeExit?.();
+            return { code, stdout, stderr };
+          })().then(resolve, reject);
+        });
       });
 
       expect(

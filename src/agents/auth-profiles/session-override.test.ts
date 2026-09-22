@@ -382,6 +382,7 @@ describe("resolveSessionAuthProfileOverride", () => {
 
       await patchSessionEntryCore(scope, () => ({ label: "renamed", pinnedAt: undefined }));
       await clearSessionAuthProfileOverride({
+        agentId: "main",
         sessionEntry: sessionEntry!,
         sessionStore,
         sessionKey,

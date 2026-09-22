@@ -156,6 +156,7 @@ export async function resolveSession(params: {
 }): Promise<string | undefined> {
   return (
     await resolveSessionAuthSelection({
+      agentId: "main",
       cfg: params.cfg ?? ({} as OpenClawConfig),
       provider: params.provider ?? "openai",
       modelId: params.sessionEntry.model ?? "model-x",

@@ -448,6 +448,7 @@ test.each(["active", "failed"] as const)(
     let placement = workerPlacement({ sessionId, sessionKey, state });
     const drainGate = createDeferredCore();
     const drainStarted = vi.fn();
+    const drainEntered = createDeferredCore();
     const release = vi.fn();
     const reclaim = vi.fn();
 
@@ -458,6 +459,7 @@ test.each(["active", "failed"] as const)(
         context: {
           workerEnvironmentService: createWorkerInferenceDrainService(() => {
             drainStarted();
+            drainEntered.resolve();
             return { drained: drainGate.promise, hasWork: () => false, release };
           }),
           workerSessionPlacementService: placementReader(() => placement),
@@ -466,21 +468,33 @@ test.each(["active", "failed"] as const)(
       },
     );
 
-    await vi.waitFor(() => expect(drainStarted).toHaveBeenCalledOnce());
-    placement = workerPlacement({
-      sessionId,
-      sessionKey: "agent:main:replacement-placement",
-      state: "active",
-    });
-    drainGate.resolve();
+    try {
+      // Join the actual drain boundary after the request's asynchronous membership read.
+      await Promise.race([
+        drainEntered.promise,
+        archive.then(() => {
+          throw new Error("Archive completed before entering its runtime drain");
+        }),
+      ]);
+      expect(drainStarted).toHaveBeenCalledOnce();
+      placement = workerPlacement({
+        sessionId,
+        sessionKey: "agent:main:replacement-placement",
+        state: "active",
+      });
+      drainGate.resolve();
 
-    await expect(archive).resolves.toMatchObject({
-      ok: false,
-      error: { code: "UNAVAILABLE", retryable: true },
-    });
-    expect(reclaim).not.toHaveBeenCalled();
-    expect(release).toHaveBeenCalledOnce();
-    expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
+      await expect(archive).resolves.toMatchObject({
+        ok: false,
+        error: { code: "UNAVAILABLE", retryable: true },
+      });
+      expect(reclaim).not.toHaveBeenCalled();
+      expect(release).toHaveBeenCalledOnce();
+      expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
+    } finally {
+      drainGate.resolve();
+      await archive;
+    }
   },
 );
 

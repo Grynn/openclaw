@@ -10,6 +10,7 @@ import {
   readClawPackageRefs,
 } from "../claws/provenance.js";
 import type { ClawAddPlan } from "../claws/types.js";
+import { captureResourceOwnedNativeProcessExit } from "../infra/vitest-resource-ownership.js";
 import { createNodeEvalArgs } from "../test-utils/node-process.js";
 import { markClawPackageIndependentlyOwned } from "./claw-package-adoption.js";
 import { acquireClawPackageLifecycleLease } from "./claw-package-lifecycle-lease.js";
@@ -254,6 +255,7 @@ describe("Claw package independent adoption", () => {
     const env = { OPENCLAW_STATE_DIR: tempDirs.make("claw-exit-lease-") };
     const artifact = { kind: "plugin", source: "clawhub", ref: "@acme/audit" } as const;
     const moduleUrl = new URL("./claw-package-lifecycle-lease.ts", import.meta.url).href;
+    let settleNativeExit: (() => Promise<void>) | undefined;
     const result = await runNodeScript(
       createNodeEvalArgs(
         `
@@ -268,7 +270,24 @@ describe("Claw package independent adoption", () => {
       ),
       { ...process.env, ...env },
       60_000,
+      {
+        onReady(child) {
+          settleNativeExit = captureResourceOwnedNativeProcessExit(child);
+        },
+      },
     );
+    try {
+      await settleNativeExit?.();
+    } catch (cleanupError) {
+      if (result.error) {
+        throw new AggregateError(
+          [result.error, cleanupError],
+          "Child execution and native exit receipt failed",
+          { cause: cleanupError },
+        );
+      }
+      throw cleanupError;
+    }
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(23);
     const nextLease = acquireClawPackageLifecycleLease(artifact, { env, required: true });

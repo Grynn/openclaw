@@ -44,7 +44,7 @@ async function select(params: {
 }) {
   return await resolveSessionAuthSelection({
     cfg: params.cfg ?? {},
-    agentId: params.agentId,
+    agentId: params.agentId ?? "main",
     provider: "openai",
     modelId: params.modelId ?? "gpt-5.6-sol",
     ...(params.configuredProfileId ? { configuredProfileId: params.configuredProfileId } : {}),
