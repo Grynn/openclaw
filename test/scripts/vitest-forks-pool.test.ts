@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import { runManagedCommand } from "../../scripts/lib/managed-child-process.mts";
 import { createBoundedChildOutput } from "../helpers/bounded-child-output.ts";
@@ -238,7 +239,9 @@ export default {
           TMP: tmp,
           TEMP: tmp,
           CI: "1",
-          NODE_OPTIONS: `--require=${preload}`,
+          NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(preload).href}`]
+            .filter(Boolean)
+            .join(" "),
           OPENCLAW_VITEST_FS_MODULE_CACHE_PATH: path.join(root, "cache"),
           POOL_DIAGNOSTIC_FIXTURE_SECRET: "fixture-env-value-do-not-print",
         },

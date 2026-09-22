@@ -1,3 +1,4 @@
+import { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,7 +18,15 @@ function readReceipt(file: string): string {
   const fd = fs.openSync(file, "r");
   try {
     const buffer = Buffer.alloc(128);
-    return buffer.subarray(0, fs.readSync(fd, buffer)).toString("utf8");
+    let offset = 0;
+    while (offset < buffer.length) {
+      const bytes = fs.readSync(fd, buffer, offset, buffer.length - offset, null);
+      if (bytes === 0) {
+        break;
+      }
+      offset += bytes;
+    }
+    return buffer.subarray(0, offset).toString("utf8");
   } finally {
     fs.closeSync(fd);
   }
@@ -47,44 +56,31 @@ function resourceOwner(root: string, identity: string) {
   const publishReceipt = (id: string, name: string, value: string) =>
     withClaimFile(id, name, (file) => fs.writeFileSync(file, value, { flag: "wx" }));
   const claimIds = () => withClaimFile("", "", (registry) => fs.readdirSync(registry));
-  const claimResource = (nativeHandle = false) => {
+  const claimResource = () => {
     verifyOwner();
     const id = randomUUID();
     const claim = path.join(claims, id);
     // Atomic pending admission, before allocation/spawn. No shared JSON RMW
     // and no deletion-based release: a missing receipt never means success.
     fs.mkdirSync(claim);
-    if (nativeHandle && threadId > 0) {
-      publishReceipt(id, "native-worker", `${process.pid}:${threadId}`);
-    }
-    return () => {
-      verifyOwner();
-      publishReceipt(id, "released", `${identity}:${id}`);
+    return {
+      id,
+      release: () => {
+        verifyOwner();
+        publishReceipt(id, "released", `${identity}:${id}`);
+      },
     };
   };
-  const observeNativeWorkerExit = (worker: Worker) => {
-    verifyOwner();
-    const workerId = worker.threadId;
-    if (workerId <= 0) {
-      throw new Error("Native resource settlement must observe a live Worker exit");
-    }
-    const nativeOwner = `${process.pid}:${workerId}`;
-    let observedExit = false;
+  const settleNativeExit = (nativeOwner: string, exited: Promise<boolean>, label: string) => {
     let settled = false;
-    const exited = new Promise<void>((resolve) => {
-      worker.prependOnceListener("exit", () => {
-        observedExit = worker.threadId === -1;
-        resolve();
-      });
-    });
     return async () => {
-      await exited;
+      const observedExit = await exited;
       if (settled) {
         return;
       }
       try {
         if (!observedExit) {
-          throw new Error("Native Worker exit was not confirmed");
+          throw new Error(`Native ${label} exit was not confirmed`);
         }
         verifyOwner();
         for (const id of claimIds()) {
@@ -106,7 +102,7 @@ function resourceOwner(root: string, identity: string) {
           const receipt = `${identity}:${id}:${nativeOwner}`;
           try {
             if (withClaimFile(id, "native-exited", readReceipt) !== receipt) {
-              throw new Error("Native Worker exit receipt changed");
+              throw new Error(`Native ${label} exit receipt changed`);
             }
           } catch (error) {
             if (!hasErrorCode(error, "ENOENT")) {
@@ -118,17 +114,59 @@ function resourceOwner(root: string, identity: string) {
         }
         settled = true;
       } catch (error) {
-        throw new Error("Failed to record native Worker exit", { cause: error });
+        throw new Error(`Failed to record native ${label} exit`, { cause: error });
       }
     };
+  };
+  const observeNativeWorkerExit = (worker: Worker) => {
+    verifyOwner();
+    const workerId = worker.threadId;
+    if (workerId <= 0) {
+      throw new Error("Native resource settlement must observe a live Worker exit");
+    }
+    return settleNativeExit(
+      `${process.pid}:${workerId}`,
+      new Promise<boolean>((resolve) => {
+        worker.prependOnceListener("exit", () => resolve(worker.threadId === -1));
+      }),
+      "Worker",
+    );
+  };
+  const observeNativeProcessExit = (child: ChildProcess) => {
+    verifyOwner();
+    if (
+      !(child instanceof ChildProcess) ||
+      !child.pid ||
+      child.exitCode !== null ||
+      child.signalCode !== null
+    ) {
+      throw new Error("Native resource settlement must observe a live child process close");
+    }
+    // Only this process's main-thread native claims settle here. Sibling processes,
+    // general descendant claims, and separately owned Worker claims remain pending.
+    return settleNativeExit(
+      `${child.pid}:0`,
+      new Promise<boolean>((resolve) => {
+        child.prependOnceListener("close", () =>
+          resolve(child.exitCode !== null || child.signalCode !== null),
+        );
+      }),
+      "process",
+    );
   };
   return {
     root,
     identity,
-    claim: () => claimResource(),
-    // Only thread-local native handles may settle at a confirmed Worker exit.
-    claimNativeHandle: () => claimResource(true),
+    claim: () => claimResource().release,
+    // Transfer cleanup custody before annotation can fail. No native allocation
+    // may begin until this returns; failed admission can release an unopened claim.
+    claimNativeHandle: (retain: (release: () => void) => void) => {
+      const { id, release } = claimResource();
+      retain(release);
+      publishReceipt(id, "native-worker", `${process.pid}:${threadId}`);
+    },
     observeNativeWorkerExit,
+    observeNativeProcessExit,
     joinNativeWorkerExit: (worker: Worker) => observeNativeWorkerExit(worker)(),
     assertReleased() {
       verifyOwner();
@@ -150,7 +188,7 @@ function resourceOwner(root: string, identity: string) {
           const nativeOwner = withClaimFile(id, "native-worker", readReceipt);
           if (
             ID_PATTERN.test(id) &&
-            /^[1-9][0-9]*:[1-9][0-9]*$/.test(nativeOwner) &&
+            /^[1-9][0-9]*:(?:0|[1-9][0-9]*)$/.test(nativeOwner) &&
             withClaimFile(id, "native-exited", readReceipt) === `${identity}:${id}:${nativeOwner}`
           ) {
             continue;
@@ -328,6 +366,18 @@ export function captureResourceOwnedNativeWorkerExit(worker: Worker) {
     return undefined;
   }
   const settlements = context.owners.map((owner) => owner.observeNativeWorkerExit(worker));
+  return async () => {
+    await Promise.all(settlements.map((settle) => settle()));
+  };
+}
+
+/** Observe a live native child before cancellation; settlement waits for its close event. */
+export function captureResourceOwnedNativeProcessExit(child: ChildProcess) {
+  const context = getVitestResourceContext();
+  if (context?.kind !== "owned") {
+    return undefined;
+  }
+  const settlements = context.owners.map((owner) => owner.observeNativeProcessExit(child));
   return async () => {
     await Promise.all(settlements.map((settle) => settle()));
   };

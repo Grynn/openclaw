@@ -110,6 +110,7 @@ export function registerWorkerBackgroundExecLifecycleTests({
           'import { writeFileSync } from "node:fs";',
           'import { createRequire } from "node:module";',
           "globalThis.WORKER_DEPLOY_BUILD = true;",
+          `process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = ${JSON.stringify(path.resolve("extensions"))};`,
           ...(sdkHost
             ? [`process.env.OPENCLAW_DEV_SOURCE_ROOT = ${JSON.stringify(sdkHost)};`]
             : []),

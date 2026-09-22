@@ -2,8 +2,7 @@ import { fork, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { describe, expect, it } from "vitest";
 import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
 import {
   acquireGatewayLifecycleCoordinator,
@@ -11,20 +10,71 @@ import {
   resolveStateDatabaseCoordinatorPath,
   resolveStateLifecycleRuntimeDirectory,
 } from "./state-database-coordinator.js";
-import { createVitestResourceOwner } from "./vitest-resource-ownership.js";
+import {
+  createCoordinatorResourceTestHarness,
+  resolveCoordinatorModuleUrl,
+  runCoordinatorSource,
+  withResourceContextPreload,
+} from "./state-database-coordinator.resources.test-support.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const { tempDirs, createStandaloneOwner } = createCoordinatorResourceTestHarness();
 const testNodeExecPath = resolveTestNodeExecPath();
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const resourceContextPreload = pathToFileURL(
   path.join(repositoryRoot, "src/infra/vitest-resource-context-preload.test-support.ts"),
 ).href;
 
-function withResourceContextPreload(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return { ...env, NODE_OPTIONS: `--import=${resourceContextPreload}` };
-}
-
 describe("state database coordinator", () => {
+  it("reads complete owner and release receipts across short native reads", () => {
+    const { ownedRoot, owner } = createStandaloneOwner("openclaw-coordinator-short-reads-");
+    const result = runCoordinatorSource(
+      `
+      import fs from "node:fs";
+      import path from "node:path";
+      const { acquireStateDatabaseCoordinator } = await import(${JSON.stringify(resolveCoordinatorModuleUrl())});
+      const { findVitestResourceOwner } = await import(${JSON.stringify(
+        pathToFileURL(path.join(import.meta.dirname, "vitest-resource-ownership.ts")).href,
+      )});
+      const root = ${JSON.stringify(ownedRoot)};
+      const original = fs.readSync;
+      let shortReads = 0;
+      fs.readSync = function(fd, buffer, offset = 0, length = buffer.byteLength - offset, position = null) {
+        const bytes = original.call(this, fd, buffer, offset, Math.min(length, 16), position);
+        if (bytes > 0 && bytes < length) shortReads++;
+        return bytes;
+      };
+      let pendingRefused = false;
+      let corruptionRefused = false;
+      try {
+        const owner = findVitestResourceOwner(root);
+        const coordinator = acquireStateDatabaseCoordinator({ databasePath: path.join(root, "state.sqlite") });
+        try {
+          try { owner.assertReleased(); } catch { pendingRefused = true; }
+        } finally { coordinator.release(); }
+        owner.assertReleased();
+        const claims = path.join(root, ".vitest-resource-owner", "claims");
+        const receipt = path.join(claims, fs.readdirSync(claims)[0], "released");
+        const valid = fs.readFileSync(receipt);
+        try {
+          fs.writeFileSync(receipt, "not a valid completion receipt");
+          try { owner.assertReleased(); } catch { corruptionRefused = true; }
+        } finally { fs.writeFileSync(receipt, valid); }
+        owner.assertReleased();
+      } finally { fs.readSync = original; }
+      console.log(JSON.stringify({ pendingRefused, corruptionRefused, shortReads }));
+      `,
+      {
+        VITEST_OPENCLAW_RESOURCE_ROOT: ownedRoot,
+        VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN: JSON.stringify([
+          { root: ownedRoot, identity: owner.identity },
+        ]),
+      },
+    );
+    expect(result).toMatchObject({ pendingRefused: true, corruptionRefused: true });
+    expect(result.shortReads).toBeGreaterThan(1);
+    expect(() => owner.assertReleased()).not.toThrow();
+  });
+
   it("routes isolated databases through the owned root and releases its claim", () => {
     const { ownedRoot, owner } = createStandaloneOwner("openclaw-coordinator-claim-");
     const databasePath = path.join(ownedRoot, "state", "openclaw.sqlite");
@@ -440,6 +490,109 @@ describe("state database coordinator", () => {
     },
   );
 
+  it.each(["open", "closed", "retry"])(
+    "settles only a joined child process's native claims (registry: %s)",
+    (mode) => {
+      const { ownedRoot, owner } = createStandaloneOwner("openclaw-coordinator-process-exit-");
+      const ownershipModule = pathToFileURL(
+        path.join(import.meta.dirname, "vitest-resource-ownership.ts"),
+      ).href;
+      const childSource = `
+        import { acquireStateDatabaseHandleLease } from ${JSON.stringify(resolveCoordinatorModuleUrl())};
+        const held = [process.argv[1], process.argv[1] + ".second"].map(databasePath =>
+          acquireStateDatabaseHandleLease({ databasePath, busyTimeoutMs: 0 }));
+        process.once("message", () => { held.forEach(lease => lease.release()); process.disconnect(); });
+        process.send("held");
+      `;
+      const result = runCoordinatorSource(
+        `
+        import fs from "node:fs";
+        import path from "node:path";
+        import { spawn } from "node:child_process";
+        import { once } from "node:events";
+        const { findVitestResourceOwner } = await import(${JSON.stringify(ownershipModule)});
+        const root = ${JSON.stringify(ownedRoot)};
+        const owner = findVitestResourceOwner(root);
+        const admitted = path.join(root, ".vitest-resource-owner", "claims");
+        const registry = () => fs.existsSync(admitted) ? admitted : admitted + ".closed";
+        const generalRelease = owner.claim();
+        const generalClaim = fs.readdirSync(registry())[0];
+        const children = [];
+        const settlements = [];
+        const nativeWrite = fs.writeFileSync;
+        try {
+          for (const name of ["crashed", "sibling"]) {
+            const child = spawn(process.execPath,
+              ["--import", "tsx", "--input-type=module", "--eval", ${JSON.stringify(childSource)}, path.join(root, name + ".sqlite")],
+              { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+            children.push(child);
+            settlements.push(owner.observeNativeProcessExit(child));
+            await once(child, "message", { signal: AbortSignal.timeout(5000) });
+          }
+          const nativeClaims = child => fs.readdirSync(registry()).filter(id => {
+            const file = path.join(registry(), id, "native-worker");
+            return fs.existsSync(file) && fs.readFileSync(file, "utf8") === child.pid + ":0";
+          });
+          const crashed = nativeClaims(children[0]);
+          const siblings = nativeClaims(children[1]);
+          const has = (id, name) => fs.existsSync(path.join(registry(), id, name));
+          const pendingBeforeExit = crashed.every(id => !has(id, "released") && !has(id, "native-exited"));
+          if (${JSON.stringify(mode)} === "closed") fs.renameSync(admitted, admitted + ".closed");
+          const refused = new Error("process exit receipt refused");
+          let publications = 0;
+          if (${JSON.stringify(mode)} === "retry") {
+            fs.writeFileSync = function(file, ...args) {
+              if (path.basename(String(file)) === "native-exited" && ++publications === 2) throw refused;
+              return nativeWrite.call(this, file, ...args);
+            };
+          }
+          children[0].kill("SIGKILL");
+          let retryFailure;
+          try { await settlements[0](); }
+          catch (error) {
+            retryFailure = error.cause === refused && crashed.filter(id => has(id, "native-exited")).length === 1;
+          } finally { fs.writeFileSync = nativeWrite; }
+          await settlements[0]();
+          let lateRefused = false;
+          try { owner.observeNativeProcessExit(children[0]); } catch { lateRefused = true; }
+          const siblingPending = siblings.every(id => !has(id, "released") && !has(id, "native-exited"));
+          const nativeOnly = crashed.length === 2 && crashed.every(id => !has(id, "released") && has(id, "native-exited"));
+          children[1].send("release");
+          await settlements[1]();
+          const generalPending = !has(generalClaim, "released") && !has(generalClaim, "native-exited");
+          let retained = false;
+          try { owner.assertReleased(); } catch { retained = true; }
+          generalRelease();
+          owner.assertReleased();
+          console.log(JSON.stringify({ pendingBeforeExit, siblingPending, nativeOnly, generalPending, retained, lateRefused, ...(retryFailure === undefined ? {} : { retryFailure }) }));
+        } finally {
+          fs.writeFileSync = nativeWrite;
+          for (const child of children) {
+            if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+          }
+          await Promise.all(settlements.map(settle => settle()));
+        }
+        `,
+        {
+          VITEST_OPENCLAW_RESOURCE_ROOT: ownedRoot,
+          VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN: JSON.stringify([
+            { root: ownedRoot, identity: owner.identity },
+          ]),
+        },
+      );
+      expect(result).toEqual({
+        pendingBeforeExit: true,
+        siblingPending: true,
+        nativeOnly: true,
+        generalPending: true,
+        retained: true,
+        lateRefused: true,
+        ...(mode === "retry" ? { retryFailure: true } : {}),
+      });
+      expect(() => owner.assertReleased()).not.toThrow();
+    },
+  );
+
   it("fails closed without recreating an owner removed after import", () => {
     const { ownedRoot, owner } = createStandaloneOwner("openclaw-coordinator-removed-owner-");
     const databasePath = path.join(ownedRoot, "state", "openclaw.sqlite");
@@ -821,40 +974,4 @@ function runCoordinatorPeer(databasePath: string, changedTmp: string) {
   expect(child.stderr).toBe("");
   expect(child.status).toBe(0);
   return JSON.parse(child.stdout) as { runtimeDirectory: string; errorName?: string };
-}
-
-function resolveCoordinatorModuleUrl(): string {
-  return pathToFileURL(path.join(import.meta.dirname, "state-database-coordinator.ts")).href;
-}
-
-function createStandaloneOwner(prefix: string) {
-  const globalRuntime = resolveStateLifecycleRuntimeDirectory();
-  fs.mkdirSync(globalRuntime, { recursive: true });
-  const outerRoot = tempDirs.make(prefix, fs.realpathSync(globalRuntime));
-  const ownedRoot = path.join(outerRoot, "owned");
-  fs.mkdirSync(ownedRoot);
-  return { ownedRoot, owner: createVitestResourceOwner(ownedRoot) };
-}
-
-function runCoordinatorSource(
-  source: string,
-  envOverrides: NodeJS.ProcessEnv,
-  removedEnvKeys: string[] = [],
-) {
-  const env = withResourceContextPreload({ ...process.env, ...envOverrides });
-  for (const key of removedEnvKeys) {
-    delete env[key];
-  }
-  const child = spawnSync(
-    testNodeExecPath,
-    ["--disable-warning=DEP0205", "--import", "tsx", "--input-type=module", "-e", source],
-    {
-      cwd: repositoryRoot,
-      env,
-      encoding: "utf8",
-    },
-  );
-  expect(child.stderr).toBe("");
-  expect(child.status).toBe(0);
-  return JSON.parse(child.stdout) as Record<string, unknown>;
 }
