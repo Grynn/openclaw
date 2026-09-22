@@ -102,7 +102,7 @@ export function readExactSessionEntriesWithLifecycle(
   return { kind: "session-exact-entries", entries: [], lifecycleTimestamps: {} };
 }
 
-/** Entry, membership, board presence, and summary validity describe one committed snapshot. */
+/** Entry, board presence, and summary validity describe one committed snapshot. */
 export function readSessionRowDatabaseFacts(
   request: SessionRowFactsWorkerInput,
 ): SessionRowFactsWorkerResult {
@@ -131,9 +131,6 @@ export function readSessionRowDatabaseFacts(
                 const facts: SessionRowDatabaseFacts = {
                   sessionKey,
                   entry,
-                  memberIdentityIds: listSessionMembersInDatabase(database, sessionKey).map(
-                    (member) => member.identityId,
-                  ),
                   hasBoard: readBoardSessionKeys(database, sessionKey).length > 0,
                 };
                 if (readSessionActivitySummary(entry)) {

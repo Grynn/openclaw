@@ -1083,11 +1083,14 @@ Branch listing uses the same worker entrypoint with its own bounded background
 queue, separate from history and model-context reads. The worker reads one
 read-only SQLite snapshot and computes branch summaries; only compact results
 return to the Gateway. Both isolates reuse bounded compact caches only while the
-physical database identity and transcript watermark match. Queued worker reads
-validate a fresh snapshot before reuse, so concurrent requests do not repeat an
-unchanged scan. The host restores cold transcripts and rejects results after
-database or session ownership changes. Incognito branches use their process-held
-database locally.
+physical database identity and transcript watermark match. The Gateway checks
+cached summaries before restoration and shares in-flight reads only for the same
+database claim, session lifecycle, and transcript watermark. A cache miss reads
+in the transcript worker first; only a cold-storage response enters the existing
+archive-worker restoration owner. Each caller rejects results after database or
+session ownership changes and receives its own summary objects. Incognito
+branches use their process-held database locally. Stored rows, schemas, and
+update behavior are unchanged.
 
 The optional `tasks.async.managedFlows` creation and revision mutations use the
 same row kernels in the shared worker, with fresh owner, managed-mode, and
@@ -1732,6 +1735,21 @@ lifecycle owner. A future backend must supply equivalent product behavior or
 an explicit capability boundary; a second SQL dialect alone cannot replace
 these features. Schema, retention, migration, and multi-host changes still use
 the review checkpoint below.
+
+Session membership, participant display facts, and category membership are prepared
+in the existing session read worker and retained by the session-row projection.
+Store admission acquires a compact snapshot; committed session publications refresh
+exact keys and fence delayed results. List and broadcast readers reuse these facts
+without querying membership tables or transferring full session rows per viewer.
+Committed cache and membership facts settle before resident row projections refresh;
+ordinary observers run afterward, so even an earlier registered broadcaster sees
+current sharing policy and revocations while display rows are still dirty. Rolled-back
+savepoint changes never reach either phase. The group catalog similarly
+publishes its ordered snapshot from the shared-state worker. These projections do
+not authorize writes: live caller admission and transaction-held session and
+cross-store catalog checks remain with the mutation owners. Process-local
+incognito databases retain their native owner. Schema, stored bytes, retention,
+and update behavior are unchanged.
 
 ## Review checkpoint for material changes
 
