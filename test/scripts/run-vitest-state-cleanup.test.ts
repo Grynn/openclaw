@@ -1201,8 +1201,8 @@ posixIt(
     if (inheritedContext.kind !== "owned") {
       throw new Error("expected inherited owned Vitest context");
     }
-    const inheritedRoot = inheritedContext.owners[0]?.root;
-    if (!inheritedRoot) {
+    const inheritedRoots = inheritedContext.owners.map((owner) => owner.root);
+    if (inheritedRoots.length === 0) {
       throw new Error("expected inherited Vitest resource owner");
     }
     const root = tempDirs.make("oc-vt-parent-owned-database-");
@@ -1272,7 +1272,7 @@ posixIt(
     expect(observed.chain.map((entry) => entry.root)).toEqual([
       observed.namespace,
       fs.realpathSync(parentRoot),
-      inheritedRoot,
+      ...inheritedRoots,
     ]);
     expect(observed.productionRuntimeDirectory).toBe(inheritedContext.productionRuntimeDirectory);
     expect(observed.runtimeDirectory).toBe(fs.realpathSync(parentRoot));
