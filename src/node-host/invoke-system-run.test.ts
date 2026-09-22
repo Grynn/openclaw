@@ -34,6 +34,7 @@ import type { ExecHostResponse } from "../infra/exec-host.js";
 import { sanitizeHostExecEnv } from "../infra/host-env-security.js";
 import { formatExecCommand } from "../infra/system-run-command.js";
 import {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
@@ -96,7 +97,8 @@ describe("handleSystemRunInvoke mac app exec host routing", () => {
     fs.mkdirSync(sharedRuntimeBinDir, { recursive: true });
   });
 
-  afterAll(() => {
+  afterAll(async () => {
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     if (sharedFixtureRoot) {
       fs.rmSync(sharedFixtureRoot, { recursive: true, force: true });

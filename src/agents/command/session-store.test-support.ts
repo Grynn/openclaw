@@ -3,6 +3,7 @@ import { onTestFinished } from "vitest";
 import { createFixtureLifetime } from "../../../test/helpers/fixture-lifetime.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db-lifecycle.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
+import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.js";
 
 export async function withTempSessionStore<T>(
   run: (params: { dir: string; storePath: string }) => Promise<T>,
@@ -18,6 +19,7 @@ export async function withTempSessionStore<T>(
         await lifetime.verifyCleanup(async () => {
           await closeOpenClawAgentDatabasesAsync();
           closeOpenClawAgentDatabasesForTest();
+          await closeOpenClawStateDatabaseAsync();
         });
       }
     });
