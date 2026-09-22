@@ -366,11 +366,13 @@ describe("capture store lifecycle", () => {
       const runtimeUrl = new URL("./runtime.ts", import.meta.url).href;
       const storeUrl = new URL("./store.sqlite.ts", import.meta.url).href;
       const redactionUrl = new URL("../logging/secret-redaction-registry.ts", import.meta.url).href;
+      const stateUrl = new URL("../state/openclaw-state-db-cache.ts", import.meta.url).href;
       const script = `
         import assert from "node:assert/strict";
         import { captureHttpExchange, initializeDebugProxyCapture, finalizeDebugProxyCapture } from ${JSON.stringify(runtimeUrl)};
         import { getDebugProxyCaptureStore } from ${JSON.stringify(storeUrl)};
         import { registerSecretValueForRedaction } from ${JSON.stringify(redactionUrl)};
+        import { closeOpenClawStateDatabaseByPath } from ${JSON.stringify(stateUrl)};
         const settings = ${JSON.stringify(settings)};
         const store = ${storage === "shared" ? "getDebugProxyCaptureStore()" : "getDebugProxyCaptureStore(settings.dbPath, settings.blobDir)"};
         const failure = ${JSON.stringify(failure)};
@@ -425,6 +427,8 @@ describe("capture store lifecycle", () => {
           assert.equal(terminals, failure === "none" ? 2 : 1);
           assert.equal(ended, 1);
           assert.equal(failures, failure === "none" ? 0 : 1);
+          // Capture-store finalization does not own the shared database cache.
+          closeOpenClawStateDatabaseByPath(store.dbPath);
           process.stdout.write(JSON.stringify({ acquired, terminals, ended, failures }));
         });
         process.exit(0);

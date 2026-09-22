@@ -71,7 +71,11 @@ function resourceOwner(root: string, identity: string) {
       },
     };
   };
-  const settleNativeExit = (nativeOwner: string, exited: Promise<boolean>, label: string) => {
+  const settleNativeExit = (
+    matchesNativeOwner: (claimant: string) => boolean,
+    exited: Promise<boolean>,
+    label: string,
+  ) => {
     let settled = false;
     return async () => {
       const observedExit = await exited;
@@ -96,10 +100,10 @@ function resourceOwner(root: string, identity: string) {
             }
             throw error;
           }
-          if (claimant !== nativeOwner) {
+          if (!matchesNativeOwner(claimant)) {
             continue;
           }
-          const receipt = `${identity}:${id}:${nativeOwner}`;
+          const receipt = `${identity}:${id}:${claimant}`;
           try {
             if (withClaimFile(id, "native-exited", readReceipt) !== receipt) {
               throw new Error(`Native ${label} exit receipt changed`);
@@ -125,14 +129,17 @@ function resourceOwner(root: string, identity: string) {
       throw new Error("Native resource settlement must observe a live Worker exit");
     }
     return settleNativeExit(
-      `${process.pid}:${workerId}`,
+      (claimant) => claimant === `${process.pid}:${workerId}`,
       new Promise<boolean>((resolve) => {
         worker.prependOnceListener("exit", () => resolve(worker.threadId === -1));
       }),
       "Worker",
     );
   };
-  const observeNativeProcessExit = (child: ChildProcess) => {
+  const observeNativeProcessExit = (
+    child: ChildProcess,
+    options: { includeWorkerThreads?: boolean } = {},
+  ) => {
     verifyOwner();
     if (
       !(child instanceof ChildProcess) ||
@@ -142,10 +149,15 @@ function resourceOwner(root: string, identity: string) {
     ) {
       throw new Error("Native resource settlement must observe a live child process close");
     }
-    // Only this process's main-thread native claims settle here. Sibling processes,
-    // general descendant claims, and separately owned Worker claims remain pending.
+    // Default to main-thread claims. A fixture that owns whole-process termination
+    // may also join its threads: native process death ends all of those isolates,
+    // but never proves completion of a descendant process or a general claim.
+    const includeWorkerThreads = options.includeWorkerThreads === true;
+    const nativeOwner = `${child.pid}:0`;
+    const processOwners = new RegExp(`^${child.pid}:(?:0|[1-9][0-9]*)$`);
     return settleNativeExit(
-      `${child.pid}:0`,
+      (claimant) =>
+        includeWorkerThreads ? processOwners.test(claimant) : claimant === nativeOwner,
       new Promise<boolean>((resolve) => {
         child.prependOnceListener("close", () =>
           resolve(child.exitCode !== null || child.signalCode !== null),
@@ -372,12 +384,15 @@ export function captureResourceOwnedNativeWorkerExit(worker: Worker) {
 }
 
 /** Observe a live native child before cancellation; settlement waits for its close event. */
-export function captureResourceOwnedNativeProcessExit(child: ChildProcess) {
+export function captureResourceOwnedNativeProcessExit(
+  child: ChildProcess,
+  options: { includeWorkerThreads?: boolean } = {},
+) {
   const context = getVitestResourceContext();
   if (context?.kind !== "owned") {
     return undefined;
   }
-  const settlements = context.owners.map((owner) => owner.observeNativeProcessExit(child));
+  const settlements = context.owners.map((owner) => owner.observeNativeProcessExit(child, options));
   return async () => {
     await Promise.all(settlements.map((settle) => settle()));
   };

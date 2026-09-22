@@ -490,18 +490,47 @@ describe("state database coordinator", () => {
     },
   );
 
-  it.each(["open", "closed", "retry"])(
-    "settles only a joined child process's native claims (registry: %s)",
-    (mode) => {
+  it.each(
+    ["open", "closed", "retry"].flatMap((mode) =>
+      [false, true].map((workerThreads) => ({ mode, workerThreads })),
+    ),
+  )(
+    "settles only a joined child process's native claims (registry: $mode, threads: $workerThreads)",
+    ({ mode, workerThreads }) => {
       const { ownedRoot, owner } = createStandaloneOwner("openclaw-coordinator-process-exit-");
       const ownershipModule = pathToFileURL(
         path.join(import.meta.dirname, "vitest-resource-ownership.ts"),
       ).href;
+      const workerSource = `
+        const { parentPort, workerData } = require("node:worker_threads");
+        (async () => {
+          const { register } = await import("tsx/esm/api");
+          register();
+          const { acquireStateDatabaseHandleLease } = await import(${JSON.stringify(resolveCoordinatorModuleUrl())});
+          const held = acquireStateDatabaseHandleLease({ databasePath: workerData, busyTimeoutMs: 0 });
+          parentPort.once("message", () => { held.release(); parentPort.close(); });
+          parentPort.postMessage("held");
+        })();
+      `;
       const childSource = `
+        import { once } from "node:events";
+        import { Worker } from "node:worker_threads";
         import { acquireStateDatabaseHandleLease } from ${JSON.stringify(resolveCoordinatorModuleUrl())};
         const held = [process.argv[1], process.argv[1] + ".second"].map(databasePath =>
           acquireStateDatabaseHandleLease({ databasePath, busyTimeoutMs: 0 }));
-        process.once("message", () => { held.forEach(lease => lease.release()); process.disconnect(); });
+        const worker = ${workerThreads} ? new Worker(${JSON.stringify(workerSource)}, {
+          eval: true, execArgv: ["--import", "tsx"], workerData: process.argv[1] + ".worker",
+        }) : undefined;
+        if (worker) await once(worker, "message");
+        process.once("message", async () => {
+          if (worker) {
+            const exited = once(worker, "exit");
+            worker.postMessage("release");
+            await exited;
+          }
+          held.forEach(lease => lease.release());
+          process.disconnect();
+        });
         process.send("held");
       `;
       const result = runCoordinatorSource(
@@ -526,12 +555,12 @@ describe("state database coordinator", () => {
               ["--import", "tsx", "--input-type=module", "--eval", ${JSON.stringify(childSource)}, path.join(root, name + ".sqlite")],
               { stdio: ["ignore", "ignore", "pipe", "ipc"] });
             children.push(child);
-            settlements.push(owner.observeNativeProcessExit(child));
+            settlements.push(owner.observeNativeProcessExit(child, { includeWorkerThreads: ${workerThreads} }));
             await once(child, "message", { signal: AbortSignal.timeout(5000) });
           }
           const nativeClaims = child => fs.readdirSync(registry()).filter(id => {
             const file = path.join(registry(), id, "native-worker");
-            return fs.existsSync(file) && fs.readFileSync(file, "utf8") === child.pid + ":0";
+            return fs.existsSync(file) && fs.readFileSync(file, "utf8").startsWith(child.pid + ":");
           });
           const crashed = nativeClaims(children[0]);
           const siblings = nativeClaims(children[1]);
@@ -556,7 +585,10 @@ describe("state database coordinator", () => {
           let lateRefused = false;
           try { owner.observeNativeProcessExit(children[0]); } catch { lateRefused = true; }
           const siblingPending = siblings.every(id => !has(id, "released") && !has(id, "native-exited"));
-          const nativeOnly = crashed.length === 2 && crashed.every(id => !has(id, "released") && has(id, "native-exited"));
+          const mainClaims = crashed.filter(id => fs.readFileSync(path.join(registry(), id, "native-worker"), "utf8") === children[0].pid + ":0");
+          const threadClaims = crashed.filter(id => !mainClaims.includes(id));
+          const nativeOnly = mainClaims.length === 2 && threadClaims.length === (${workerThreads} ? 1 : 0) &&
+            crashed.every(id => !has(id, "released") && has(id, "native-exited"));
           children[1].send("release");
           await settlements[1]();
           const generalPending = !has(generalClaim, "released") && !has(generalClaim, "native-exited");
