@@ -32,8 +32,14 @@ import { createWorkerEnvironmentService } from "./worker-environments/service.js
 import { createWorkerEnvironmentStore } from "./worker-environments/store.js";
 
 const { createSessionStoreDir } = setupGatewaySessionsHandlerTestHarness();
+const pendingArchiveCleanups = new Set<() => Promise<void>>();
 
 afterEach(async () => {
+  // Join gated requests even when a runner timeout leaves the test body suspended.
+  for (const cleanup of pendingArchiveCleanups) {
+    await cleanup();
+  }
+  pendingArchiveCleanups.clear();
   await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
 });
@@ -353,13 +359,20 @@ test("sessions.patch reclaims the exact active cloud placement before archive me
     },
   );
 
+  const settledArchive = Promise.allSettled([archive]);
+  const cleanup = async () => {
+    reclaimGate.resolve();
+    await settledArchive;
+  };
+  pendingArchiveCleanups.add(cleanup);
   try {
     await racePromiseWithAbortSignal(
       Promise.race([
         reclaimStarted.promise,
         archive.then((result) => {
-          expect(result).toMatchObject({ ok: true });
-          throw new Error("archive completed before worker reclaim");
+          throw new Error(
+            `Archive settled before reclaim: ${result.error?.message ?? "no reclaim"}`,
+          );
         }),
       ]),
       signal,
@@ -376,9 +389,8 @@ test("sessions.patch reclaims the exact active cloud placement before archive me
     await expect(archive).resolves.toMatchObject({ ok: true });
     expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toEqual(expect.any(Number));
   } finally {
-    // Join the held request before fixture teardown closes its databases.
-    reclaimGate.resolve();
-    await archive;
+    await cleanup();
+    pendingArchiveCleanups.delete(cleanup);
   }
 });
 
@@ -493,32 +505,39 @@ test.for(["active", "failed"] as const)(
     let placement = workerPlacement({ sessionId, sessionKey, state });
     const drainGate = createDeferredCore();
     const drainEntered = createDeferredCore();
-    const drainStarted = vi.fn(() => drainEntered.resolve());
     const release = vi.fn();
     const reclaim = vi.fn();
+    const drainStarted = vi.fn(() => {
+      drainEntered.resolve();
+      return { drained: drainGate.promise, hasWork: () => false, release };
+    });
 
     const archive = directSessionReq(
       "sessions.patch",
       { key: sessionKey, archived: true, expectedSessionId: sessionId },
       {
         context: {
-          workerEnvironmentService: createWorkerInferenceDrainService(() => {
-            drainStarted();
-            return { drained: drainGate.promise, hasWork: () => false, release };
-          }),
+          workerEnvironmentService: createWorkerInferenceDrainService(drainStarted),
           workerSessionPlacementService: placementReader(() => placement),
           workerPlacementDispatchService: { dispatch: vi.fn(), reclaim },
         },
       },
     );
 
+    const settledArchive = Promise.allSettled([archive]);
+    const cleanup = async () => {
+      drainGate.resolve();
+      await settledArchive;
+    };
+    pendingArchiveCleanups.add(cleanup);
     try {
       await racePromiseWithAbortSignal(
         Promise.race([
           drainEntered.promise,
           archive.then((result) => {
-            expect(result).toMatchObject({ ok: true });
-            throw new Error("archive completed before runtime drain");
+            throw new Error(
+              `Archive settled before its runtime drain: ${result.error?.message ?? "no drain"}`,
+            );
           }),
         ]),
         signal,
@@ -539,9 +558,8 @@ test.for(["active", "failed"] as const)(
       expect(release).toHaveBeenCalledOnce();
       expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
     } finally {
-      // Release and join even when a phase assertion fails, before fixture reset.
-      drainGate.resolve();
-      await archive;
+      await cleanup();
+      pendingArchiveCleanups.delete(cleanup);
     }
   },
 );

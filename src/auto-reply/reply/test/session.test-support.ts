@@ -116,13 +116,6 @@ export async function runExplicitResetCases(params: {
   return results;
 }
 
-export function requireString(value: string | undefined, label: string): string {
-  if (!value) {
-    throw new Error(`expected ${label}`);
-  }
-  return value;
-}
-
 export function requireMockCallArg(
   mockFn: { mock: { calls: unknown[][] } },
   label: string,

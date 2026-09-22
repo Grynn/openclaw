@@ -78,7 +78,6 @@ import { persistSessionUsageUpdate } from "./session-usage.js";
 import { resolveReplySessionPreprocessingState } from "./session.js";
 import { expectSessionParticipantInputs } from "./session.participant.test-support.js";
 import {
-  requireString,
   requireMockCallArg,
   expectEntryFields,
   initSessionState,
@@ -185,7 +184,7 @@ describe("resolveReplySessionPreprocessingState", () => {
     );
 
     expect(
-      resolveReplySessionPreprocessingState({
+      await resolveReplySessionPreprocessingState({
         cfg: {
           agents: { list: [{ id: "ops", default: true }] },
           session: { store: storePath, mainKey: "work" },
@@ -217,7 +216,7 @@ describe("resolveReplySessionPreprocessingState", () => {
       },
     });
 
-    expect(resolvePreprocessingState(storePath)).toMatchObject({
+    expect(await resolvePreprocessingState(storePath)).toMatchObject({
       sessionKey,
       storePath,
       sessionEntry: {
@@ -246,7 +245,7 @@ describe("resolveReplySessionPreprocessingState", () => {
     const storePath = await createStorePath(`openclaw-media-preflight-invalid-${_label}-`);
     await writeSessionStoreFast(storePath, entry ? { [sessionKey]: entry } : {});
 
-    expect(() => resolvePreprocessingState(storePath)).toThrow();
+    await expect(resolvePreprocessingState(storePath)).rejects.toThrow();
   });
 });
 
@@ -430,6 +429,7 @@ beforeEach(() => {
 afterEach(async () => {
   resetSystemEventsForTest();
   await sessionMcpTesting.resetSessionMcpRuntimeManager();
+  sessionBindingTesting.resetSessionBindingAdaptersForTests();
   await closeOpenClawAgentDatabasesAsync();
   await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
@@ -2681,7 +2681,7 @@ describe("initSessionState RawBody", () => {
     }
     expect(result.sessionCtx.SessionKey).toBe(sourceSessionKey);
     expect(
-      resolveReplySessionPreprocessingState({ cfg, ctx: finalizeInboundContext(ctx) }),
+      await resolveReplySessionPreprocessingState({ cfg, ctx: finalizeInboundContext(ctx) }),
     ).toMatchObject({
       sessionKey: sourceSessionKey,
       sessionEntry: { sessionId: result.sessionId },
@@ -5181,7 +5181,7 @@ describe("drainFormattedSystemEvents", () => {
         isNewSession: false,
       });
 
-      const expectedTimestampText = requireString(expectedTimestamp, "formatted timestamp");
+      const expectedTimestampText = expectDefined(expectedTimestamp, "formatted timestamp");
       expect(result).toContain(`System: [${expectedTimestampText}] Model switched.`);
     } finally {
       resetSystemEventsForTest();
