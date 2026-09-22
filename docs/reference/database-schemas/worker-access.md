@@ -67,6 +67,9 @@ Session-reclamation retirement honors settled cleanup reported by its worker,
 including after a failed request. After an unsettled native exit, the shared-state
 cleanup worker releases the exact retained lease. Retirement joins lease deletion and cleanup
 store close, keeping those writes off the host connection used by live snapshots.
+Automatic process-exit cleanup makes one attempt. A failed attempt retains worker
+and lease custody for an explicit lifecycle retry instead of repeatedly scheduling
+cleanup whenever the event loop drains.
 
 ## Migrate a caller
 
@@ -112,8 +115,12 @@ prepare up to 64 dirty persistent rows in the history worker: entry metadata,
 board presence, and activity-summary watermarks share one read snapshot per
 physical store. Membership comes from the worker-maintained compact projection,
 which also retains participant display facts for per-viewer reads. The projection
-retains each store through consumption
-and rejects replies after projection or registry invalidation. Rows replaced or
+retains each store through consumption and rejects replies after stored-fact or
+registry invalidation. Runtime owners classify their exact run, capacity, and
+Swarm notifications separately, so current display and activity changes do not
+discard an unchanged database read. The same projection prepares current runtime
+facts before consumption; explicit stored facts, membership changes, and unknown
+notifications retain their invalidation checks. Rows replaced or
 refreshed by direct reads while a reply is pending keep their newer facts; a dirty
 replacement retries under its own generation. Related rows use resident facts and
 existing invalidations to converge across batches.
@@ -189,3 +196,12 @@ owners; these reporting snapshots grant no execution or deletion authority.
 This execution cutover does not change schemas, stored bytes, retention, config,
 or update behavior. A change to those contracts follows the
 [storage review checkpoint](/reference/database-schemas/storage-changes#review-checkpoint-for-material-changes).
+
+Administrative skill archive uploads use the shared-state worker for staging,
+expiry cleanup, commit, installation claims, lease renewal, and consumption. The
+host retains per-upload locks and temporary archive materialization. Installation
+completion joins accepted renewals before consuming or releasing the exact owner
+lease; database close joins the callback and its retained worker cleanup. Cleanup
+refuses a replacement physical database and cannot delete a successor's lease.
+Upload formats, expiry limits, installation permissions, and update behavior are
+unchanged.

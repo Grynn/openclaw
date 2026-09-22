@@ -1,4 +1,4 @@
-/** Keeps automatic auth profiles stable within sessions while rotating at lifecycle boundaries. */
+/** Keeps automatic auth profiles stable unless reset, unavailable, or recovering a preference. */
 import { resolveSessionAuthProfileOverrideSource } from "../../config/sessions/auth-profile-override-provenance.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -481,14 +481,13 @@ async function resolveSessionAuthProfileOverride(params: {
     isProfileInCooldown(store, profileId, undefined, sessionEntry.model);
   const currentUnavailable = current ? isProfileUnavailableForSessionModel(current) : false;
   const compactionCount = sessionEntry.compactionCount ?? 0;
-  const storedCompaction =
-    typeof sessionEntry.authProfileOverrideCompactionCount === "number"
-      ? sessionEntry.authProfileOverrideCompactionCount
-      : compactionCount;
+  // Compaction is a context-lifecycle event, not an auth-health transition.
+  // Keep the existing credential and avoid rewriting auth state solely because
+  // the compaction counter advanced.
   // A healthy automatic fallback yields when an explicit preference is eligible to retry,
   // preventing a metered backup from staying pinned. The real request proves recovery.
   const retryableHigherPriorityProfile =
-    source === "auto" && !currentUnavailable && compactionCount <= storedCompaction && current
+    source === "auto" && !currentUnavailable && current
       ? orderResolutions
           .filter((resolution) => resolution.hasExplicitOrder)
           .flatMap((resolution) => {
@@ -504,9 +503,7 @@ async function resolveSessionAuthProfileOverride(params: {
   const shouldRotateCurrent =
     Boolean(current) &&
     !isNewSession &&
-    (currentUnavailable ||
-      compactionCount > storedCompaction ||
-      retryableHigherPriorityProfile !== undefined);
+    (currentUnavailable || retryableHigherPriorityProfile !== undefined);
 
   // Provider artifacts own persisted route stickiness; runtime planning owns cross-route failover.
   const routeResolution =
@@ -563,9 +560,7 @@ async function resolveSessionAuthProfileOverride(params: {
     return { profileId: current, store };
   }
   const shouldPersist =
-    next !== sessionEntry.authProfileOverride ||
-    sessionEntry.authProfileOverrideSource !== "auto" ||
-    sessionEntry.authProfileOverrideCompactionCount !== compactionCount;
+    next !== sessionEntry.authProfileOverride || sessionEntry.authProfileOverrideSource !== "auto";
   if (shouldPersist) {
     await persistSessionAuthProfileOverrideState({
       agentId,

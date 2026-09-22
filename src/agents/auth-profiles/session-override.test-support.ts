@@ -26,19 +26,34 @@ const authStoreMocks = vi.hoisted(() => {
     routeResolutions: new Map(),
     store: { version: 1, profiles: {} },
   };
+  const ensureAuthProfileStore = vi.fn(() => state.store);
+  const hasAnyAuthProfileStoreSource = vi.fn(() => state.hasSource);
+  const isProfileInCooldown = vi.fn((_store: AuthProfileStore, _profileId: string) => false);
+  const resolveProviderModelRoutes = vi.fn(
+    ({ provider, modelId }: { provider: string; modelId?: string }) =>
+      state.routeResolutions.get(`${provider}\0${modelId ?? ""}`) ?? null,
+  );
   return {
     state,
-    ensureAuthProfileStore: vi.fn(() => state.store),
-    hasAnyAuthProfileStoreSource: vi.fn(() => state.hasSource),
-    isProfileInCooldown: vi.fn((_store: AuthProfileStore, _profileId: string) => false),
-    resolveProviderModelRoutes: vi.fn(
-      ({ provider, modelId }: { provider: string; modelId?: string }) =>
-        state.routeResolutions.get(`${provider}\0${modelId ?? ""}`) ?? null,
-    ),
+    ensureAuthProfileStore,
+    hasAnyAuthProfileStoreSource,
+    isProfileInCooldown,
+    resolveProviderModelRoutes,
     reset() {
       state.hasSource = false;
       state.routeResolutions.clear();
       state.store = { version: 1, profiles: {} };
+      ensureAuthProfileStore.mockReset().mockImplementation(() => state.store);
+      hasAnyAuthProfileStoreSource.mockReset().mockImplementation(() => state.hasSource);
+      isProfileInCooldown
+        .mockReset()
+        .mockImplementation((_store: AuthProfileStore, _profileId: string) => false);
+      resolveProviderModelRoutes
+        .mockReset()
+        .mockImplementation(
+          ({ provider, modelId }: { provider: string; modelId?: string }) =>
+            state.routeResolutions.get(`${provider}\0${modelId ?? ""}`) ?? null,
+        );
     },
   };
 });

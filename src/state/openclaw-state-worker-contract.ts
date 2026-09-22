@@ -68,7 +68,7 @@ import type {
 } from "../sessions/session-state-events.kernel.js";
 import type { SessionUpstreamLink } from "../sessions/session-upstream-links.kernel.js";
 import type { DeviceAuthEntry } from "../shared/device-auth.js";
-import type { commitSkillUploadInDatabase } from "../skills/lifecycle/upload-store-commit.js";
+import type { SkillUploadWorkerOperations } from "../skills/lifecycle/upload-store.worker.js";
 import type * as curator from "../skills/workshop/curator.kernel.js";
 import type { listStoredSkillProposalEventsInDatabase } from "../skills/workshop/store-sqlite-event.js";
 import type { SkillProposalEvent, SkillProposalRecord } from "../skills/workshop/types.js";
@@ -115,6 +115,7 @@ export type OpenClawStateWorkerOperations = McpOAuthReadOperations &
   TranscriptWriteOperations &
   NodeWorkerJournalWorkerOperations &
   TaskRegistryWorkerOperations &
+  SkillUploadWorkerOperations &
   OpenClawStateLeaseLifecycleOperations & {
     "deviceIdentity.read": { input: { identityKey: string }; output: DeviceIdentity | null };
     "deviceIdentity.load": { input: { identityKey: string }; output: DeviceIdentity };
@@ -125,10 +126,6 @@ export type OpenClawStateWorkerOperations = McpOAuthReadOperations &
     "githubRepository.personalPending": {
       input: RepositoryGitHubPublicationPendingQuery;
       output: RepositoryGitHubPublicationStatusRow | undefined;
-    };
-    "skillUploads.commit": {
-      input: Parameters<typeof commitSkillUploadInDatabase>[0];
-      output: ReturnType<typeof commitSkillUploadInDatabase>;
     };
     "audit.events.list": {
       input: AuditEventListQuery;
@@ -279,16 +276,17 @@ export type OpenClawStateWorkerInspectionOperations = {
   "database.inspectIdle": { input: undefined; output: "healthy" | "retire" };
 };
 
-/** Only the retiring native owner's host can dispatch its exact cleanup receipt. */
+/** Retiring owners dispatch only exact, physically bound cleanup receipts. */
 export type OpenClawStateWorkerCleanupOperations = Pick<
   OpenClawStateLeaseLifecycleOperations,
   "stateLease.release"
-> & {
-  "agentDatabases.releaseExitedLease": {
-    input: OpenClawAgentDatabaseWorkerLeaseReceipt;
-    output: void;
+> &
+  Pick<SkillUploadWorkerOperations, "skillUploads.release"> & {
+    "agentDatabases.releaseExitedLease": {
+      input: OpenClawAgentDatabaseWorkerLeaseReceipt;
+      output: void;
+    };
   };
-};
 
 export type OpenClawStateWorkerBackend = SqliteWorkerPreparedBackend<
   OpenClawStateWorkerOperations &
