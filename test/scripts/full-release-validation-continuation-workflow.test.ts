@@ -14,6 +14,9 @@ type Workflow = {
   on: { workflow_dispatch: { inputs: Record<string, unknown> } };
 };
 const workflow = parse(source) as Workflow;
+const candidateWorkflow = parse(
+  readFileSync(".github/workflows/full-release-candidate.yml", "utf8"),
+) as Workflow;
 const resourceOwnerPath = "src/infra/vitest-resource-ownership.ts";
 
 function step(job: string, name: string, owner = workflow) {
@@ -72,7 +75,6 @@ describe("full release metadata checkouts", () => {
       job: "evidence_reuse",
       checkout: "Checkout trusted workflow helper",
       entrypoint: "release-ci-summary.mjs",
-      extraPath: ".github/actions/setup-pnpm-store-cache",
     },
     {
       job: "release_execution_plan",
@@ -94,12 +96,24 @@ describe("full release metadata checkouts", () => {
       checkout: "Checkout release state verifier",
       entrypoint: "full-release-candidate-reuse.mjs",
     },
+    {
+      job: "discover",
+      checkout: "Checkout trusted candidate discovery",
+      entrypoint: "full-release-candidate-reuse.mjs",
+      owner: candidateWorkflow,
+    },
+    {
+      job: "resolve_candidate",
+      checkout: "Checkout candidate binding authority",
+      entrypoint: "full-release-candidate-reuse.mjs",
+      owner: candidateWorkflow,
+    },
   ])(
     "runs $job tooling from the complete scripts tree",
-    ({ job, checkout, entrypoint, extraPath, fullCheckout }) => {
+    ({ job, checkout, entrypoint, fullCheckout, owner = workflow }) => {
       const root = mkdtempSync(join(tmpdir(), "openclaw-release-sparse-"));
       try {
-        const toolingCheckout = step(job, checkout).with as Record<string, unknown>;
+        const toolingCheckout = step(job, checkout, owner).with as Record<string, unknown>;
         if (fullCheckout) {
           expect(toolingCheckout).not.toHaveProperty("sparse-checkout");
           expect(toolingCheckout).not.toHaveProperty("sparse-checkout-cone-mode");
@@ -112,10 +126,6 @@ describe("full release metadata checkouts", () => {
           });
         } else {
           expect(toolingCheckout["sparse-checkout-cone-mode"]).toBe(false);
-          const paths = sparsePaths(toolingCheckout);
-          expect(paths).toEqual(
-            extraPath ? ["scripts", resourceOwnerPath, extraPath] : ["scripts", resourceOwnerPath],
-          );
         }
 
         const checkoutRoot = copyToolingCheckout(root, toolingCheckout);

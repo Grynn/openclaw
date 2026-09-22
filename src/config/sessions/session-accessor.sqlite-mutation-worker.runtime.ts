@@ -93,28 +93,43 @@ export async function runColdMutationWorkerPort(
     0,
     data.plan.databaseOptions,
     (databaseOptions) =>
-      runColdMutationWorker(port, {
-        ...data,
-        plan: { ...data.plan, databaseOptions },
-      }),
+      runColdMutationWorker(
+        port,
+        {
+          ...data,
+          plan: { ...data.plan, databaseOptions },
+        },
+        request.coordination.databasePath,
+      ),
   );
   port.postMessage(response);
   port.close();
 }
 
-async function runColdMutationWorker(port: MessagePort, data: SessionColdWorkerData) {
+async function runColdMutationWorker(
+  port: MessagePort,
+  data: SessionColdWorkerData,
+  stateDatabasePath: string,
+) {
   const { mutateSessionColdTranscriptInWorker, prepareSessionColdRestoreInWorker } =
     await import("./session-cold-storage-worker.js");
   const { reclaimSqliteFreePages } = await import("./session-history-archive-pruning.js");
-  // Restore materialization must finish before requesting any write admission.
-  const coldRecords =
-    data.plan.kind === "cold-restore"
-      ? await prepareSessionColdRestoreInWorker(data.plan)
-      : undefined;
+  const closeDatabase = async () => {
+    const cleanup = await settleReclamationDatabase(data.plan.databaseOptions.path);
+    if (cleanup.settled) {
+      closeOpenClawStateDatabaseByPath(stateDatabasePath);
+    }
+    return cleanup;
+  };
   const commitGate = data.commitGate;
   let result: SessionColdMutationResult;
   let validation: OpenClawAgentDatabaseValidation | undefined;
   try {
+    // Preparation can acquire cached handles too; failed restore must join their cleanup.
+    const coldRecords =
+      data.plan.kind === "cold-restore"
+        ? await prepareSessionColdRestoreInWorker(data.plan)
+        : undefined;
     result = await withWorkerWriteAdmission(
       port,
       0,
@@ -149,7 +164,16 @@ async function runColdMutationWorker(port: MessagePort, data: SessionColdWorkerD
       },
     );
   } catch (error) {
-    const cleanup = await settleReclamationDatabase(data.plan.databaseOptions.path);
+    let cleanup: Awaited<ReturnType<typeof closeDatabase>>;
+    try {
+      cleanup = await closeDatabase();
+    } catch (cleanupError) {
+      throw createSqliteLifecycleAggregateError(
+        [error, cleanupError],
+        "SQLite cold mutation and Worker cleanup failed",
+        error,
+      );
+    }
     if (cleanup.settled) {
       markSqliteReclamationSettled(commitGate);
     } else {
@@ -161,7 +185,7 @@ async function runColdMutationWorker(port: MessagePort, data: SessionColdWorkerD
     }
     throw error;
   }
-  const cleanup = await settleReclamationDatabase(data.plan.databaseOptions.path);
+  const cleanup = await closeDatabase();
   const workerResult = {
     result,
     ...(cleanup.cleanupWarnings.length > 0 ? { cleanupWarnings: cleanup.cleanupWarnings } : {}),

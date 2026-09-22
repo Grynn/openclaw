@@ -44,6 +44,7 @@ export function createWorkerTaskPoolRetirement<Input, Output>({
             await settlement;
           }
           await slot.worker.terminate();
+          await slot.settleNativeExit?.();
         }
         slot.retired = true;
       })

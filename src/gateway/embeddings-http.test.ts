@@ -948,7 +948,8 @@ describe("OpenAI-compatible embeddings HTTP API (e2e)", () => {
       secondRequest.end(body);
       const requestSignal = await racePromiseWithAbortSignal(admission.admitted, signal);
       const disconnected = createDeferred();
-      requestSignal.addEventListener("abort", disconnected.resolve, { once: true });
+      const onDisconnected = () => disconnected.resolve();
+      requestSignal.addEventListener("abort", onDisconnected, { once: true });
       try {
         secondRequest.destroy();
         await racePromiseWithAbortSignal(
@@ -956,7 +957,7 @@ describe("OpenAI-compatible embeddings HTTP API (e2e)", () => {
           signal,
         );
       } finally {
-        requestSignal.removeEventListener("abort", disconnected.resolve);
+        requestSignal.removeEventListener("abort", onDisconnected);
       }
       admission.restore();
 

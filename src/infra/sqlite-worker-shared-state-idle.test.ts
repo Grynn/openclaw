@@ -51,6 +51,26 @@ async function withIdleBackend<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
+// Loader threads also use Worker.postMessage; observe the database admission, not call order.
+function takeDatabaseWorker(
+  messages: {
+    mock: { calls: readonly (readonly unknown[])[]; contexts: readonly unknown[] };
+    mockRestore(): void;
+  },
+  databasePath: string,
+): Worker {
+  const index = messages.mock.calls.findIndex(
+    ([request]) =>
+      isRecord(request) && request.type === "open" && request.databasePath === databasePath,
+  );
+  const worker = messages.mock.contexts[index];
+  messages.mockRestore();
+  if (!(worker instanceof Worker)) {
+    throw new Error("Expected the Worker admitted for the fixture database");
+  }
+  return worker;
+}
+
 async function fixture(mode: "healthy" | "local-reader" | "unsettled-inspection" = "healthy") {
   const context = captureOpenClawStateWorkerContext({
     env: { OPENCLAW_STATE_DIR: dirs.make("openclaw-worker-idle-") },
@@ -66,11 +86,7 @@ async function fixture(mode: "healthy" | "local-reader" | "unsettled-inspection"
       input: { ownerKey: `agent:main:${mode}` },
     });
   expect(await withIdleBackend(read)).toEqual([]);
-  const worker = messages.mock.contexts[0];
-  messages.mockRestore();
-  if (!(worker instanceof Worker)) {
-    throw new Error("Expected the canonical shared-state worker");
-  }
+  const worker = takeDatabaseWorker(messages, context.admission.databasePath);
   const scheduled = (delay: number) => {
     const index = timers.mock.calls.findLastIndex(
       (call) => typeof call[1] === "number" && call[1] <= delay && call[1] > delay - 1_000,
@@ -389,11 +405,7 @@ nodeIt.each([undefined, "agent-resources", "shared-handles"] as const)(
       const first = await openClient(firstContext);
       const peer = await openClient(peerContext);
       expect(first.actor === peer.actor).toBe(true);
-      const worker = messages.mock.contexts.find((candidate) => candidate instanceof Worker);
-      messages.mockRestore();
-      if (!(worker instanceof Worker)) {
-        throw new Error("Expected the shared native worker");
-      }
+      const worker = takeDatabaseWorker(messages, firstContext.admission.databasePath);
       const startAccepted = async () => {
         accepted = runOpenClawStateWorkerOperation(firstContext, async () => {
           entered.resolve();
@@ -458,11 +470,7 @@ nodeIt(
       const first = await openClient(firstContext);
       const peer = await openClient(peerContext);
       expect(first.actor === peer.actor).toBe(true);
-      const worker = messages.mock.contexts.find((candidate) => candidate instanceof Worker);
-      messages.mockRestore();
-      if (!(worker instanceof Worker)) {
-        throw new Error("Expected the shared native worker");
-      }
+      const worker = takeDatabaseWorker(messages, firstContext.admission.databasePath);
       stopped = worker.terminate();
       await stopped;
       await expect(peer.store.execute(read)).rejects.toMatchObject({ code: "unavailable" });
@@ -503,12 +511,7 @@ nodeIt("joins adopted actor custody instead of its earlier per-client failure", 
     const first = await openClient(firstContext);
     const peer = await openClient(peerContext);
     expect(first.actor === peer.actor).toBe(true);
-    const observedWorker = messages.mock.contexts.find((candidate) => candidate instanceof Worker);
-    messages.mockRestore();
-    if (!(observedWorker instanceof Worker)) {
-      throw new Error("Expected the shared native worker");
-    }
-    worker = observedWorker;
+    worker = takeDatabaseWorker(messages, firstContext.admission.databasePath);
     worker.once("exit", () => nativeExited.resolve());
     nativeTerminate = worker.terminate.bind(worker);
     const terminate = nativeTerminate;

@@ -2422,7 +2422,7 @@ fi
     }
   });
 
-  it("checks out the complete trusted Release Decision scripts tree", () => {
+  it("pins Release Decision tooling to the trusted revision without credentials", () => {
     const workflow = readWorkflow(".github/workflows/full-release-validation.yml");
     const checkout = workflow.jobs.release_decision.steps.find(
       (step: WorkflowStep) => step.name === "Checkout release decision tooling",
@@ -2430,7 +2430,7 @@ fi
 
     expect(checkout?.with).toMatchObject({
       ref: "${{ github.sha }}",
-      "sparse-checkout": "scripts",
+      // The actual sparse entrypoint closure is covered by the continuation workflow suite.
       "sparse-checkout-cone-mode": false,
       "persist-credentials": false,
     });

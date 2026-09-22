@@ -9,6 +9,7 @@ import { maybeMigrateModelCatalogCredentials } from "../commands/doctor-model-ca
 import { createDoctorPrompter } from "../commands/doctor-prompter.js";
 import { repairCanonicalSessionKeys } from "../commands/doctor-session-canonical-keys.js";
 import { projectExistingAgentDatabaseTargets } from "../commands/doctor-session-sqlite-readers.js";
+import { runDoctorSessionSqlite } from "../commands/doctor-session-sqlite.js";
 import { noteSessionTranscriptHeaderHealth } from "../commands/doctor-session-transcript-headers.js";
 import { noteSessionTranscriptLabelHealth } from "../commands/doctor-session-transcript-labels.js";
 import { noteSessionTranscriptHealth } from "../commands/doctor-session-transcripts.js";
@@ -444,6 +445,18 @@ describe("Doctor with a deleted agent database", () => {
             expect.stringContaining("retired"),
             "Doctor warnings",
           );
+          const activeAlias = path.join(stateDir, "active-alias.sqlite");
+          const activeBefore = fs.readFileSync(activePath);
+          fs.linkSync(activePath, activeAlias);
+          try {
+            await expect(
+              runDoctorSessionSqlite({ cfg, env, allAgents: true, mode: "import" }),
+            ).rejects.toThrow(`hard-linked path: ${activePath}`);
+            expect(fs.readFileSync(activePath)).toEqual(activeBefore);
+            expect(fs.readFileSync(activeAlias)).toEqual(activeBefore);
+          } finally {
+            fs.unlinkSync(activeAlias);
+          }
         } else {
           expect(await repairCanonicalSessionKeys({ apply: true, cfg, env })).toMatchObject({
             scannedStores: 1,

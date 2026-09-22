@@ -5,7 +5,10 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import type { OpenClawAgentDatabaseWriteAdmission } from "../../state/openclaw-agent-db.js";
 import type { ReclamationDatabaseOptions } from "./session-accessor.sqlite-lifecycle-types.js";
-import { runReclamationWorkerPort } from "./session-accessor.sqlite-mutation-worker.runtime.js";
+import {
+  runColdMutationWorkerPort,
+  runReclamationWorkerPort,
+} from "./session-accessor.sqlite-mutation-worker.runtime.js";
 import type {
   SqliteReclamationWorkerCloseRequest,
   SqliteReclamationWorkerRequest,
@@ -14,6 +17,9 @@ import type {
 const native = vi.hoisted(() => ({
   closeShared: vi.fn((_pathname: string) => {}),
   reclaim: vi.fn(() => ({ kind: "maintenance-statistics", value: true })),
+  coldMutation: vi.fn(() => {
+    throw new Error("revoked admission entered cold mutation");
+  }),
 }));
 
 const gc = vi.hoisted(() => ({
@@ -75,6 +81,17 @@ vi.mock("./session-accessor.sqlite-worker-coordination.js", () => ({
 }));
 vi.mock("./session-accessor.sqlite-reclamation.js", () => ({
   reclaimSqliteSessionInTransaction: native.reclaim,
+}));
+vi.mock("./session-cold-storage-worker.js", () => ({
+  mutateSessionColdTranscriptInWorker: native.coldMutation,
+  prepareSessionColdRestoreInWorker: () => {
+    throw new Error("cold maintenance entered restore preparation");
+  },
+}));
+vi.mock("./session-history-archive-pruning.js", () => ({
+  reclaimSqliteFreePages: () => {
+    throw new Error("revoked admission entered cold page reclamation");
+  },
 }));
 vi.mock("./session-accessor.sqlite-reclamation-commit.js", () => ({
   markSqliteReclamationSettled: () => {},
@@ -231,3 +248,79 @@ it("preserves request and native cleanup failures without acknowledging settled 
     native.reclaim.mockReset().mockReturnValue({ kind: "maintenance-statistics", value: true });
   }
 });
+
+it.each([false, true])(
+  "closes revoked cold mutation state and preserves cleanup failure=%s",
+  async (closeFails) => {
+    const closeFailure = new Error("cold shared native close failed");
+    native.closeShared.mockClear();
+    if (closeFails) {
+      native.closeShared.mockImplementationOnce(() => {
+        throw closeFailure;
+      });
+    }
+    const { port1: parentPort, port2: worker } = new MessageChannel();
+    const replies = on(parentPort, "message");
+    const sent = vi.spyOn(worker, "postMessage");
+    const databaseOptions = { agentId: "fixture", path: "/fixture/agent.sqlite", env: {} };
+    const coordination = {
+      actorId: "fixture",
+      databasePath: "/fixture/cold-state.sqlite",
+      stateContext: {
+        environment: { OPENCLAW_STATE_DIR: "/fixture" },
+        coordinatorRuntime: { directory: "/fixture/runtime", keepAlive: false },
+      },
+    };
+    const running = runColdMutationWorkerPort(worker, {
+      type: "sqlite-transcript-archive-v2",
+      operation: "cold-mutate",
+      commitGate: new SharedArrayBuffer(4),
+      plan: { kind: "cold-maintain", databaseOptions },
+    });
+    const outcome = running.then(
+      () => ({ error: undefined }),
+      (error: unknown) => ({ error }),
+    );
+    try {
+      parentPort.postMessage({ type: "mutate", coordination }, []);
+      const [admission]: unknown[] = (await replies.next()).value ?? [];
+      assert.ok(isRecord(admission));
+      expect(admission.type).toBe("admission-request");
+      parentPort.postMessage(
+        {
+          type: "admission",
+          operationId: admission.operationId,
+          admissionId: admission.admissionId,
+          allowed: false,
+        },
+        [],
+      );
+      const { error } = await outcome;
+      if (closeFails) {
+        assert.ok(error instanceof AggregateError);
+        expect(error.errors).toEqual([
+          expect.objectContaining({ message: "SQLite reclamation database admission was revoked" }),
+          closeFailure,
+        ]);
+        expect(error.cause).toBe(error.errors[0]);
+      } else {
+        expect(error).toMatchObject({
+          message: "SQLite reclamation database admission was revoked",
+        });
+      }
+      expect(native.closeShared).toHaveBeenCalledExactlyOnceWith(coordination.databasePath);
+      expect(native.coldMutation).not.toHaveBeenCalled();
+      expect(sent.mock.calls.map(([message]) => message)).not.toContainEqual(
+        expect.objectContaining({ type: "reclaimed", settled: true }),
+      );
+    } finally {
+      parentPort.close();
+      worker.close();
+      await outcome;
+      await replies.return?.();
+      sent.mockRestore();
+      native.closeShared.mockReset();
+      native.coldMutation.mockClear();
+    }
+  },
+);

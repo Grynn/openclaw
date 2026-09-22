@@ -7,11 +7,14 @@ import {
   resolveAgentSessionStoreTargetsSync,
   resolveAllAgentSessionStoreCandidateTargetsSync,
   resolveAllAgentSessionStoreTargetsSync,
+  resolveConfiguredAgentDatabaseTargets,
   resolveSessionStoreTargets,
   type SessionStoreTarget as ResolvedSessionStoreTarget,
 } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { createAgentDatabaseDeletionClassifier } from "../state/agent-deletion-discovery.js";
+import { readAgentDatabaseDeletionSnapshot } from "../state/agent-deletion-journal.read.js";
 import type { HistoricalArchiveSources } from "./doctor-session-sqlite-discovery.js";
 import { canonicalMigrationFilePath } from "./doctor-session-sqlite-migration-run.js";
 import { resolveTargetSqlitePath } from "./doctor-session-sqlite-readers.js";
@@ -27,6 +30,35 @@ export function resolveDoctorSessionSqliteTargets(params: {
   mode: DoctorSessionSqliteMode;
   store?: string;
 }): SessionStoreTarget[] {
+  const targets = resolveDoctorSessionSqliteCandidateTargets(params);
+  if (!params.allAgents || params.agent || params.store || targets.length === 0) {
+    return targets;
+  }
+  const snapshot = readAgentDatabaseDeletionSnapshot(params.env);
+  if (
+    !snapshot ||
+    snapshot.retainedDeletions === "unavailable" ||
+    snapshot.retainedDeletions.length === 0
+  ) {
+    return targets;
+  }
+  // Automatic maintenance must not inspect or mutate completed retained deletions.
+  // Keep explicit requests and unknown history on their existing refusal paths.
+  const isRetained = createAgentDatabaseDeletionClassifier({
+    ...snapshot,
+    env: params.env,
+    configuredAgentDatabaseTargets: resolveConfiguredAgentDatabaseTargets(params.cfg, {
+      env: params.env,
+    }),
+  });
+  return targets.filter(
+    (target) => !isRetained(resolveTargetSqlitePath(target, params.env), target.agentId),
+  );
+}
+
+function resolveDoctorSessionSqliteCandidateTargets(
+  params: Parameters<typeof resolveDoctorSessionSqliteTargets>[0],
+): SessionStoreTarget[] {
   if (params.store) {
     return resolveSessionStoreTargets(params.cfg, { store: params.store }, { env: params.env });
   }
