@@ -14,6 +14,7 @@ type Workflow = {
   on: { workflow_dispatch: { inputs: Record<string, unknown> } };
 };
 const workflow = parse(source) as Workflow;
+const resourceOwnerPath = "src/infra/vitest-resource-ownership.ts";
 
 function step(job: string, name: string, owner = workflow) {
   const match = owner.jobs[job]?.steps.find((entry) => entry.name === name);
@@ -42,6 +43,21 @@ function checkoutPath(checkout: Record<string, unknown>) {
     throw new TypeError("checkout path must be a string");
   }
   return checkout.path;
+}
+
+function copyToolingCheckout(root: string, checkout: Record<string, unknown>) {
+  const checkoutRoot = join(root, checkoutPath(checkout));
+  // Model sparse checkouts exactly; the full checkout probe needs only this
+  // entrypoint closure, not a second copy of the entire repository.
+  const paths = checkout["sparse-checkout"]
+    ? sparsePaths(checkout)
+    : ["scripts", resourceOwnerPath];
+  for (const sourcePath of paths) {
+    const destination = join(checkoutRoot, sourcePath);
+    mkdirSync(dirname(destination), { recursive: true });
+    cpSync(sourcePath, destination, { recursive: true });
+  }
+  return checkoutRoot;
 }
 
 describe("full release metadata checkouts", () => {
@@ -97,14 +113,12 @@ describe("full release metadata checkouts", () => {
         } else {
           expect(toolingCheckout["sparse-checkout-cone-mode"]).toBe(false);
           const paths = sparsePaths(toolingCheckout);
-          expect(paths).toEqual(extraPath ? ["scripts", extraPath] : ["scripts"]);
+          expect(paths).toEqual(
+            extraPath ? ["scripts", resourceOwnerPath, extraPath] : ["scripts", resourceOwnerPath],
+          );
         }
 
-        const checkoutRoot = join(root, checkoutPath(toolingCheckout));
-        cpSync("scripts", join(checkoutRoot, "scripts"), { recursive: true });
-        if (extraPath) {
-          cpSync(extraPath, join(checkoutRoot, extraPath), { recursive: true });
-        }
+        const checkoutRoot = copyToolingCheckout(root, toolingCheckout);
 
         const runNode = (args: string[], cwd = root) =>
           execFileSync(process.execPath, args, {
@@ -146,12 +160,7 @@ describe("full release metadata checkouts", () => {
 
       const toolingCheckout = step("evidence_reuse", "Checkout trusted workflow helper")
         .with as Record<string, unknown>;
-      cpSync("scripts", join(root, checkoutPath(toolingCheckout), "scripts"), { recursive: true });
-      cpSync(
-        ".github/actions/setup-pnpm-store-cache",
-        join(root, checkoutPath(toolingCheckout), ".github/actions/setup-pnpm-store-cache"),
-        { recursive: true },
-      );
+      copyToolingCheckout(root, toolingCheckout);
 
       const setup = step("evidence_reuse", "Setup Node.js");
       const steps = workflow.jobs.evidence_reuse!.steps;

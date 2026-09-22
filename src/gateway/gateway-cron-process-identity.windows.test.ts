@@ -1,6 +1,7 @@
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
+import { getManagedChildCommandPid } from "../../scripts/lib/managed-child-process.mts";
 import {
   assertManagedHandoffTestConsumer,
   createManagedHandoffTestBinding,
@@ -38,7 +39,14 @@ describe.skipIf(process.platform !== "win32")("Windows cron process identity", (
           signal.throwIfAborted();
           await instance.startGateway();
           signal.throwIfAborted();
-          assertManagedHandoffTestConsumer(handoff, instance.child?.pid, path.resolve("dist"));
+          if (!instance.child) {
+            throw new Error("Ready Gateway has no managed process owner");
+          }
+          assertManagedHandoffTestConsumer(
+            handoff,
+            getManagedChildCommandPid(instance.child),
+            path.resolve("dist"),
+          );
           client = await connectGatewayClient({
             url: instance.url,
             token: instance.gatewayToken,

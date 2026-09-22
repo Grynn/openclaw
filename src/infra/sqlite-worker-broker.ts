@@ -468,6 +468,7 @@ export class SqliteWorkerBroker {
       this.slots.delete(slot);
       exited.resolve();
     });
+    await this.lifecycle.captureNativeExit(slot);
     worker.unref();
     return slot;
   }
@@ -709,9 +710,13 @@ export class SqliteWorkerBroker {
       }
       await this.inputAdmission.joinOpens();
       await Promise.allSettled(this.operations);
-      const results = await Promise.allSettled(
-        [...this.actors.values()].map((actor) => this.lifecycle.closeActor(actor)),
-      );
+      // Failed receipt publication outlives actor removal. Retry those exact
+      // observed exits on an explicit host close, including failed empty opens.
+      const orphanedNativeExits = this.lifecycle.retireOrphanedNativeExits();
+      const results = await Promise.allSettled([
+        ...[...this.actors.values()].map((actor) => this.lifecycle.closeActor(actor)),
+        ...orphanedNativeExits,
+      ]);
       const errors = results.flatMap((result) =>
         result.status === "rejected" ? [result.reason] : [],
       );

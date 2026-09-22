@@ -901,6 +901,8 @@ describe("shared Codex app-server client", () => {
         commandSource: "config",
         args: ["app-server"],
         headers: {},
+        // These in-memory transports have no Node startup hooks to attest.
+        env: { NODE_OPTIONS: "" },
       };
 
       try {
@@ -955,6 +957,7 @@ describe("shared Codex app-server client", () => {
         commandSource: "managed",
         args: ["app-server"],
         headers: {},
+        env: { NODE_OPTIONS: "" },
       };
 
       try {

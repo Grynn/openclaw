@@ -2,6 +2,7 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { createSqliteLifecycleAggregateError } from "./sqlite-coordinator.js";
 import { releaseSqliteWorkerActorCoordinators } from "./sqlite-worker-broker-admission.js";
 import type { Actor, EnqueueOptions, Slot, StoreClient } from "./sqlite-worker-broker.types.js";
+import { captureResourceOwnedNativeWorkerExit } from "./vitest-resource-ownership.js";
 
 /** The broker retains these maps; this owner drains clients before native close custody. */
 export function createSqliteWorkerLifecycle({
@@ -18,6 +19,31 @@ export function createSqliteWorkerLifecycle({
   ) => Promise<unknown>;
   fail: (slot: Slot, error: unknown) => void;
 }) {
+  // Receipt publication may fail after the actor has already been forgotten.
+  const nativeExitSettlements = new Map<Slot, () => Promise<void>>();
+
+  async function captureNativeExit(slot: Slot): Promise<void> {
+    try {
+      const settle = captureResourceOwnedNativeWorkerExit(slot.worker);
+      if (settle) {
+        nativeExitSettlements.set(slot, settle);
+      }
+    } catch (error) {
+      // No request has been admitted, but the newly spawned worker is still ours.
+      fail(slot, error);
+      try {
+        await retire(slot);
+      } catch (cleanupError) {
+        throw createSqliteLifecycleAggregateError(
+          [error, cleanupError],
+          "SQLite worker startup cleanup failed",
+          error,
+        );
+      }
+      throw error;
+    }
+  }
+
   function releaseActorReference(actor: Actor): void {
     actor.references -= 1;
     if (!actor.references) {
@@ -166,6 +192,12 @@ export function createSqliteWorkerLifecycle({
         }
       }
       await slot.exit;
+      try {
+        await nativeExitSettlements.get(slot)?.();
+        nativeExitSettlements.delete(slot);
+      } catch (error) {
+        errors.push(error);
+      }
       for (const actor of slot.actors) {
         try {
           releaseSqliteWorkerActorCoordinators(actor);
@@ -187,7 +219,14 @@ export function createSqliteWorkerLifecycle({
     return slot.retiring;
   }
 
+  function retireOrphanedNativeExits(): Promise<void>[] {
+    const actorSlots = new Set([...actors.values()].map((actor) => actor.slot));
+    return [...nativeExitSettlements.keys()].filter((slot) => !actorSlots.has(slot)).map(retire);
+  }
+
   return {
+    captureNativeExit,
+    retireOrphanedNativeExits,
     releaseActorReference,
     rejectSlotAdmission,
     retireActor,
