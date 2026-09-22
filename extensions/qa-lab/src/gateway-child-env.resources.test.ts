@@ -29,17 +29,28 @@ describe("QA child resource ownership", () => {
       import path from "node:path";
       const coordinatorModule = await import(${JSON.stringify(coordinatorModule)});
       const claims = path.join(${JSON.stringify(ownedRoot)}, ".vitest-resource-owner", "claims");
-      const before = new Set(fs.readdirSync(claims));
-      const coordinator = coordinatorModule.acquireGatewayLifecycleCoordinator({
-        databasePath: ${JSON.stringify(databasePath)},
-        busyTimeoutMs: 0,
-      });
-      const added = fs.readdirSync(claims).filter((claim) => !before.has(claim));
-      const pending = added.length === 1 && !fs.existsSync(path.join(claims, added[0], "released"));
+      // Observe only this child's real admissions, not parallel workers' registry writes.
+      const admitted = [];
+      const mkdirSync = fs.mkdirSync;
+      fs.mkdirSync = (...args) => {
+        const result = mkdirSync(...args);
+        if (path.dirname(String(args[0])) === claims) admitted.push(String(args[0]));
+        return result;
+      };
+      let coordinator;
+      try {
+        coordinator = coordinatorModule.acquireGatewayLifecycleCoordinator({
+          databasePath: ${JSON.stringify(databasePath)},
+          busyTimeoutMs: 0,
+        });
+      } finally {
+        fs.mkdirSync = mkdirSync;
+      }
+      const pending = admitted.length === 1 && !fs.existsSync(path.join(admitted[0], "released"));
       coordinator.release();
       fs.writeFileSync(${JSON.stringify(receiptPath)}, JSON.stringify({
         pending,
-        released: added.length === 1 && fs.existsSync(path.join(claims, added[0], "released")),
+        released: admitted.length === 1 && fs.existsSync(path.join(admitted[0], "released")),
         runtimeDirectory: coordinatorModule.resolveStateLifecycleRuntimeDirectory(${JSON.stringify(databasePath)}),
       }));
       globalThis.qaFixturePreload = "loaded";

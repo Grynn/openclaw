@@ -251,6 +251,195 @@ describe("state database coordinator", () => {
     expect(() => owner.assertReleased()).not.toThrow();
   });
 
+  it.each(["open", "annotation", "exit", "heartbeat", "heartbeat-retry"])(
+    "settles only a joined Worker's native claims (registry move: %s)",
+    (registryMove) => {
+      const { ownedRoot, owner } = createStandaloneOwner("openclaw-coordinator-crash-");
+      const ownershipModule = pathToFileURL(
+        path.join(import.meta.dirname, "vitest-resource-ownership.ts"),
+      ).href;
+      const workerSource = `
+      const { parentPort, workerData } = require("node:worker_threads");
+      (async () => {
+        const { register } = await import("tsx/esm/api");
+        register();
+        if (workerData.closeAdmission) {
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const mkdir = fs.mkdirSync;
+          fs.mkdirSync = function(directory, ...args) {
+            const result = mkdir.call(this, directory, ...args);
+            if (path.dirname(String(directory)) === workerData.registry) {
+              fs.renameSync(workerData.registry, workerData.registry + ".closed");
+              fs.mkdirSync = mkdir;
+            }
+            return result;
+          };
+        }
+        const { acquireStateDatabaseHandleLease } = await import(${JSON.stringify(resolveCoordinatorModuleUrl())});
+        const held = acquireStateDatabaseHandleLease({ databasePath: workerData.path, busyTimeoutMs: 0 });
+        const extra = workerData.retryPublication
+          ? acquireStateDatabaseHandleLease({ databasePath: workerData.path + ".second", busyTimeoutMs: 0 })
+          : undefined;
+        parentPort.on("message", () => { extra?.release(); held.release(); parentPort.close(); });
+        parentPort.postMessage("held");
+      })();
+    `;
+      const result = runCoordinatorSource(
+        `
+        import fs from "node:fs";
+        import path from "node:path";
+        import { once } from "node:events";
+        import { Worker } from "node:worker_threads";
+        const { findVitestResourceOwner } = await import(${JSON.stringify(ownershipModule)});
+        const owner = findVitestResourceOwner(${JSON.stringify(ownedRoot)});
+        const admittedRegistry = path.join(${JSON.stringify(ownedRoot)}, ".vitest-resource-owner", "claims");
+        const registry = () => fs.existsSync(admittedRegistry) ? admittedRegistry : admittedRegistry + ".closed";
+        const generalRelease = owner.claim();
+        const generalClaim = fs.readdirSync(registry())[0];
+        const retained = () => { try { owner.assertReleased(); return false; } catch { return true; } };
+        const workers = [];
+        try {
+          for (const name of ["crashed", "sibling"]) {
+            const worker = new Worker(${JSON.stringify(workerSource)}, {
+              eval: true, execArgv: ["--import", "tsx"],
+              workerData: {
+                path: path.join(${JSON.stringify(ownedRoot)}, name, "state.sqlite"),
+                registry: admittedRegistry,
+                retryPublication: name === "crashed" && ${JSON.stringify(registryMove)} === "heartbeat-retry",
+                closeAdmission: name === "sibling" && ${JSON.stringify(registryMove)} === "annotation",
+              },
+            });
+            workers.push(worker);
+            await once(worker, "message");
+          }
+          const siblingOwner = process.pid + ":" + workers[1].threadId;
+          const siblingClaim = fs.readdirSync(registry()).find(id => {
+            const marker = path.join(registry(), id, "native-worker");
+            return fs.existsSync(marker) && fs.readFileSync(marker, "utf8") === siblingOwner;
+          });
+          const crashOwner = process.pid + ":" + workers[0].threadId;
+          const crashClaim = fs.readdirSync(registry()).find(id => {
+            const marker = path.join(registry(), id, "native-worker");
+            return fs.existsSync(marker) && fs.readFileSync(marker, "utf8") === crashOwner;
+          });
+          if (${JSON.stringify(registryMove)} === "exit") {
+            const writeFile = fs.writeFileSync;
+            fs.writeFileSync = function(file, ...args) {
+              if (path.basename(String(file)) === "native-exited") {
+                fs.renameSync(admittedRegistry, admittedRegistry + ".closed");
+                fs.writeFileSync = writeFile;
+              }
+              return writeFile.call(this, file, ...args);
+            };
+          }
+          const heartbeat = ${JSON.stringify(registryMove)}.startsWith("heartbeat")
+            ? (await import(${JSON.stringify(pathToFileURL(path.join(repositoryRoot, "src/state/openclaw-state-lease-heartbeat-cleanup.ts")).href)})).createLeaseHeartbeatCleanup({
+                cancel() {}, onReleaseFailed(error) { throw error; },
+              })
+            : undefined;
+          heartbeat?.start(() => workers[0]);
+          const crashJoin = heartbeat ? undefined : owner.joinNativeWorkerExit(workers[0]);
+          const heldBeforeExit = Boolean(crashClaim) && retained() &&
+            !fs.existsSync(path.join(registry(), crashClaim, "released")) &&
+            !fs.existsSync(path.join(registry(), crashClaim, "native-exited"));
+          let retryFailure;
+          if (${JSON.stringify(registryMove)} === "heartbeat-retry") {
+            const writeFile = fs.writeFileSync;
+            let publications = 0;
+            fs.writeFileSync = function(file, ...args) {
+              if (path.basename(String(file)) === "native-exited" && ++publications === 2) {
+                throw Object.assign(new Error("controlled native-exit publication failure"), { code: "EACCES" });
+              }
+              return writeFile.call(this, file, ...args);
+            };
+            let rejected = false;
+            try {
+              await heartbeat.stop();
+            } catch (error) {
+              rejected = error.cause?.code === "EACCES";
+            } finally {
+              fs.writeFileSync = writeFile;
+            }
+            const crashClaims = fs.readdirSync(registry()).filter(id => {
+              const marker = path.join(registry(), id, "native-worker");
+              return fs.existsSync(marker) && fs.readFileSync(marker, "utf8") === crashOwner;
+            });
+            retryFailure = {
+              rejected,
+              pending: heartbeat.cleanup.pending,
+              exited: workers[0].threadId === -1,
+              published: crashClaims.filter(id => fs.existsSync(path.join(registry(), id, "native-exited"))).length,
+              missing: crashClaims.filter(id => !fs.existsSync(path.join(registry(), id, "native-exited"))).length,
+            };
+          }
+          if (heartbeat) {
+            await heartbeat.stop();
+            if (heartbeat.cleanup.pending) throw new Error("heartbeat cleanup retained native custody");
+          } else {
+            await Promise.all([workers[0].terminate(), crashJoin]);
+          }
+          const siblingRetained = Boolean(siblingClaim) && retained() &&
+            !fs.existsSync(path.join(registry(), siblingClaim, "released")) &&
+            !fs.existsSync(path.join(registry(), siblingClaim, "native-exited"));
+          const exited = once(workers[1], "exit");
+          workers[1].postMessage("close");
+          await exited;
+          const generalRetained = retained() &&
+            !fs.existsSync(path.join(registry(), generalClaim, "released")) &&
+            !fs.existsSync(path.join(registry(), generalClaim, "native-exited"));
+          generalRelease();
+          const released = !retained();
+          const receipts = fs.readdirSync(registry()).map(id => ({
+            closed: fs.existsSync(path.join(registry(), id, "released")),
+            exited: fs.existsSync(path.join(registry(), id, "native-exited")),
+          }));
+          const nativeClaims = fs.readdirSync(registry()).filter(id => {
+            const marker = path.join(registry(), id, "native-worker");
+            return fs.existsSync(marker) && fs.readFileSync(marker, "utf8") === crashOwner;
+          });
+          const nativeOnly = nativeClaims.length === (${JSON.stringify(registryMove)} === "heartbeat-retry" ? 2 : 1) &&
+            nativeClaims.every(id => !fs.existsSync(path.join(registry(), id, "released")) &&
+              fs.existsSync(path.join(registry(), id, "native-exited")));
+          console.log(JSON.stringify({ heldBeforeExit, siblingRetained, generalRetained, released, nativeOnly, receipts, ...(retryFailure ? { retryFailure } : {}) }));
+        } finally {
+          await Promise.all(workers.map(worker => worker.terminate()));
+        }
+      `,
+        {
+          VITEST_OPENCLAW_RESOURCE_ROOT: ownedRoot,
+          VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN: JSON.stringify([
+            { root: ownedRoot, identity: owner.identity },
+          ]),
+        },
+      );
+      expect(result).toEqual({
+        heldBeforeExit: true,
+        siblingRetained: true,
+        generalRetained: true,
+        released: true,
+        nativeOnly: true,
+        receipts: expect.arrayContaining([
+          { closed: false, exited: true },
+          { closed: true, exited: false },
+        ]),
+        ...(registryMove === "heartbeat-retry"
+          ? {
+              retryFailure: {
+                rejected: true,
+                pending: true,
+                exited: true,
+                published: 1,
+                missing: 1,
+              },
+            }
+          : {}),
+      });
+      expect(result.receipts).toHaveLength(registryMove === "heartbeat-retry" ? 4 : 3);
+      expect(() => owner.assertReleased()).not.toThrow();
+    },
+  );
+
   it("fails closed without recreating an owner removed after import", () => {
     const { ownedRoot, owner } = createStandaloneOwner("openclaw-coordinator-removed-owner-");
     const databasePath = path.join(ownedRoot, "state", "openclaw.sqlite");
@@ -526,18 +715,29 @@ describe("state database coordinator", () => {
         import path from "node:path";
         const coordinatorModule = await import(${JSON.stringify(resolveCoordinatorModuleUrl())});
         const claims = path.join(${JSON.stringify(ownedRoot)}, ".vitest-resource-owner", "claims");
-        const before = new Set(fs.readdirSync(claims));
-        const coordinator = coordinatorModule.acquireGatewayLifecycleCoordinator({
-          databasePath: ${JSON.stringify(databasePath)},
-          busyTimeoutMs: 0,
-        });
-        const added = fs.readdirSync(claims).filter((claim) => !before.has(claim));
-        const pending = added.length === 1 && !fs.existsSync(path.join(claims, added[0], "released"));
+        // Observe only this child's real admissions, not parallel workers' registry writes.
+        const admitted = [];
+        const mkdirSync = fs.mkdirSync;
+        fs.mkdirSync = (...args) => {
+          const result = mkdirSync(...args);
+          if (path.dirname(String(args[0])) === claims) admitted.push(String(args[0]));
+          return result;
+        };
+        let coordinator;
+        try {
+          coordinator = coordinatorModule.acquireGatewayLifecycleCoordinator({
+            databasePath: ${JSON.stringify(databasePath)},
+            busyTimeoutMs: 0,
+          });
+        } finally {
+          fs.mkdirSync = mkdirSync;
+        }
+        const pending = admitted.length === 1 && !fs.existsSync(path.join(admitted[0], "released"));
         coordinator.release();
         console.log(JSON.stringify({
           path: coordinator.path,
           pending,
-          released: added.length === 1 && fs.existsSync(path.join(claims, added[0], "released")),
+          released: admitted.length === 1 && fs.existsSync(path.join(admitted[0], "released")),
           runtimeDirectory: coordinatorModule.resolveStateLifecycleRuntimeDirectory(${JSON.stringify(databasePath)}),
         }));
       `,

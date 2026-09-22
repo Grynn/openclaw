@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { getEnvironmentData, setEnvironmentData } from "node:worker_threads";
+import { getEnvironmentData, setEnvironmentData, type Worker } from "node:worker_threads";
 import {
   composeVitestResourceContextNodeOptions,
   findVitestResourceOwner,
   getVitestResourceContext,
+  terminateResourceOwnedNativeWorker,
   type VitestResourceContextDescriptor,
   type VitestResourceOwner,
   VITEST_RESOURCE_CONTEXT_KEY,
@@ -250,4 +251,10 @@ export function publishVitestResourceContext(context: VitestResourceContextDescr
     });
   }
   setEnvironmentData(VITEST_RESOURCE_CONTEXT_KEY, published);
+}
+
+/** Deliberate crash fixtures must join native exit, without certifying graceful close.
+ * General claims (including descendants) still require their own release receipts. */
+export async function terminateVitestWorker(worker: Worker): Promise<void> {
+  await terminateResourceOwnedNativeWorker(worker);
 }

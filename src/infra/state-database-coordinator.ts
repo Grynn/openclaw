@@ -119,7 +119,7 @@ export function resolveStateDatabaseCoordinatorPath(params: {
   return resolveLifecycleCoordinatorPath("state-lifecycle", params);
 }
 
-/** Test namespace cleanup waits for native close, never a pooled lease handoff. */
+/** Namespace cleanup requires native close or an explicitly joined native owner exit. */
 function acquireResourceOwnedCoordinator(
   databasePath: string,
   coordinatorPath: string,
@@ -140,7 +140,7 @@ function acquireResourceOwnedCoordinator(
   try {
     for (const owner of owners) {
       if (owner) {
-        releases.push(owner.claim());
+        releases.push(owner.claimNativeHandle());
       }
     }
   } catch (error) {

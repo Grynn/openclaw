@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { getEnvironmentData } from "node:worker_threads";
+import { getEnvironmentData, threadId, type Worker } from "node:worker_threads";
 
 // Ephemeral Node/Vitest resource handoff, not application persistence. Claims
 // survive worker/module death; only the namespace's process owner deletes them.
@@ -33,40 +33,126 @@ function resourceOwner(root: string, identity: string) {
       throw new Error(`Vitest resource owner changed: ${root}`);
     }
   };
+  // Admission may atomically move the registry between any two filesystem calls.
+  const withClaimFile = <T>(id: string, name: string, access: (file: string) => T): T => {
+    try {
+      return access(path.join(claims, id, name));
+    } catch (error) {
+      if (!hasErrorCode(error, "ENOENT")) {
+        throw error;
+      }
+      return access(path.join(closedClaims, id, name));
+    }
+  };
+  const publishReceipt = (id: string, name: string, value: string) =>
+    withClaimFile(id, name, (file) => fs.writeFileSync(file, value, { flag: "wx" }));
+  const claimIds = () => withClaimFile("", "", (registry) => fs.readdirSync(registry));
+  const claimResource = (nativeHandle = false) => {
+    verifyOwner();
+    const id = randomUUID();
+    const claim = path.join(claims, id);
+    // Atomic pending admission, before allocation/spawn. No shared JSON RMW
+    // and no deletion-based release: a missing receipt never means success.
+    fs.mkdirSync(claim);
+    if (nativeHandle && threadId > 0) {
+      publishReceipt(id, "native-worker", `${process.pid}:${threadId}`);
+    }
+    return () => {
+      verifyOwner();
+      publishReceipt(id, "released", `${identity}:${id}`);
+    };
+  };
+  const observeNativeWorkerExit = (worker: Worker) => {
+    verifyOwner();
+    const workerId = worker.threadId;
+    if (workerId <= 0) {
+      throw new Error("Native resource settlement must observe a live Worker exit");
+    }
+    const nativeOwner = `${process.pid}:${workerId}`;
+    let observedExit = false;
+    let settled = false;
+    const exited = new Promise<void>((resolve) => {
+      worker.prependOnceListener("exit", () => {
+        observedExit = worker.threadId === -1;
+        resolve();
+      });
+    });
+    return async () => {
+      await exited;
+      if (settled) {
+        return;
+      }
+      try {
+        if (!observedExit) {
+          throw new Error("Native Worker exit was not confirmed");
+        }
+        verifyOwner();
+        for (const id of claimIds()) {
+          if (!ID_PATTERN.test(id)) {
+            continue;
+          }
+          let claimant: string;
+          try {
+            claimant = withClaimFile(id, "native-worker", readReceipt);
+          } catch (error) {
+            if (hasErrorCode(error, "ENOENT")) {
+              continue; // General claims cannot settle at another resource's native exit.
+            }
+            throw error;
+          }
+          if (claimant !== nativeOwner) {
+            continue;
+          }
+          const receipt = `${identity}:${id}:${nativeOwner}`;
+          try {
+            if (withClaimFile(id, "native-exited", readReceipt) !== receipt) {
+              throw new Error("Native Worker exit receipt changed");
+            }
+          } catch (error) {
+            if (!hasErrorCode(error, "ENOENT")) {
+              throw error;
+            }
+            // Retry only missing publications from this exact observed native exit.
+            publishReceipt(id, "native-exited", receipt);
+          }
+        }
+        settled = true;
+      } catch (error) {
+        throw new Error("Failed to record native Worker exit", { cause: error });
+      }
+    };
+  };
   return {
     root,
     identity,
-    claim() {
-      verifyOwner();
-      const id = randomUUID();
-      const claim = path.join(claims, id);
-      // Atomic pending admission, before allocation/spawn. No shared JSON RMW
-      // and no deletion-based release: a missing receipt never means success.
-      fs.mkdirSync(claim);
-      return () => {
-        verifyOwner();
-        const receipt = `${identity}:${id}`;
-        try {
-          fs.writeFileSync(path.join(claim, "released"), receipt, { flag: "wx" });
-        } catch (error) {
-          if (!hasErrorCode(error, "ENOENT")) {
-            throw error;
-          }
-          // The creator may close admission after this claim's mkdir but before
-          // its release. The claim moved atomically with the registry.
-          fs.writeFileSync(path.join(closedClaims, id, "released"), receipt, { flag: "wx" });
-        }
-      };
-    },
+    claim: () => claimResource(),
+    // Only thread-local native handles may settle at a confirmed Worker exit.
+    claimNativeHandle: () => claimResource(true),
+    observeNativeWorkerExit,
+    joinNativeWorkerExit: (worker: Worker) => observeNativeWorkerExit(worker)(),
     assertReleased() {
       verifyOwner();
       const registry = fs.existsSync(closedClaims) ? closedClaims : claims;
       // The creator expects this registry. Missing/unreadable metadata is not
       // an empty set, including after all workers have exited successfully.
-      for (const id of fs.readdirSync(registry)) {
-        const receipt = path.join(registry, id, "released");
+      for (const id of claimIds()) {
         try {
-          if (ID_PATTERN.test(id) && readReceipt(receipt) === `${identity}:${id}`) {
+          if (
+            ID_PATTERN.test(id) &&
+            withClaimFile(id, "released", readReceipt) === `${identity}:${id}`
+          ) {
+            continue;
+          }
+        } catch {
+          // An explicit termination may instead have joined this exact native owner.
+        }
+        try {
+          const nativeOwner = withClaimFile(id, "native-worker", readReceipt);
+          if (
+            ID_PATTERN.test(id) &&
+            /^[1-9][0-9]*:[1-9][0-9]*$/.test(nativeOwner) &&
+            withClaimFile(id, "native-exited", readReceipt) === `${identity}:${id}:${nativeOwner}`
+          ) {
             continue;
           }
         } catch {
@@ -232,6 +318,26 @@ export function getVitestResourceContext(): VitestResourceContext | undefined {
     owners,
     productionRuntimeDirectory: descriptor.productionRuntimeDirectory,
   };
+}
+
+/** Retain retryable publication of an exact native exit, separate from successful close. */
+export function captureResourceOwnedNativeWorkerExit(worker: Worker) {
+  // An already-exited (or non-native test double) Worker cannot attest a new native exit.
+  const context = worker.threadId > 0 ? getVitestResourceContext() : undefined;
+  if (context?.kind !== "owned") {
+    return undefined;
+  }
+  const settlements = context.owners.map((owner) => owner.observeNativeWorkerExit(worker));
+  return async () => {
+    await Promise.all(settlements.map((settle) => settle()));
+  };
+}
+
+/** Join an explicitly terminated native owner; general descendant claims remain pending. */
+export async function terminateResourceOwnedNativeWorker(worker: Worker): Promise<number> {
+  const settle = captureResourceOwnedNativeWorkerExit(worker);
+  const [code] = await Promise.all([worker.terminate(), settle?.()]);
+  return code;
 }
 
 /**
