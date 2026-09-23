@@ -26,7 +26,7 @@ import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import buildConfigs from "../../tsdown.config.ts";
 import { copyFsSafePackageFixture } from "./fs-safe-package.test-support.js";
 import { createScriptTestHarness } from "./test-helpers.js";
-import { FS_SAFE_CALLER_PROBE } from "./tsdown-config.test-support.js";
+import { FS_SAFE_CALLER_PROBE, QA_RUNTIME_PRODUCTION_PROBE } from "./tsdown-config.test-support.js";
 
 const configs = Array.isArray(buildConfigs) ? buildConfigs : [buildConfigs];
 const { createTempDir } = createScriptTestHarness();
@@ -87,6 +87,44 @@ const isWorkerBuildConfig = (config: TsdownConfig) =>
   workerBuildTargets.some(([, matches]) => matches(config));
 
 describe("tsdown config", () => {
+  it("loads the packaged QA child environment without development dependencies", async () => {
+    const selected = configs.find((config) => config.name === TSDOWN_UNIFIED_CONFIG_GROUP);
+    expect(selected).toBeDefined();
+    const root = fs.realpathSync(createTempDir("openclaw-tsdown-qa-runtime-"));
+    fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
+    const { bundles } = await build({
+      ...selected,
+      config: false,
+      entry: {
+        "qa-child-env": "extensions/qa-lab/src/gateway-child-env.ts",
+        "qa-runtime": "extensions/qa-lab/runtime-api.ts",
+      },
+      outDir: path.join(root, "dist"),
+      dts: false,
+      logLevel: "silent",
+    });
+    try {
+      const result = await new Promise<{ error: Error | null; stdout: string; stderr: string }>(
+        (resolve) => {
+          execFile(
+            testNodeExecPath,
+            ["--input-type=module", "-e", QA_RUNTIME_PRODUCTION_PROBE, root, process.cwd()],
+            { cwd: root, timeout: 30_000, env: { ...process.env, NODE_OPTIONS: "" } },
+            (error, stdout, stderr) => resolve({ error, stdout, stderr }),
+          );
+        },
+      );
+      expect(result.error, result.stderr).toBeNull();
+      expect(result.stdout.trim()).toBe(
+        "QA child environment loads without development dependencies",
+      );
+    } finally {
+      for (const bundle of bundles) {
+        await bundle[Symbol.asyncDispose]();
+      }
+    }
+  });
+
   it("emits every private Telegram QA harness entry only in private QA builds", async () => {
     const expectedEntries = {
       "plugin-sdk/qa-channel-protocol": "src/plugin-sdk/qa-channel-protocol.ts",

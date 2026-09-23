@@ -12,6 +12,7 @@ import { drainSqliteTestSingletons } from "../../test/sqlite-test-lifecycle.js";
 import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
 import * as nodeSqlite from "./node-sqlite.js";
 import { requireNodeSqlite } from "./node-sqlite.js";
+import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import {
   closeIdleSqliteCoordinators,
   tryAcquireExclusiveSqliteCoordinator,
@@ -28,10 +29,10 @@ import {
   resolveStateLifecycleRuntimeDirectory,
   withStateDatabaseCoordinatorRuntimeDirectory,
 } from "./state-database-coordinator.js";
+import { storageProcessTestEntrypoints } from "./storage-process-runtime.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-const loader = new URL("../../scripts/tsx.mjs", import.meta.url).href;
-const ownerUrl = new URL("./state-database-coordinator.ts", import.meta.url).href;
+const ownerUrl = resolveRuntimeWorkerUrl(storageProcessTestEntrypoints.stateDatabaseCoordinator);
 const defaultLockFiles = new Set<string>();
 
 function observeConnections() {
@@ -723,13 +724,12 @@ describe("idle SQLite coordinator connections", () => {
     const result = execFileSync(
       process.execPath,
       [
-        "--import",
-        loader,
+        ...resolveRuntimeWorkerArgv(ownerUrl).slice(0, -1),
         "--input-type=module",
         "--eval",
         `
       import { AsyncLocalStorage, createHook } from "node:async_hooks";
-      import { acquireStateDatabaseCoordinator } from ${JSON.stringify(ownerUrl)};
+      import { acquireStateDatabaseCoordinator } from ${JSON.stringify(ownerUrl.href)};
       const params = { databasePath: process.argv[1] };
       acquireStateDatabaseCoordinator(params).release();
       const request = new AsyncLocalStorage();

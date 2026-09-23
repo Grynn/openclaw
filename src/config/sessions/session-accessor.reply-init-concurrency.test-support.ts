@@ -1,3 +1,6 @@
+import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
+import { sessionNativeProcessEntrypoints } from "./native-process-runtime.test-support.js";
+
 export function createConcurrencyWorkerScript(
   sessionAccessorUrl: string,
   sessionKey: string,
@@ -9,8 +12,8 @@ const {
   loadReplySessionInitializationSnapshot,
   withTranscriptWriteLock,
 } = await import(${JSON.stringify(sessionAccessorUrl)});
-const { closeOpenClawAgentDatabasesAsync } = await import(${JSON.stringify(new URL("../../state/openclaw-agent-db.ts", import.meta.url).href)});
-const { closeOpenClawStateDatabaseAsync } = await import(${JSON.stringify(new URL("../../state/openclaw-state-db.ts", import.meta.url).href)});
+const { closeOpenClawAgentDatabasesAsync } = await import(${JSON.stringify(resolveRuntimeWorkerUrl(sessionNativeProcessEntrypoints.agentDatabase).href)});
+const { closeOpenClawStateDatabaseAsync } = await import(${JSON.stringify(resolveRuntimeWorkerUrl(sessionNativeProcessEntrypoints.stateDatabase).href)});
 let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;

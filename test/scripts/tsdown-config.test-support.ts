@@ -1,3 +1,53 @@
+export const QA_RUNTIME_PRODUCTION_PROBE = `
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import { createRequire, isBuiltin, registerHooks } from "node:module";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+const [root, repository] = process.argv.slice(1);
+const manifestPath = path.join(repository, "package.json");
+const pluginManifestPath = path.join(repository, "extensions/qa-lab/package.json");
+const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+const pluginManifest = JSON.parse(fs.readFileSync(pluginManifestPath, "utf8"));
+const production = new Set(Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies }));
+const pluginProduction = new Set(Object.keys({ ...pluginManifest.dependencies, ...pluginManifest.optionalDependencies }));
+const outputUrl = pathToFileURL(path.join(root, "dist") + path.sep).href;
+registerHooks({ resolve(specifier, context, nextResolve) {
+  if (isBuiltin(specifier) || specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("file:"))
+    return nextResolve(specifier, context);
+  const name = specifier.startsWith("@") ? specifier.split("/").slice(0, 2).join("/") : specifier.split("/")[0];
+  if (context.parentURL?.startsWith(outputUrl)) {
+    assert(production.has(name) || pluginProduction.has(name), "Non-production dependency in QA runtime: " + specifier);
+    const sourceManifest = production.has(name) ? manifestPath : pluginManifestPath;
+    if (context.conditions.includes("require")) {
+      return { url: pathToFileURL(createRequire(sourceManifest).resolve(specifier)).href, shortCircuit: true };
+    }
+    return nextResolve(specifier, { ...context, parentURL: pathToFileURL(sourceManifest).href });
+  }
+  return nextResolve(specifier, context);
+} });
+const { buildQaRuntimeEnv } = await import(pathToFileURL(path.join(root, "dist/qa-child-env.js")).href);
+const stateDir = path.join(root, "state");
+const env = buildQaRuntimeEnv({
+  baseEnv: { OPENCLAW_PROFILE: "operator", OPENCLAW_SUPERVISOR_MODE: "external" },
+  configPath: path.join(stateDir, "openclaw.json"), gatewayToken: "synthetic-qa-token",
+  homeDir: root, stateDir, tempRoot: root,
+  xdgConfigHome: path.join(root, "config"), xdgDataHome: path.join(root, "data"),
+  xdgCacheHome: path.join(root, "cache"), developmentSourceRoot: null,
+});
+assert.equal(env.OPENCLAW_STATE_DIR, stateDir);
+assert.equal(env.OPENCLAW_SUPERVISOR_MODE, undefined);
+assert.match(env.OPENCLAW_PROFILE, /^qa-[a-f0-9]{24}$/);
+assert.equal(env.OPENCLAW_BUILD_PRIVATE_QA, "1");
+assert.equal(env.OPENCLAW_ENABLE_PRIVATE_QA_CLI, "1");
+const runtime = await import(pathToFileURL(path.join(root, "dist/qa-runtime.js")).href);
+assert.equal(typeof runtime.createQaLiveLaneGateway, "function");
+const lane = runtime.createQaLiveLaneGateway();
+assert.equal(typeof lane.start, "function");
+assert.deepEqual(await lane.stop(), { process: "never-spawned", errors: [] });
+console.log("QA child environment loads without development dependencies");
+`;
+
 export const FS_SAFE_CALLER_PROBE = `
 import assert from "node:assert/strict";
 import fs from "node:fs";

@@ -8,8 +8,10 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { setLoggerOverride } from "../logging/logger.js";
 import { testApi } from "../logging/logger.test-support.js";
 import { requireNodeSqlite } from "./node-sqlite.js";
+import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import { prepareSqliteReadOnlyLocationSyncInProcess } from "./sqlite-readonly-location.js";
 import { reclaimAbandonedSqliteSnapshots } from "./sqlite-snapshot-staging.js";
+import { storageProcessTestEntrypoints } from "./storage-process-runtime.test-support.js";
 import { captureResourceOwnedNativeProcessExit } from "./vitest-resource-ownership.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
@@ -21,6 +23,9 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
       cleanup();
     }
   }),
+);
+const snapshotModule = resolveRuntimeWorkerUrl(
+  storageProcessTestEntrypoints.sqliteReadOnlyLocation,
 );
 
 it.skipIf(process.platform === "win32").for([
@@ -48,12 +53,11 @@ it.skipIf(process.platform === "win32").for([
     const result = await runNodeScript(
       [
         binding.nodeOption,
-        "--import",
-        import.meta.resolve("tsx"),
+        ...resolveRuntimeWorkerArgv(snapshotModule).slice(0, -1),
         "--input-type=module",
         "-e",
         `import fs from 'node:fs'; import path from 'node:path';
-         import { prepareSqliteReadOnlyLocationSyncInProcess } from ${JSON.stringify(new URL("./sqlite-readonly-location.ts", import.meta.url).href)};
+         import { prepareSqliteReadOnlyLocationSyncInProcess } from ${JSON.stringify(snapshotModule.href)};
          const open = fs.openSync;
          let snapshotDescriptor;
          let snapshotPath;

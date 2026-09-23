@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { SUPERVISOR_HINT_ENV_VARS } from "openclaw/plugin-sdk/process-runtime";
-import { applyVitestResourceContextToChildEnv } from "openclaw/plugin-sdk/test-env";
+import { applyVitestResourceContextToChildEnv } from "openclaw/plugin-sdk/qa-runtime";
 import { buildQaCodexAppServerArgs } from "./codex-app-server-args.js";
 import type { QaProviderMode } from "./model-selection.js";
 import {

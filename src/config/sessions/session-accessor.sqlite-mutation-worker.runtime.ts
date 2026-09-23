@@ -113,7 +113,6 @@ async function runColdMutationWorker(
 ) {
   const { mutateSessionColdTranscriptInWorker, prepareSessionColdRestoreInWorker } =
     await import("./session-cold-storage-worker.js");
-  const { reclaimSqliteFreePages } = await import("./session-history-archive-pruning.js");
   const closeDatabase = async () => {
     const cleanup = await settleReclamationDatabase(data.plan.databaseOptions.path);
     if (cleanup.settled) {
@@ -148,9 +147,6 @@ async function runColdMutationWorker(
             },
           );
           waitForSqliteReclamationParentRelease(commitGate);
-          if (data.plan.kind !== "cold-restore") {
-            await reclaimSqliteFreePages(data.plan.databaseOptions, undefined, { maxPasses: 64 });
-          }
           return changed;
         } finally {
           validation = getOpenClawAgentDatabaseValidation(openedDatabase);
