@@ -23,6 +23,7 @@ import {
 import { WORKER_DEPLOY_OPTIONAL_NATIVE_MODULE_ID } from "../../scripts/lib/worker-deploy-build-plugin.mts";
 import { importFreshModule } from "../../src/plugin-sdk/test-helpers/import-fresh.js";
 import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
+import aiBuildConfig from "../../tsdown.ai.config.ts";
 import buildConfigs from "../../tsdown.config.ts";
 import { copyFsSafePackageFixture } from "./fs-safe-package.test-support.js";
 import { createScriptTestHarness } from "./test-helpers.js";
@@ -92,6 +93,25 @@ describe("tsdown config", () => {
     expect(selected).toBeDefined();
     const root = fs.realpathSync(createTempDir("openclaw-tsdown-qa-runtime-"));
     fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
+    // Fresh test installs do not contain workspace package dist artifacts.
+    const aiRoot = path.join(root, "node_modules/@openclaw/ai");
+    fs.mkdirSync(aiRoot, { recursive: true });
+    fs.copyFileSync("packages/ai/package.json", path.join(aiRoot, "package.json"));
+    fs.symlinkSync(
+      path.resolve("packages/ai/node_modules"),
+      path.join(aiRoot, "node_modules"),
+      "dir",
+    );
+    const aiBuild = await build({
+      ...aiBuildConfig,
+      config: false,
+      outDir: path.join(aiRoot, "dist"),
+      dts: false,
+      logLevel: "silent",
+    });
+    for (const bundle of aiBuild.bundles) {
+      await bundle[Symbol.asyncDispose]();
+    }
     const { bundles } = await build({
       ...selected,
       config: false,

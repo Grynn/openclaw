@@ -18,7 +18,9 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   const name = specifier.startsWith("@") ? specifier.split("/").slice(0, 2).join("/") : specifier.split("/")[0];
   if (context.parentURL?.startsWith(outputUrl)) {
     assert(production.has(name) || pluginProduction.has(name), "Non-production dependency in QA runtime: " + specifier);
-    const sourceManifest = production.has(name) ? manifestPath : pluginManifestPath;
+    const sourceManifest = name === "@openclaw/ai"
+      ? path.join(root, "node_modules/@openclaw/ai/package.json")
+      : production.has(name) ? manifestPath : pluginManifestPath;
     if (context.conditions.includes("require")) {
       return { url: pathToFileURL(createRequire(sourceManifest).resolve(specifier)).href, shortCircuit: true };
     }
