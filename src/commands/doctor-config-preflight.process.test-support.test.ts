@@ -105,8 +105,8 @@ describe("Doctor runtime child diagnostics", () => {
   );
 });
 
-// Exercise both execFile fulfillment and rejection with real held SQLite locks.
-describe("Doctor isolated module lifetime", () => {
+// Exercise module and built-runtime completion with real held SQLite locks.
+describe.each(["module", "built"] as const)("Doctor %s child lifetime", (runtime) => {
   it.each([0, 7])("joins native main and Worker claims before returning exit %s", async (code) => {
     const root = tempDirs.createTempDir("openclaw-doctor-module-lifetime-");
     const runtimeRoot = createSourceRuntime(root);
@@ -129,10 +129,7 @@ describe("Doctor isolated module lifetime", () => {
     `;
     const env = { PATH: process.env.PATH, TSX_DISABLE_CACHE: "1" };
     const before = { ...env };
-    const execution = tempDirs.track(
-      runIsolatedModuleScript(
-        env,
-        `
+    const script = `
           import { once } from "node:events";
           import { Worker } from "node:worker_threads";
           ${openClaimedDatabase}
@@ -143,9 +140,14 @@ describe("Doctor isolated module lifetime", () => {
           console.log(JSON.stringify({pid: process.pid, threadId, owners: context.owners.map(({root, identity}) => ({root, identity}))}));
           console.error("native child diagnostic");
           process.exit(${code});
-        `,
-        { runtimeRoot },
-      ),
+        `;
+    if (runtime === "built") {
+      fs.writeFileSync(path.join(runtimeRoot, "dist", "entry.js"), script);
+    }
+    const execution = tempDirs.track(
+      runtime === "built"
+        ? runBuiltRuntime(runtimeRoot, env, [], 30_000)
+        : runIsolatedModuleScript(env, script, { runtimeRoot }),
     );
     const result = await execution.catch((error: unknown) => {
       expect(code).toBe(7);
@@ -153,7 +155,9 @@ describe("Doctor isolated module lifetime", () => {
       expect(error).toMatchObject({ code, stderr: "native child diagnostic\n" });
       return error as Error & { stdout: string; stderr: string };
     });
-    if (code === 0) {
+    if (runtime === "built") {
+      expect(result, `${result.stdout}\n${result.stderr}`).toMatchObject({ code, signal: null });
+    } else if (code === 0) {
       expect(result).not.toBeInstanceOf(Error);
     } else {
       expect(result).toBeInstanceOf(Error);

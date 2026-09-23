@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
+import { hasUnjoinedWork } from "../../scripts/lib/managed-child-process.mts";
 import { runCliProcessChild } from "../cli/cli-process-child.test-helpers.js";
 import {
   applyVitestResourceContextToChildEnv,
@@ -44,6 +45,33 @@ const ISOLATED_RUNTIME_NODE_ARGS = [
   `)}`,
 ];
 
+async function runOwnedRuntimeChild(params: Parameters<typeof runCliProcessChild>[0]) {
+  const env = { ...params.env };
+  applyVitestResourceContextToChildEnv(env);
+  let settleNativeExit: ReturnType<typeof captureResourceOwnedNativeProcessExit>;
+  let joinVerified = true;
+  try {
+    return await runCliProcessChild({
+      ...params,
+      env,
+      interact(child) {
+        settleNativeExit = child.pid
+          ? captureResourceOwnedNativeProcessExit(child, { includeWorkerThreads: true })
+          : undefined;
+        child.stdin.end(params.input);
+      },
+    });
+  } catch (error) {
+    // Failed native cleanup must remain observable without waiting on a live child.
+    joinVerified = !hasUnjoinedWork(error);
+    throw error;
+  } finally {
+    if (joinVerified) {
+      await settleNativeExit?.();
+    }
+  }
+}
+
 export function runBuiltRuntime(
   runtimeRoot: string,
   env: NodeJS.ProcessEnv,
@@ -51,7 +79,7 @@ export function runBuiltRuntime(
   timeout: number,
   maxBuffer?: number,
 ) {
-  return runCliProcessChild({
+  return runOwnedRuntimeChild({
     nodeExecutable: isolatedRuntimeNodeExecPath,
     nodeArgs: [...ISOLATED_RUNTIME_NODE_ARGS, path.join(runtimeRoot, "dist", "entry.js"), ...args],
     nodeArgsPolicy: "caller",
@@ -69,7 +97,7 @@ export function runSourceRuntime(
   timeout: number,
   maxBuffer?: number,
 ) {
-  return runCliProcessChild({
+  return runOwnedRuntimeChild({
     nodeExecutable: isolatedRuntimeNodeExecPath,
     nodeArgs: [...ISOLATED_RUNTIME_NODE_ARGS, "--import", "tsx", ...args],
     nodeArgsPolicy: "caller",
