@@ -1,5 +1,5 @@
 import { Agent, Server, request } from "node:http";
-import { afterAll, afterEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, assert, expect, it, vi } from "vitest";
 import * as mutableFileBinding from "../../infra/system-run-approval-binding.js";
 import {
   initializeGlobalHookRunner,
@@ -24,9 +24,7 @@ import {
   testing,
 } from "./native-hook-relay.js";
 
-afterAll(async () => {
-  await closeOpenClawStateDatabaseAsync();
-});
+afterAll(() => closeOpenClawStateDatabaseAsync());
 
 afterEach(async () => {
   await testing.clearNativeHookRelaysForTests();
@@ -697,6 +695,58 @@ it("rejects oversized direct bridge responses", async () => {
       });
       relay.unregister();
       await relay.drain();
+    }
+  });
+});
+
+it("binds direct bridge tokens to the relay they were issued for", async () => {
+  await withOpenClawTestState({ label: "relay-token-binding" }, async () => {
+    const first = registerOwnedNativeHookRelay({
+      provider: "codex",
+      relayId: "codex-first-bridge-session",
+      sessionId: "session-1",
+      runId: "run-1",
+      allowedEvents: ["pre_tool_use"],
+    });
+    const second = registerOwnedNativeHookRelay({
+      provider: "codex",
+      relayId: "codex-second-bridge-session",
+      sessionId: "session-2",
+      runId: "run-2",
+      allowedEvents: ["pre_tool_use"],
+    });
+    try {
+      await Promise.all([first.ready, second.ready]);
+      const firstRecord = await store.readNativeHookRelayBridgeRecord({ relayId: first.relayId });
+      assert(firstRecord, "test bridge registration unavailable");
+      await store.writeNativeHookRelayBridgeRecord({
+        record: { ...firstRecord, relayId: second.relayId, expiresAtMs: Date.now() + 10_000 },
+      });
+      // Cold locator startup must not consume this token-binding fixture's caller deadline.
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+      try {
+        await expect(
+          invokeNativeHookRelayBridge({
+            provider: "codex",
+            relayId: second.relayId,
+            generation: second.generation,
+            event: "pre_tool_use",
+            timeoutMs: 500,
+            rawPayload: {
+              hook_event_name: "PreToolUse",
+              tool_name: "Bash",
+              tool_input: { command: "pnpm test" },
+            },
+          }),
+        ).rejects.toThrow("native hook relay bridge target mismatch");
+        expect(testing.getNativeHookRelayInvocationsForTests()).toStrictEqual([]);
+      } finally {
+        clock.mockRestore();
+      }
+    } finally {
+      first.unregister();
+      second.unregister();
+      await Promise.all([first.drain(), second.drain()]);
     }
   });
 });

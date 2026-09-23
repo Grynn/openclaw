@@ -641,7 +641,6 @@ test.each([
                 get: () => ({ state: "destroyed" }),
                 cancelInferenceForSession: vi.fn(() => []),
                 hasInferenceForSession: vi.fn(() => false),
-                resolveInferenceSessionForRunId: vi.fn(),
               },
             }
           : {}),
@@ -680,7 +679,6 @@ test.each([
                 get: () => ({ state: "destroyed" }),
                 cancelInferenceForSession: vi.fn(() => []),
                 hasInferenceForSession: vi.fn(() => false),
-                resolveInferenceSessionForRunId: vi.fn(),
               },
             }
           : {}),

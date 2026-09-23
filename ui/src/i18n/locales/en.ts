@@ -942,9 +942,8 @@ export const en: TranslationMap & {
     automationPrefix: "Automation:",
     actionRequiresConnection: "Connect to the Gateway to change sessions.",
     actionUnavailable: "This Gateway does not support this session action.",
-    actionRequiresRead: "This action requires operator.read access.",
-    actionRequiresWrite: "This action requires operator.write access.",
-    actionRequiresAdmin: "This action requires operator.admin access.",
+    actionRequiresScope: "This action requires {scope} access.",
+    actionRequiresOwnership: "Only the session owner can make this change.",
     deletePreservedReasons: {
       "owner-mismatch": "owned elsewhere",
       busy: "live run or cleanup active",
@@ -2807,6 +2806,7 @@ export const en: TranslationMap & {
         "Tell this agent about you and how you like to work. This edits only your personal USER.md, not the shared workspace file.",
     },
     offline: "Connect to the gateway to meet your agent.",
+    access: {},
     usageStatistics: "Usage statistics",
     usageStatisticsDescription: "View activity, costs, and usage trends.",
     identity: {
@@ -2818,7 +2818,7 @@ export const en: TranslationMap & {
       profileUnavailable: "Your identity profile could not be loaded.",
       unidentified:
         "This connection has no personal profile; sign in through Cloudflare Access, Tailscale Serve, or a trusted proxy to set a name and avatar.",
-      writeRequired: "Profile editing requires operator.write access.",
+      writeRequired: "Your current access does not allow profile editing.",
       avatar: "Avatar",
       avatarDescription: "PNG, JPEG, or WebP. Images are resized to 256 × 256 or smaller.",
       chooseAvatar: "Choose image",
@@ -3511,6 +3511,7 @@ export const en: TranslationMap & {
       selected: "Member",
       noPeople: "No paired people found.",
       readOnlyNotice: "Only the session owner and members can act in this session.",
+      scopeReadOnlyNotice: "Sending messages is unavailable with your current access.",
       publicAccess: "Public access",
       publicIndicator: "Public",
       worldReadable: "Public — anyone can read without signing in.",
