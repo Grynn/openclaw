@@ -120,7 +120,6 @@ test("catalog reload releases the agent writer while preserving same-session ord
     );
     let metadataPatch: ReturnType<typeof patch> | undefined;
     let successorPatch: ReturnType<typeof patch> | undefined;
-    let blockedMetadata: Error | undefined;
     try {
       await Promise.race([entered.promise, catalogPatch]);
       expect(loadGatewayModelCatalog).toHaveBeenCalledOnce();
@@ -129,13 +128,8 @@ test("catalog reload releases the agent writer while preserving same-session ord
         patch({ key: catalogKey, pinned: true }, successorResponse),
       );
       metadataPatch = patch({ key: metadataKey, pinned: true }, metadataResponse);
-      // Response delivery precedes finalization; join the independent operation
-      // before advancing the clock for requests still waiting on the catalog.
-      await racePromiseWithAbortSignal(Promise.resolve(metadataPatch), signal).catch(
-        (error: unknown) => {
-          blockedMetadata = error instanceof Error ? error : new Error(String(error));
-        },
-      );
+      // Join independent work before advancing the diagnostic clock or releasing the catalog.
+      await racePromiseWithAbortSignal(Promise.resolve(metadataPatch), signal);
       expect(metadataResponse).toHaveBeenCalledWith(true, expect.any(Object), undefined);
       expect(catalogResponse).not.toHaveBeenCalled();
       expect(successorResponse).not.toHaveBeenCalled();
@@ -184,9 +178,6 @@ test("catalog reload releases the agent writer while preserving same-session ord
         phaseDurationsMs: expect.objectContaining({ lifecycleAdmission: 1_500 }),
       }),
     );
-    if (blockedMetadata) {
-      throw blockedMetadata;
-    }
   });
 });
 
@@ -341,9 +332,8 @@ test("patchMany prepares singleton agent groups without blocking another session
     const catalog =
       createDeferredCore<Awaited<ReturnType<GatewayRequestContext["loadGatewayModelCatalog"]>>>();
     const entered = createDeferredCore();
-    let preparingCatalogs = 0;
     const loadGatewayModelCatalog = vi.fn(() => {
-      if (++preparingCatalogs === targets.length) {
+      if (loadGatewayModelCatalog.mock.calls.length === targets.length) {
         entered.resolve();
       }
       return catalog.promise;
