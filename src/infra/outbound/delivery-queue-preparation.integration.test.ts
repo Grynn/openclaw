@@ -36,15 +36,16 @@ describe("stable delivery preparation cross-process ownership", () => {
     const closed = new Promise<void>((resolve) => {
       child.once("close", () => resolve());
     });
-    const settleNativeExit =
-      child.pid === undefined
-        ? undefined
-        : captureResourceOwnedNativeProcessExit(child, { includeWorkerThreads: true });
+    let settleNativeExit: ReturnType<typeof captureResourceOwnedNativeProcessExit> = undefined;
     stopChild = async () => {
       child.kill("SIGKILL");
       await closed;
       await settleNativeExit?.();
     };
+    settleNativeExit =
+      child.pid === undefined
+        ? undefined
+        : captureResourceOwnedNativeProcessExit(child, { includeWorkerThreads: true });
     await new Promise<void>((resolve, reject) => {
       let stdout = "";
       let stderr = "";

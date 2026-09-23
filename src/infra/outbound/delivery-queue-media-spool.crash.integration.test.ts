@@ -39,10 +39,7 @@ async function enqueueThenKillChild(source: string): Promise<ChildResult> {
       env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
     },
   );
-  const settleNativeExit =
-    spawned.pid === undefined
-      ? undefined
-      : captureResourceOwnedNativeProcessExit(spawned, { includeWorkerThreads: true });
+  let settleNativeExit: ReturnType<typeof captureResourceOwnedNativeProcessExit> = undefined;
   const closed = new Promise<void>((resolve) => {
     spawned.once("close", () => resolve());
   });
@@ -52,6 +49,10 @@ async function enqueueThenKillChild(source: string): Promise<ChildResult> {
     await settleNativeExit?.();
   };
   stopChild = stop;
+  settleNativeExit =
+    spawned.pid === undefined
+      ? undefined
+      : captureResourceOwnedNativeProcessExit(spawned, { includeWorkerThreads: true });
   const result = await new Promise<ChildResult>((resolve, reject) => {
     let stdout = "";
     let stderr = "";
