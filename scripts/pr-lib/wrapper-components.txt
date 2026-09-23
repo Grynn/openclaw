@@ -807,7 +807,7 @@ src/infra/update-run-schema.ts
 src/infra/update-run-timeouts.ts
 src/infra/update-snapshot-capacity-schema.ts
 src/infra/update-step-identity.ts
-src/infra/vitest-resource-context-preload.test-support.ts
+src/infra/vitest-resource-context-preload.test-support.mjs
 src/infra/vitest-resource-context.test-support.ts
 src/infra/vitest-resource-ownership.ts
 src/infra/vitest-resource-stop-probe.test-support.mjs

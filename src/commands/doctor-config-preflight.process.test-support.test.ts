@@ -1,9 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { getCliProcessTestTimeout } from "../cli/cli-process-child.test-helpers.js";
-import { runBuiltRuntime } from "./doctor-config-preflight.process.test-support.js";
+import {
+  createSourceRuntime,
+  runBuiltRuntime,
+  runIsolatedModuleScript,
+} from "./doctor-config-preflight.process.test-support.js";
 
 const tempDirs = createFixtureLifetime();
 afterEach(() => tempDirs.cleanup());
@@ -97,4 +103,96 @@ describe("Doctor runtime child diagnostics", () => {
     },
     getCliProcessTestTimeout(DIAGNOSTIC_CHILD_TIMEOUT_MS),
   );
+});
+
+// Exercise both execFile fulfillment and rejection with real held SQLite locks.
+describe("Doctor isolated module lifetime", () => {
+  it.each([0, 7])("joins native main and Worker claims before returning exit %s", async (code) => {
+    const root = tempDirs.createTempDir("openclaw-doctor-module-lifetime-");
+    const runtimeRoot = createSourceRuntime(root);
+    const databasePaths = [path.join(root, "main.sqlite"), path.join(root, "worker.sqlite")];
+    const ownershipUrl = pathToFileURL(path.resolve("src/infra/vitest-resource-ownership.ts")).href;
+    const openClaimedDatabase = `
+      import { DatabaseSync } from "node:sqlite";
+      import { getVitestResourceContext } from ${JSON.stringify(ownershipUrl)};
+      const context = getVitestResourceContext();
+      if (context?.kind !== "owned") throw new Error("Expected validated child owner");
+      for (const owner of context.owners) owner.claimNativeHandle(() => {});
+    `;
+    const workerSource = `
+      import { parentPort, threadId } from "node:worker_threads";
+      ${openClaimedDatabase}
+      const database = new DatabaseSync(${JSON.stringify(databasePaths[1])});
+      database.exec("BEGIN EXCLUSIVE");
+      parentPort.postMessage(threadId);
+      setInterval(() => {}, 1000);
+    `;
+    const env = { PATH: process.env.PATH, TSX_DISABLE_CACHE: "1" };
+    const before = { ...env };
+    const execution = tempDirs.track(
+      runIsolatedModuleScript(
+        env,
+        `
+          import { once } from "node:events";
+          import { Worker } from "node:worker_threads";
+          ${openClaimedDatabase}
+          const database = new DatabaseSync(${JSON.stringify(databasePaths[0])});
+          database.exec("BEGIN EXCLUSIVE");
+          const worker = new Worker(new URL(${JSON.stringify("data:text/javascript," + encodeURIComponent(workerSource))}), {execArgv: ["--import", "tsx"]});
+          const [threadId] = await once(worker, "message");
+          console.log(JSON.stringify({pid: process.pid, threadId, owners: context.owners.map(({root, identity}) => ({root, identity}))}));
+          console.error("native child diagnostic");
+          process.exit(${code});
+        `,
+        { runtimeRoot },
+      ),
+    );
+    const result = await execution.catch((error: unknown) => {
+      expect(code).toBe(7);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).toMatchObject({ code, stderr: "native child diagnostic\n" });
+      return error as Error & { stdout: string; stderr: string };
+    });
+    if (code === 0) {
+      expect(result).not.toBeInstanceOf(Error);
+    } else {
+      expect(result).toBeInstanceOf(Error);
+    }
+    expect(result.stderr).toBe("native child diagnostic\n");
+    expect(env).toEqual(before);
+    const { pid, threadId, owners } = JSON.parse(result.stdout) as {
+      pid: number;
+      threadId: number;
+      owners: { root: string; identity: string }[];
+    };
+    expect(threadId).toBeGreaterThan(0);
+    expect(owners.length).toBeGreaterThan(0);
+    for (const owner of owners) {
+      const claims = path.join(owner.root, ".vitest-resource-owner", "claims");
+      const receipts = fs.readdirSync(claims).flatMap((id) => {
+        const file = path.join(claims, id, "native-worker");
+        if (!fs.existsSync(file)) {
+          return [];
+        }
+        const claimant = fs.readFileSync(file, "utf8");
+        if (claimant !== `${pid}:0` && claimant !== `${pid}:${threadId}`) {
+          return [];
+        }
+        expect(fs.existsSync(path.join(claims, id, "released"))).toBe(false);
+        expect(fs.readFileSync(path.join(claims, id, "native-exited"), "utf8")).toBe(
+          `${owner.identity}:${id}:${claimant}`,
+        );
+        return [claimant];
+      });
+      expect(receipts.toSorted()).toEqual([`${pid}:0`, `${pid}:${threadId}`].toSorted());
+    }
+    for (const databasePath of databasePaths) {
+      const database = new DatabaseSync(databasePath);
+      try {
+        database.exec("BEGIN EXCLUSIVE; ROLLBACK");
+      } finally {
+        database.close();
+      }
+    }
+  });
 });

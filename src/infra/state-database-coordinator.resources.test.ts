@@ -21,7 +21,7 @@ const { tempDirs, createStandaloneOwner } = createCoordinatorResourceTestHarness
 const testNodeExecPath = resolveTestNodeExecPath();
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const resourceContextPreload = pathToFileURL(
-  path.join(repositoryRoot, "src/infra/vitest-resource-context-preload.test-support.ts"),
+  path.join(repositoryRoot, "src/infra/vitest-resource-context-preload.test-support.mjs"),
 ).href;
 
 describe("state database coordinator", () => {

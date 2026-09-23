@@ -11,7 +11,7 @@ import { createVitestResourceOwner } from "./vitest-resource-ownership.js";
 const testNodeExecPath = resolveTestNodeExecPath();
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const resourceContextPreload = pathToFileURL(
-  path.join(repositoryRoot, "src/infra/vitest-resource-context-preload.test-support.ts"),
+  path.join(repositoryRoot, "src/infra/vitest-resource-context-preload.test-support.mjs"),
 ).href;
 
 export function withResourceContextPreload(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

@@ -18,7 +18,7 @@ export const VITEST_OPENCLAW_RESOURCE_ROOT_CHAIN = "VITEST_OPENCLAW_RESOURCE_ROO
 export const VITEST_OPENCLAW_PRODUCTION_LOCK_ROOT = "VITEST_OPENCLAW_PRODUCTION_LOCK_ROOT";
 export const VITEST_PAUSE_AFTER_ACK_RECEIPT = "VITEST_PAUSE_AFTER_ACK_RECEIPT";
 export const VITEST_RESOURCE_CONTEXT_NODE_OPTION = `--import=${
-  new URL("./vitest-resource-context-preload.test-support.ts", import.meta.url).href
+  new URL("./vitest-resource-context-preload.test-support.mjs", import.meta.url).href
 }`;
 
 export function composeVitestLauncherNodeOptions(requested: string | undefined): string {
