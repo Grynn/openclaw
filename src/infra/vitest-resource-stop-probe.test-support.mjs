@@ -25,7 +25,7 @@ export default function installPauseAfterAcknowledgementProbe(receiptPath) {
   const isVitestFork = (arg) =>
     typeof arg === "string" && arg.replaceAll("\\", "/").endsWith("/vitest/dist/workers/forks.js");
   if (isVitestFork(process.argv[1]) && process.send) {
-    const send = process.send;
+    const send = process.send.bind(process);
     process.send = function (message, ...args) {
       if (
         message?.["__vitest_worker_response__"] === true &&
@@ -43,7 +43,7 @@ export default function installPauseAfterAcknowledgementProbe(receiptPath) {
           return callback.apply(this, callbackArgs);
         };
       }
-      return send.call(this, message, ...args);
+      return send(message, ...args);
     };
   }
   subscribe("child_process", ({ process: child }) => {
