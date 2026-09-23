@@ -20,6 +20,7 @@ import { loadSubagentRegistryFromSqlite } from "../registry/subagent-registry.st
 import { settleSubagentCompletionDelivery } from "./subagent-completion-admission.store.js";
 import {
   armRequesterWake,
+  failedRecords,
   records,
   requesterWakeDriver,
 } from "./subagent-completion-admission.test-helpers.js";
@@ -246,45 +247,54 @@ describe("requester wake recovery after task expiry", () => {
     }
   });
 
-  it("persists bounded backoff for a retryable settlement error without losing the wake", async () => {
-    const input = armRequesterWake(records());
-    input.subagent.delivery = { status: "pending", generation: 1 };
-    persistOwner(input);
-    database.db.exec(
-      "CREATE TEMP TRIGGER reject_task_settlement BEFORE UPDATE ON task_runs " +
-        "BEGIN SELECT RAISE(ABORT, 'temporary task write failure'); END",
-    );
-    let unsubscribe = () => {};
-    const retryPersisted = new Promise<void>((resolve) => {
-      unsubscribe = onSubagentRegistryPersisted(() => {
+  it.each(["succeeded", "cancelled"] as const)(
+    "persists bounded backoff for a retryable %s settlement error without losing the wake",
+    async (status) => {
+      const input =
+        status === "succeeded"
+          ? armRequesterWake(records())
+          : failedRecords("cancelled", { status: "error" });
+      input.subagent.delivery = { status: "pending", generation: 1 };
+      persistOwner(input);
+      database.db.exec(
+        "CREATE TEMP TRIGGER reject_task_settlement BEFORE UPDATE ON task_runs " +
+          "BEGIN SELECT RAISE(ABORT, 'temporary task write failure'); END",
+      );
+      let unsubscribe = () => {};
+      const retryPersisted = new Promise<void>((resolve) => {
+        unsubscribe = onSubagentRegistryPersisted(() => {
+          unsubscribe();
+          resolve();
+        });
+      });
+      const driver = requesterWakeDriver([input]);
+      try {
+        await driver.run();
+        await retryPersisted;
+        const wake = input.subagent.requesterSettleWake;
+        expect(wake).toMatchObject({ status: "pending", settleFailureCount: 1 });
+        expect(wake?.nextAttemptAt).toBeGreaterThan(Date.now());
+        expect(input.subagent.delivery?.status).toBe("pending");
+        expect(
+          loadSubagentRegistryFromSqlite().get(input.subagent.runId)?.requesterSettleWake,
+        ).toMatchObject({
+          settleFailureCount: 1,
+          nextAttemptAt: wake?.nextAttemptAt,
+        });
+        reopenOwners();
+        expect(subagentRuns.get(input.subagent.runId)?.requesterSettleWake).toMatchObject({
+          status: "pending",
+          settleFailureCount: 1,
+          nextAttemptAt: wake?.nextAttemptAt,
+        });
+        expect(getTaskById(input.task.taskId)).toMatchObject({
+          status: input.task.status,
+          deliveryStatus: "session_queued",
+        });
+      } finally {
         unsubscribe();
-        resolve();
-      });
-    });
-    const driver = requesterWakeDriver([input]);
-    try {
-      await driver.run();
-      await retryPersisted;
-      const wake = input.subagent.requesterSettleWake;
-      expect(wake).toMatchObject({ status: "pending", settleFailureCount: 1 });
-      expect(wake?.nextAttemptAt).toBeGreaterThan(Date.now());
-      expect(input.subagent.delivery?.status).toBe("pending");
-      expect(
-        loadSubagentRegistryFromSqlite().get(input.subagent.runId)?.requesterSettleWake,
-      ).toMatchObject({
-        settleFailureCount: 1,
-        nextAttemptAt: wake?.nextAttemptAt,
-      });
-      reopenOwners();
-      expect(subagentRuns.get(input.subagent.runId)?.requesterSettleWake).toMatchObject({
-        status: "pending",
-        settleFailureCount: 1,
-        nextAttemptAt: wake?.nextAttemptAt,
-      });
-      expect(getTaskById(input.task.taskId)?.deliveryStatus).toBe("session_queued");
-    } finally {
-      unsubscribe();
-      driver.controller.clearScheduledResumeTimers();
-    }
-  });
+        driver.controller.clearScheduledResumeTimers();
+      }
+    },
+  );
 });
