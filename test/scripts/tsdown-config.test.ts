@@ -324,14 +324,22 @@ describe("tsdown config", () => {
     }
     const root = fs.realpathSync(createTempDir("openclaw-tsdown-imap-"));
     fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
-    fs.symlinkSync(fs.realpathSync("node_modules"), path.join(root, "node_modules"), "dir");
+    const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")) as {
+      dependencies: Record<string, string>;
+    };
+    for (const name of Object.keys(manifest.dependencies)) {
+      const destination = path.join(root, "node_modules", name);
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.symlinkSync(fs.realpathSync(path.join("node_modules", name)), destination, "dir");
+    }
     const { bundles } = await build({
       ...selected,
       config: false,
       entry: {
         [entryName]: "extensions/imap/index.ts",
         "plugin-sdk/plugin-state-store-runtime": "src/plugin-sdk/plugin-state-store-runtime.ts",
-        "plugin-sdk/sqlite-runtime-testing": "src/plugin-sdk/sqlite-runtime-testing.ts",
+        // The standalone caller only needs production cleanup, not the Vitest/session facade.
+        "fixture-state-lifecycle": "src/state/openclaw-state-db-cache.ts",
       },
       outDir: path.join(root, "dist"),
       dts: false,

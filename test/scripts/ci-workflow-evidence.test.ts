@@ -119,6 +119,7 @@ function workflowOccurrenceEvidence(
 function writeWorkflowEvidenceApi(root: string, accessors = true) {
   const apiPath = path.join(root, "extensions/qa-lab/api.ts");
   mkdirSync(path.dirname(apiPath), { recursive: true });
+  writeFileSync(path.join(root, "package.json"), '{"type":"module"}\n');
   writeFileSync(
     path.join(root, "tsconfig.json"),
     JSON.stringify({ extends: path.resolve("tsconfig.json") }),

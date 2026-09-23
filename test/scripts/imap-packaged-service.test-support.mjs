@@ -11,7 +11,7 @@ const { createPluginStateSyncKeyedStore } = await import(
   pathToFileURL(path.join(root, "dist/plugin-sdk/plugin-state-store-runtime.js"))
 );
 const { closeOpenClawStateDatabaseAsync } = await import(
-  pathToFileURL(path.join(root, "dist/plugin-sdk/sqlite-runtime-testing.js"))
+  pathToFileURL(path.join(root, "dist/fixture-state-lifecycle.js"))
 );
 const sockets = new Set();
 let server;
