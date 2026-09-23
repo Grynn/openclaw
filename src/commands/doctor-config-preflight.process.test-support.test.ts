@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { getCliProcessTestTimeout } from "../cli/cli-process-child.test-helpers.js";
+import { buildCliRespawnPlan } from "../entry.respawn.js";
 import {
   createSourceRuntime,
   runBuiltRuntime,
@@ -55,6 +56,25 @@ describe("Doctor runtime child diagnostics", () => {
       })}\n`,
       stderr: "validation diagnostic\n",
     });
+  });
+
+  it("starts the owned child with its CLI warning and stack policy already configured", async () => {
+    const runtimeRoot = createRuntime(
+      "console.log(JSON.stringify({ argv: process.argv, execArgv: process.execArgv, execPath: process.execPath }));",
+    );
+    const env = { PATH: process.env.PATH };
+    const result = await tempDirs.track(
+      runBuiltRuntime(runtimeRoot, env, ["update", "--json"], 5_000),
+    );
+    expect(result).toMatchObject({ code: 0, signal: null, stderr: "" });
+    const launch = JSON.parse(result.stdout) as {
+      argv: string[];
+      execArgv: string[];
+      execPath: string;
+    };
+    expect(launch.argv.slice(2)).toEqual(["update", "--json"]);
+    // Exercise the real startup decision against the flags the native child received.
+    expect(buildCliRespawnPlan({ ...launch, env, autoNodeExtraCaCerts: "" })).toBeNull();
   });
 
   it("preserves the combined UTF-8 output limit without charging diagnostic readiness", async () => {

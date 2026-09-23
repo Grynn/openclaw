@@ -23,6 +23,10 @@ const isolatedRuntimeNodeExecPath = resolveTestNodeExecPath();
 // makes Doctor repair that checkout instead, including building its Control UI.
 // Dependency realpaths still own their transitive packages under isolated installs.
 const ISOLATED_RUNTIME_NODE_ARGS = [
+  // Configure startup policy before spawning so native ownership stays with
+  // this child instead of an otherwise unnecessary CLI respawn.
+  "--disable-warning=ExperimentalWarning",
+  ...(process.platform === "win32" ? ["--stack-size=8192"] : []),
   "--preserve-symlinks",
   "--preserve-symlinks-main",
   "--import",
