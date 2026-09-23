@@ -39,6 +39,7 @@ import {
 import {
   beginSessionWorkAdmission,
   getSessionWorkAdmissionOwnerRelease,
+  isSessionWorkRestartInterruptReason,
   type SessionWorkAdmissionLease,
 } from "../../sessions/session-lifecycle-admission.js";
 import type { OpenClawAgentDatabaseClaim } from "../../state/openclaw-agent-db-identity.js";
@@ -324,9 +325,13 @@ export async function admitReplyTurn(
               resolveGatewayContext,
               identities: [params.sessionKey],
               signal: params.upstreamAbortSignal,
-              onInterrupt: () => {
+              onInterrupt: (reason) => {
                 interruptedBeforeOperation = true;
-                operation?.abortForRestart();
+                if (isSessionWorkRestartInterruptReason(reason)) {
+                  operation?.abortForRestart();
+                } else {
+                  operation?.abortByUser();
+                }
                 params.onLifecycleInterrupt?.();
               },
               assertAllowed: async (signal) => {

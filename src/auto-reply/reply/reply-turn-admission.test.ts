@@ -29,6 +29,7 @@ import {
 import { testing } from "./reply-run-registry.test-support.js";
 import { runWithReplyOperationLifecycleAdmission } from "./reply-turn-admission.js";
 import {
+  admitTestReplyOperation,
   admitTestReplyTurn,
   createSessionStore,
   createSessionStoreFor,
@@ -73,14 +74,6 @@ function createTestReplyOperation(
     Partial<Pick<Parameters<typeof createReplyOperation>[0], "resetTriggered">>,
 ) {
   return createReplyOperation({ resetTriggered: false, ...overrides });
-}
-
-async function admitTestReplyOperation(params: Parameters<typeof admitTestReplyTurn>[0]) {
-  const admission = await admitTestReplyTurn(params);
-  if (admission.status !== "owned") {
-    throw new Error("Fixture requires an admitted reply operation");
-  }
-  return admission.operation;
 }
 
 async function readSessionEntry(
@@ -348,7 +341,7 @@ describe("reply turn admission", () => {
     });
     expect(admission.operation.result).toEqual({
       kind: "aborted",
-      code: "aborted_for_restart",
+      code: "aborted_by_user",
     });
     expect(mutationRan).toBe(false);
 
@@ -913,7 +906,7 @@ describe("reply turn admission", () => {
     });
     expect(admission.operation.result).toEqual({
       kind: "aborted",
-      code: "aborted_for_restart",
+      code: "aborted_by_user",
     });
     expect(mutationRan).toBe(false);
     expect(replyRunRegistry.get(sessionKey)).toBe(admission.operation);
@@ -1707,7 +1700,7 @@ describe("reply turn admission", () => {
     await vi.waitFor(() => {
       expect(reservation.abortSignal.aborted).toBe(true);
     });
-    expect(reservation.result).toEqual({ kind: "aborted", code: "aborted_for_restart" });
+    expect(reservation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
     expect(mutationRan).toBe(false);
 
     reservation.complete();
