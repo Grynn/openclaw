@@ -70,7 +70,7 @@ describe("QA child resource ownership", () => {
       developmentSourceRoot: process.cwd(),
       runtimeEnvPatch: { NODE_OPTIONS: fixturePreload },
     });
-    expect(env.NODE_OPTIONS).toContain("vitest-resource-context-preload.test-support.ts");
+    expect(env.NODE_OPTIONS).toContain("vitest-resource-context-preload.test-support.mjs");
     expect(env.NODE_OPTIONS).toContain(fixturePreload);
 
     const source = `
