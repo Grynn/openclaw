@@ -425,8 +425,9 @@ it(
     );
     fs.writeFileSync(
       path.join(root, "vitest.config.ts"),
-      `import { diagnosticForksPool } from ${JSON.stringify(path.join(repoRoot, "test/vitest/vitest.forks-pool.ts"))};
-export default { root: ${JSON.stringify(root)}, test: { pool: diagnosticForksPool, isolate: true, maxWorkers: 1, include: ["owned.test.ts"] } };
+      `import { createCommandsVitestConfig } from ${JSON.stringify(path.join(repoRoot, "test/vitest/vitest.commands.config.ts"))};
+const { pool } = createCommandsVitestConfig({}).test;
+export default { root: ${JSON.stringify(root)}, test: { pool, isolate: true, maxWorkers: 1, include: ["owned.test.ts"] } };
 `,
     );
     const ownership = path.join(repoRoot, "src/infra/vitest-resource-ownership.ts");
