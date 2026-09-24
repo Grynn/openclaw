@@ -214,6 +214,36 @@ describe("sessionsTailCommand", () => {
     expect(output).not.toContain("SECRET");
   });
 
+  it("keeps model token metrics within one usage scope", async () => {
+    const runtime = createTestRuntime();
+    await writeSessionEntry();
+    await appendEvents([
+      makeEvent({
+        type: "model.completed",
+        ts: "2026-05-18T12:04:29.000Z",
+        data: {
+          usage: { input: 1_200, output: 300, total: 1_500 },
+          promptCache: {
+            lastCallUsage: { input: 100, output: 30, cacheRead: 80, total: 130 },
+            observation: { cacheRead: 90 },
+          },
+        },
+      }),
+      makeEvent({
+        type: "model.completed",
+        ts: "2026-05-18T12:04:30.000Z",
+        data: { promptCache: { lastCallUsage: { input: 100, cacheRead: 80 } } },
+      }),
+    ]);
+
+    await sessionsTailCommand({ agent: "main", store: storePath, sessionKey }, runtime);
+
+    const lines = runtimeOutput(runtime).split("\n");
+    expect(lines[0]).toContain("tokens(in=1.2K out=300 total=1.5K)");
+    expect(lines[0]).not.toContain("cacheR=");
+    expect(lines[1]).toContain("tokens(in=100 cacheR=80)");
+  });
+
   it("marks inventory counts incomplete when recorder metadata is bounded", async () => {
     const runtime = createTestRuntime();
     await writeSessionEntry();

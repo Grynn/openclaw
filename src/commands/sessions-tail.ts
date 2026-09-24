@@ -256,14 +256,16 @@ function modelMetrics(data: Record<string, unknown> | undefined): string[] {
     : undefined;
   const usage = isRecord(data?.usage) ? data.usage : undefined;
   const observation = isRecord(promptCache?.observation) ? promptCache.observation : undefined;
+  const selectedUsage = usage ?? lastCallUsage;
   const readUsageCount = (key: string): number | undefined =>
-    asNonNegativeFiniteNumber(usage?.[key]) ?? asNonNegativeFiniteNumber(lastCallUsage?.[key]);
+    asNonNegativeFiniteNumber(selectedUsage?.[key]);
   const tokenParts = [
     countMetric("in", readUsageCount("input")),
     countMetric("out", readUsageCount("output")),
     countMetric(
       "cacheR",
-      readUsageCount("cacheRead") ?? asNonNegativeFiniteNumber(observation?.cacheRead),
+      readUsageCount("cacheRead") ??
+        (usage === undefined ? asNonNegativeFiniteNumber(observation?.cacheRead) : undefined),
     ),
     countMetric("cacheW", readUsageCount("cacheWrite")),
     countMetric("reason", readUsageCount("reasoningTokens")),
