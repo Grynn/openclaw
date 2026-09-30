@@ -26,7 +26,10 @@ export async function buildSkillSnapshot(
   const { eligible, skillFilter } = await resolveWorkspaceSkillPromptEntries(workspaceDir, opts);
   const promptEntries = eligible.filter(isSkillPromptVisible);
   const remoteNote = opts?.eligibility?.remote?.note?.trim();
-  const resolvedSkills = promptEntries.map((entry) => entry.skill);
+  const resolvedSkills = promptEntries.map((entry) => ({
+    ...entry.skill,
+    skillKey: resolveSkillKey(entry.skill, entry),
+  }));
   const limits = opts?.config?.skills?.limits;
   const agentLimits = resolveEffectiveAgentSkillsLimits(opts?.config, opts?.agentId);
   const prepared = prepareSkillsForPrompt({
@@ -48,6 +51,10 @@ export async function buildSkillSnapshot(
       skillKey: resolveSkillKey(entry.skill, entry),
       primaryEnv: entry.metadata?.primaryEnv,
       requiredEnv: entry.metadata?.requires?.env?.slice(),
+    })),
+    modelInvocableSkills: promptEntries.map((entry) => ({
+      name: entry.skill.name,
+      skillKey: resolveSkillKey(entry.skill, entry),
     })),
     ...(skillFilter === undefined ? {} : { skillFilter }),
     ...(opts?.skillOverrides ? { skillOverrides: opts.skillOverrides } : {}),

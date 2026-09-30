@@ -378,6 +378,17 @@ describe("applySkillsPromptLimits (via buildWorkspaceSkillsPrompt)", () => {
       expect(skill.filePath).not.toMatch(/^~\//);
     }
   });
+
+  it("pairs resolved skills with the current config identity", async () => {
+    const entry = makeEntry(makeSkill("display-name"));
+    entry.metadata = { skillKey: "source-key" };
+
+    const snapshot = await buildSkillSnapshot("/fake", { entries: [entry] });
+
+    expect(snapshot.resolvedSkills).toEqual([
+      expect.objectContaining({ name: "display-name", skillKey: "source-key" }),
+    ]);
+  });
 });
 
 describe("compactSkillPaths", () => {

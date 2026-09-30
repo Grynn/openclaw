@@ -86,6 +86,7 @@ import {
 } from "./tool-search.js";
 import { replaceWithEffectiveCronCreatorToolAllowlist } from "./tools/cron-tool.js";
 import { prepareSessionPortalToolAccess } from "./tools/session-portal-target.js";
+import { createSkillCatalogTool } from "./tools/skill-catalog-tool.js";
 
 export { resolveToolLoopDetectionConfig } from "./tool-loop-detection-config.js";
 
@@ -508,6 +509,10 @@ export function createOpenClawCodingToolsInternal(
     }),
     isAvailable: (): boolean => authorizedTools.some((tool) => tool.name === "message"),
   });
+  const skillCatalogTool =
+    includeOpenClawTools && options?.enableSkillCatalogTool === true && !sandbox
+      ? createSkillCatalogTool({ skillsSnapshot: options.skillsSnapshot })
+      : null;
   const tools: AnyAgentTool[] = [
     ...scheduledCoreTools,
     // Include channel-defined agent tools (login, etc.).
@@ -608,7 +613,9 @@ export function createOpenClawCodingToolsInternal(
         )
       : pluginToolsOnly),
     ...toolSearchTools,
-  ];
+  ]
+    .filter((tool) => !skillCatalogTool || tool.name !== skillCatalogTool.name)
+    .concat(skillCatalogTool ? [skillCatalogTool] : []);
   options?.recordToolPrepStage?.("openclaw-tools");
   const swarmStructuredOutputTool =
     options?.swarmCollector && options.swarmOutputSchema

@@ -138,6 +138,8 @@ export type OpenClawCodingToolsOptions = {
   allocateToolOutcomeOrdinal?: (toolCallId?: string) => number;
   /** Runtime-only resolved skill paths that the read tool may load under workspaceOnly. */
   skillsSnapshot?: SkillSnapshot;
+  /** Opt in to bounded lazy skill discovery for providers with a deferred tool surface. */
+  enableSkillCatalogTool?: boolean;
   /** Original identities for sandbox-materialized skill instruction paths. */
   skillUsagePaths?: SkillUsagePath[];
   /** Prepared conversation-scoped facts for callers that already resolved this run context. */
