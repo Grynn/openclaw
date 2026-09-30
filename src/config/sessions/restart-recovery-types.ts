@@ -71,6 +71,7 @@ export type RestartRecoveryTerminalDeliveryEvidence =
 /** Durable ownership and idempotency state for gateway restart recovery. */
 export type SessionRestartRecoveryState = {
   restartRecoveryBeforeAgentReplyState?: RestartRecoveryBeforeAgentReplyState;
+  restartRecoveryDeferralCause?: "gateway-restart" | "turn-failure";
   /** Durable pre/post boundary around the terminal external send. */
   restartRecoveryDeliveryReceiptState?: "terminal-pending" | "delivered-terminal";
   /** Exact agent tool call whose terminal external send owns the receipt. */
@@ -85,6 +86,7 @@ export type SessionRestartRecoveryState = {
   restartRecoveryDeliveryRequestFingerprint?: string;
   restartRecoveryDeliveryRunId?: string;
   restartRecoveryDeliverySourceRunId?: string;
+  restartRecoveryDeliveryConstituentSourceTurnIds?: string[];
   restartRecoveryHarnessCompletion?: HarnessCompletionRecovery;
   restartRecoveryRequesterAccountId?: string;
   restartRecoveryRequesterSenderId?: string;
@@ -93,4 +95,5 @@ export type SessionRestartRecoveryState = {
   restartRecoverySourceReplyDeliveryMode?: SourceReplyDeliveryMode;
   restartRecoveryTerminalDeliveryEvidence?: RestartRecoveryTerminalDeliveryEvidence[];
   restartRecoveryTerminalRunIds?: string[];
+  restartRecoveryTerminalSourceTurnIdGroups?: string[][];
 };

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { hasErrnoCode } from "../infra/errno.js";
+import { isGatewayExternallySupervised } from "../infra/gateway-supervision.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -449,6 +450,7 @@ export type OpenClawAgentDatabaseWorkerLeaseReceipt = {
   ownerStartTime: number | null;
   sharedStatePath: string;
   sharedStateIdentity: string;
+  externallySupervised: boolean;
 };
 
 /** Preparation grants no access; claim repeats admission on the captured shared owner. */
@@ -482,6 +484,7 @@ export function prepareOpenClawAgentDatabaseWorkerLease(
     ownerStartTime: getFileLockProcessStartTime(ownerPid),
     sharedStatePath: database.path,
     sharedStateIdentity: identity.key,
+    externallySupervised: isGatewayExternallySupervised(params.env ?? process.env),
   });
   const options = {
     database,
@@ -533,6 +536,7 @@ export function readOpenClawAgentDatabaseWorkerLeaseReceiptFromClaim(
     ownerStartTime: row.owner_start_time,
     sharedStatePath: database.path,
     sharedStateIdentity: readDatabasePathIdentitySync(database.path).key,
+    externallySupervised: isGatewayExternallySupervised(params.env ?? process.env),
   };
 }
 

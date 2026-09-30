@@ -16,7 +16,10 @@ import {
 } from "../agents/mcp-oauth-store.worker.js";
 import { importSandboxRegistryRow } from "../agents/sandbox/registry-import.worker.js";
 import { writeSandboxRegistry } from "../agents/sandbox/registry-write.worker.js";
-import { writeSubagentRunValuesInDatabase } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
+import {
+  assertSubagentRunExpectedPayloadsInDatabase,
+  writeSubagentRunValuesInDatabase,
+} from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import { replaceWorkspaceAttestationInDatabase } from "../agents/workspace-state-store.kernel.js";
 import {
   isWorktreeWorkerCommand,
@@ -617,11 +620,14 @@ export function executeSharedStateCommand(
     );
   }
   if (command.type === "subagents.persistChanges") {
-    const { writeId, values, deleteRunIds } = command.input;
+    const { writeId, values, deleteRunIds, expectedPayloads } = command.input;
     let committed = false;
     try {
       runOpenClawStateWriteTransaction((writer) => {
         requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: writeId });
+        if (expectedPayloads) {
+          assertSubagentRunExpectedPayloadsInDatabase(writer, expectedPayloads);
+        }
         writeSubagentRunValuesInDatabase(writer, values, deleteRunIds);
         requestSqliteWorkerOperationAdmission({ stage: "commit", facts: writeId });
         deferSqlitePostCommitPublication(writer.db, () => {

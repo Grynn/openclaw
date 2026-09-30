@@ -104,6 +104,7 @@ it("retains installed-schema repair ownership through retired agent lease cleanu
       ownerStartTime: null,
       sharedStatePath: databasePath,
       sharedStateIdentity: "file:synthetic-state",
+      externallySupervised: false,
     },
   });
   expect(edge.repairs).toEqual(

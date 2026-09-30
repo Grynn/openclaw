@@ -1,6 +1,10 @@
 // Tests reply turn admission decisions for active, queued, and aborted runs.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import {
+  createAgentRunDirectAbortError,
+  createAgentRunRestartAbortError,
+} from "../../agents/run-termination.js";
 import { SESSION_RESTART_RECOVERY_TOMBSTONE_ERROR_CODE } from "../../config/sessions/lifecycle.js";
 import {
   deleteSessionEntryLifecycle,
@@ -13,6 +17,7 @@ import {
   RUN_STALE_TAKEOVER_MS,
 } from "../../logging/diagnostic-run-activity.js";
 import { markDiagnosticToolStartedForTest } from "../../logging/diagnostic-run-activity.test-support.js";
+import { GatewayDrainingError } from "../../process/gateway-work-admission.js";
 import {
   interruptSessionWorkAdmissions,
   runExclusiveSessionLifecycleMutation,
@@ -87,6 +92,41 @@ describe("reply turn admission", () => {
     recoveryOwnerReleaseMocks.beforeRelease.mockClear();
     recoveryOwnerReleaseMocks.schedulePendingTarget.mockClear();
   });
+
+  it.each([
+    ["untyped", undefined, "aborted_by_user"],
+    ["direct", createAgentRunDirectAbortError(), "aborted_by_user"],
+    ["restart", createAgentRunRestartAbortError(), "aborted_for_restart"],
+    ["drain", new GatewayDrainingError("gateway draining"), "aborted_for_restart"],
+  ] as const)(
+    "classifies %s lifecycle interruption at the admitted reply",
+    async (name, reason, code) => {
+      const sessionKey = `agent:main:interrupt-${name}`;
+      const sessionId = `session-interrupt-${name}`;
+      const storePath = createSessionStoreFor(sessionKey, sessionId);
+      const admission = await admitTestReplyTurn({
+        sessionKey,
+        sessionId,
+        expectedSessionId: sessionId,
+        storePath,
+      });
+      expect(admission.status).toBe("owned");
+      if (admission.status !== "owned") {
+        return;
+      }
+      try {
+        await interruptSessionWorkAdmissions({
+          scope: storePath,
+          identities: [sessionKey, sessionId],
+          ...(reason ? { reason } : {}),
+          timeoutMs: 50,
+        });
+        expect(admission.operation.result).toMatchObject({ kind: "aborted", code });
+      } finally {
+        admission.operation.complete();
+      }
+    },
+  );
 
   it("binds the originating transcript leaf to the admitted operation", async () => {
     const admission = await admitTestReplyTurn({
@@ -788,7 +828,7 @@ describe("reply turn admission", () => {
     });
     expect(admission.operation.result).toEqual({
       kind: "aborted",
-      code: "aborted_for_restart",
+      code: "aborted_by_user",
     });
     expect(mutationRan).toBe(false);
     expect(replyRunRegistry.get(sessionKey)).toBe(admission.operation);
@@ -1338,7 +1378,7 @@ describe("reply turn admission", () => {
     await vi.waitFor(() => {
       expect(reservation.abortSignal.aborted).toBe(true);
     });
-    expect(reservation.result).toEqual({ kind: "aborted", code: "aborted_for_restart" });
+    expect(reservation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
     expect(mutationRan).toBe(false);
 
     reservation.complete();

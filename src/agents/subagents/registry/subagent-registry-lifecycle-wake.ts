@@ -24,6 +24,7 @@ import {
   assertSubagentRegistryWriteSourceCurrent,
   SubagentRegistryWriteError,
 } from "./subagent-registry-persistence.js";
+import { deferFailedRequesterSettleWake } from "./subagent-registry-requester-wake-backoff.js";
 import {
   commitRequesterWake,
   getPendingWakeCommit,
@@ -515,10 +516,29 @@ export function scheduleRequesterSettleWake(
                 stateContext,
               );
             } catch (settleError) {
+              const safeSettleError = buildSafeLifecycleErrorMeta(settleError);
               params.warn("failed to persist requester settle wake rejection", {
-                error: buildSafeLifecycleErrorMeta(settleError),
+                error: safeSettleError,
                 runId: maskLifecycleIdentifier(runId, "run"),
               });
+              try {
+                await deferFailedRequesterSettleWake({
+                  context,
+                  entries: admittedBatch,
+                  isCurrent: () =>
+                    isCurrentRequesterSettleWakeBatch(
+                      context,
+                      admittedBatch,
+                      admittedWake.rearmGeneration,
+                    ),
+                  reason: safeSettleError.message ?? "requester settle wake settlement failed",
+                });
+              } catch (retryError) {
+                params.warn("failed to persist requester settle wake retry deadline", {
+                  error: buildSafeLifecycleErrorMeta(retryError),
+                  runId: maskLifecycleIdentifier(runId, "run"),
+                });
+              }
             }
           }
         },

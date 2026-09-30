@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  hasRestartRecoverySourceClaim,
+  hasRestartRecoveryTerminalRun,
+} from "./restart-recovery-state.js";
+import {
   mergeSessionSnapshotChanges,
   projectSessionSnapshotChanges,
   sessionSnapshotTouchedFieldsConflict,
@@ -14,6 +18,33 @@ const initial: SessionEntry = {
 };
 
 describe("session snapshot merge", () => {
+  it("retains all collected source receipts after a concurrent snapshot write", () => {
+    const before: SessionEntry = { ...initial };
+    const next: SessionEntry = {
+      ...before,
+      restartRecoveryTerminalSourceTurnIdGroups: [["source-a", "source-b"]],
+      updatedAt: 2,
+    };
+    const current: SessionEntry = {
+      ...before,
+      restartRecoveryTerminalSourceTurnIdGroups: [["source-c"]],
+      updatedAt: 3,
+    };
+    const merged = mergeSessionSnapshotChanges({ initial: before, next, current });
+    expect(hasRestartRecoveryTerminalRun(merged, "source-a")).toBe(true);
+    expect(hasRestartRecoveryTerminalRun(merged, "source-b")).toBe(true);
+    expect(hasRestartRecoveryTerminalRun(merged, "source-c")).toBe(true);
+    expect(
+      hasRestartRecoverySourceClaim(
+        {
+          ...merged,
+          restartRecoveryDeliveryRunId: "aggregate",
+          restartRecoveryDeliveryConstituentSourceTurnIds: ["source-d"],
+        },
+        "source-d",
+      ),
+    ).toBe(true);
+  });
   it("projects same-provider model changes as an atomic pair", () => {
     const next = { ...initial, model: "claude-sonnet-4-6", updatedAt: 2 };
     const patch = projectSessionSnapshotChanges({ initial, next, current: initial });

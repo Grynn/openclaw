@@ -186,6 +186,7 @@ export type SubagentRegistryWriteOptions = {
   onCommitted?: () => void;
   retireRunIds?: readonly string[];
   pendingKillClaim?: SubagentRunRecord;
+  expectedPayloads?: readonly { runId: string; payloadJson: string }[];
 };
 
 type SubagentRegistryWriteAuthority = {
@@ -284,6 +285,7 @@ export async function persistSubagentRegistryChangesAsync(
         writeId: randomUUID(),
         values: [...snapshot.values()].map(bindCapturedSubagentRunRecord),
         deleteRunIds: runIds.filter((runId) => !snapshot.has(runId)),
+        expectedPayloads: options.expectedPayloads,
       };
       const { context } = options;
       await runOpenClawStateWorkerOperation(

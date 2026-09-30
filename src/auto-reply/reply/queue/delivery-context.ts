@@ -183,6 +183,7 @@ export function resolveFollowupReplyAnchor(run: FollowupRun): string | undefined
 type FollowupRuntimeMetadata = Pick<
   FollowupRun,
   | "sourceTurnId"
+  | "constituentSourceTurnIds"
   | "operatorAuthority"
   | "personalBootstrapEligible"
   | "currentInboundEventKind"
@@ -264,6 +265,7 @@ export function collectRuntimeMetadata(
   ];
   return {
     sourceTurnId: authoritySource?.sourceTurnId,
+    constituentSourceTurnIds: authoritySource?.constituentSourceTurnIds,
     operatorAuthority: authoritySource?.operatorAuthority,
     ...(items.length > 0 && items.every((item) => item.personalBootstrapEligible === true)
       ? { personalBootstrapEligible: true }
@@ -303,6 +305,7 @@ export function createOverflowSummaryRetrySource(source: FollowupRun): FollowupR
   return {
     prompt: source.prompt,
     sourceTurnId: source.sourceTurnId,
+    constituentSourceTurnIds: source.constituentSourceTurnIds,
     admissionSessionId: source.admissionSessionId,
     operatorAuthority: source.operatorAuthority,
     personalBootstrapEligible: source.personalBootstrapEligible,

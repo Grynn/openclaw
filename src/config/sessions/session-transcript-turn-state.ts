@@ -1,5 +1,6 @@
 import {
   mergeRestartRecoveryTerminalRunIds,
+  sameRestartRecoveryDeliveryConstituentSourceTurnIds,
   sameRestartRecoveryTerminalRunIds,
 } from "./restart-recovery-state.js";
 import type {
@@ -26,6 +27,8 @@ export function buildRestartRecoveryExpectedState(
     restartRecoveryDeliveryRequestFingerprint: entry.restartRecoveryDeliveryRequestFingerprint,
     restartRecoveryDeliveryRunId: entry.restartRecoveryDeliveryRunId,
     restartRecoveryDeliverySourceRunId: entry.restartRecoveryDeliverySourceRunId,
+    restartRecoveryDeliveryConstituentSourceTurnIds:
+      entry.restartRecoveryDeliveryConstituentSourceTurnIds,
     restartRecoveryRequesterAccountId: entry.restartRecoveryRequesterAccountId,
     restartRecoveryRequesterSenderId: entry.restartRecoveryRequesterSenderId,
     restartRecoverySameChannelThreadRequired: entry.restartRecoverySameChannelThreadRequired,
@@ -70,6 +73,10 @@ export function sessionMatchesExpectedTranscriptTurn<T extends { entry: SessionE
           expectedState.restartRecoveryDeliveryRunId &&
         selected.entry.restartRecoveryDeliverySourceRunId ===
           expectedState.restartRecoveryDeliverySourceRunId &&
+        sameRestartRecoveryDeliveryConstituentSourceTurnIds(
+          selected.entry.restartRecoveryDeliveryConstituentSourceTurnIds,
+          expectedState.restartRecoveryDeliveryConstituentSourceTurnIds,
+        ) &&
         selected.entry.restartRecoveryRequesterAccountId ===
           expectedState.restartRecoveryRequesterAccountId &&
         selected.entry.restartRecoveryRequesterSenderId ===

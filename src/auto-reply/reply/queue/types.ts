@@ -116,6 +116,8 @@ export type FollowupRun = {
   prompt: string;
   /** Original admitted source; queued execution must not replace it with a backend run ID. */
   sourceTurnId?: string;
+  /** Original source identities represented by a collected or overflow turn. */
+  constituentSourceTurnIds?: string[];
   /** Original operator capability retained by this turn's queue/run lifecycle. */
   operatorAuthority?: AdmittedRunOperatorAuthority;
   /** Latest session to claim without rewriting the queued run before store refresh. */

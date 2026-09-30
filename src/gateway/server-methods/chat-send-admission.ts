@@ -2,10 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isFutureDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
-import {
-  createAgentRunRestartAbortError,
-  isAgentRunDirectAbortReason,
-} from "../../agents/run-termination.js";
+import { createAgentRunRestartAbortError } from "../../agents/run-termination.js";
 import {
   interruptReplyRunTarget,
   isReplyRunAbortableForSignal,
@@ -30,6 +27,7 @@ import {
   interruptSessionWorkAdmissions,
   isCompetingSessionWorkAdmissionActive,
 } from "../../sessions/session-lifecycle-admission.js";
+import { isSessionWorkRestartInterruptReason } from "../../sessions/session-work-admission-interruption.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { registerChatAbortController, resolveChatRunExpiresAtMs } from "../chat-abort.js";
 import { ExpectedProfileMismatchError } from "../expected-profile.js";
@@ -386,7 +384,8 @@ export async function admitChatSend(
       },
       revalidateAllowed: commitChatWorkAdmission,
       onInterrupt: (reason) => {
-        const stopReason = isAgentRunDirectAbortReason(reason) ? "rpc" : "restart";
+        const restart = isSessionWorkRestartInterruptReason(reason);
+        const stopReason = restart ? "restart" : "rpc";
         if (!admittedRunAbort) {
           if (!context.chatRunState.hasAbortMarker(clientRunId)) {
             writePreRegisteredChatAbort({
@@ -401,9 +400,7 @@ export async function admitChatSend(
           if (admittedRunAbort.entry) {
             admittedRunAbort.entry.abortStopReason = stopReason;
           }
-          admittedRunAbort.controller.abort(
-            stopReason === "rpc" ? reason : createAgentRunRestartAbortError(),
-          );
+          admittedRunAbort.controller.abort(restart ? createAgentRunRestartAbortError() : reason);
         }
       },
     });

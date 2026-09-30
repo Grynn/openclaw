@@ -14,6 +14,7 @@ import { discoverAgentDatabaseMigrationTargets } from "../infra/state-migrations
 import { createLegacyDatabaseFixture } from "../infra/state-migrations.media-persistence.test-support.js";
 import {
   claimOpenClawAgentDatabaseLease,
+  prepareOpenClawAgentDatabaseWorkerLease,
   releaseOpenClawAgentDatabaseLease,
   type OpenClawAgentDatabaseWorkerLeaseReceipt,
 } from "./openclaw-agent-db-lease.js";
@@ -104,6 +105,24 @@ function openOwner() {
     record: () => readOpenClawAgentIntegrityVerification(database.path, env),
   };
 }
+
+it.each([false, true])(
+  "captures external supervisor mode in a %s worker lease receipt",
+  (external) => {
+    const stateDir = tempDirs.make("openclaw-lease-supervisor-mode-");
+    const env = {
+      OPENCLAW_STATE_DIR: stateDir,
+      ...(external ? { OPENCLAW_SUPERVISOR_MODE: "external" } : {}),
+    };
+    const shared = openOpenClawStateDatabase({ env });
+    const lease = prepareOpenClawAgentDatabaseWorkerLease(
+      { agentId: "main", path: resolveOpenClawAgentSqlitePath({ agentId: "main", env }), env },
+      shared,
+      "lease-supervisor-capture",
+    );
+    expect(lease.receipt.externallySupervised).toBe(external);
+  },
+);
 
 it("independent schema registration lets an agent writer commit shared state before admission", async () => {
   const owner = openOwner();
@@ -198,6 +217,7 @@ it.each(["forced cleanup", "stale admission"])(
       ownerStartTime: row.owner_start_time,
       sharedStatePath: state.path,
       sharedStateIdentity: readDatabasePathIdentitySync(state.path).key,
+      externallySupervised: false,
     };
     const writing = once(child, "message");
     child.send("begin-write");

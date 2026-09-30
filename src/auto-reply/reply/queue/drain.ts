@@ -7,6 +7,10 @@ import { runAgentHarnessBeforeMessageWriteHook } from "../../../agents/harness/h
 import { runOutsidePreparedModelRuntimePluginGenerationScope } from "../../../agents/prepared-model-runtime-generation-scope.js";
 import { normalizeChatType } from "../../../channels/chat-type.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions.js";
+import {
+  hasRestartRecoverySourceClaim,
+  hasRestartRecoveryTerminalRun,
+} from "../../../config/sessions/restart-recovery-state.js";
 import { loadSessionEntryReadOnly } from "../../../config/sessions/session-accessor.js";
 import {
   channelRouteCompactKey,
@@ -419,7 +423,83 @@ function resolveFollowupTranscriptTarget(source: FollowupRun) {
   };
 }
 
-function createCollectUserTurnTranscriptRecorder(items: FollowupRun[]) {
+function isDurablyConsumedQueuedSource(
+  source: FollowupRun,
+  entry: ReturnType<typeof resolveFollowupTranscriptTarget>["sessionEntry"],
+): boolean {
+  const sourceTurnIds = [source.sourceTurnId, ...(source.constituentSourceTurnIds ?? [])];
+  return sourceTurnIds.some(
+    (sourceTurnId) =>
+      sourceTurnId !== undefined &&
+      (hasRestartRecoveryTerminalRun(entry, sourceTurnId) ||
+        hasRestartRecoverySourceClaim(entry, sourceTurnId)),
+  );
+}
+
+function partitionDurablyConsumedQueuedSources(items: FollowupRun[]): {
+  consumed: FollowupRun[];
+  pending: FollowupRun[];
+} {
+  const source = items.at(-1);
+  const entry = source ? resolveFollowupTranscriptTarget(source).sessionEntry : undefined;
+  const consumed: FollowupRun[] = [];
+  const pending: FollowupRun[] = [];
+  for (const item of items) {
+    (isDurablyConsumedQueuedSource(item, entry) ? consumed : pending).push(item);
+  }
+  return { consumed, pending };
+}
+
+function dropDurablyConsumedQueuedItems(queue: FollowupQueueState): void {
+  const consumed = queue.items.filter(
+    (item) =>
+      !queue.inFlight.has(item) &&
+      isDurablyConsumedQueuedSource(item, resolveFollowupTranscriptTarget(item).sessionEntry),
+  );
+  removeQueuedItemsByRef(queue.items, consumed);
+  for (const item of consumed) {
+    completeFollowupRunLifecycle(item);
+  }
+}
+
+function buildAggregateSourceIdentity(params: {
+  items: FollowupRun[];
+  prefix: "followup-collect" | "followup-overflow";
+  scope?: unknown;
+}): Pick<FollowupRun, "sourceTurnId" | "constituentSourceTurnIds"> | undefined {
+  if (params.items.length === 0 || params.items.some((item) => !item.sourceTurnId)) {
+    return undefined;
+  }
+  if (params.prefix === "followup-collect" && params.items.length === 1) {
+    return {
+      sourceTurnId: params.items[0]?.sourceTurnId,
+      constituentSourceTurnIds: params.items[0]?.constituentSourceTurnIds,
+    };
+  }
+  const constituentSourceTurnIds = Array.from(
+    new Set(
+      params.items.flatMap((item) =>
+        item.constituentSourceTurnIds?.length
+          ? item.constituentSourceTurnIds
+          : item.sourceTurnId
+            ? [item.sourceTurnId]
+            : [],
+      ),
+    ),
+  ).toSorted();
+  const identityHash = createHash("sha256")
+    .update(JSON.stringify([constituentSourceTurnIds, params.scope]))
+    .digest("hex");
+  return {
+    sourceTurnId: `${params.prefix}:${identityHash}`,
+    constituentSourceTurnIds,
+  };
+}
+
+function createCollectUserTurnTranscriptRecorder(
+  items: FollowupRun[],
+  sourceIdentity: ReturnType<typeof buildAggregateSourceIdentity>,
+) {
   const transcriptSources = items.filter((item) => item.userTurnTranscriptRecorder);
   const source = transcriptSources.at(-1);
   if (!source) {
@@ -456,7 +536,8 @@ function createCollectUserTurnTranscriptRecorder(items: FollowupRun[]) {
       ...transcriptInput,
       senderIsOwner: source.run.senderIsOwner,
       provenance: source.run.inputProvenance,
-      idempotencyKey: `followup-collect:${source.run.sessionId}:${identityHash}`,
+      idempotencyKey:
+        sourceIdentity?.sourceTurnId ?? `followup-collect:${source.run.sessionId}:${identityHash}`,
       ...(timestamp === undefined ? {} : { timestamp }),
       ...(media.length === 0 ? {} : { media }),
     };
@@ -844,10 +925,17 @@ async function runSyntheticOverflowSummary(params: {
       ]),
     )
     .digest("hex");
+  const sourceIdentity = buildAggregateSourceIdentity({
+    items: params.sources,
+    prefix: "followup-overflow",
+    scope: [routeHash, promptHash],
+  });
   const userTurnTranscriptRecorder = createUserTurnTranscriptRecorder({
     input: {
       text: params.prompt,
-      idempotencyKey: `followup-overflow:${params.source.run.sessionId}:${routeHash}:${params.source.messageId ?? params.source.enqueuedAt}:${promptHash}`,
+      idempotencyKey:
+        sourceIdentity?.sourceTurnId ??
+        `followup-overflow:${params.source.run.sessionId}:${routeHash}:${params.source.messageId ?? params.source.enqueuedAt}:${promptHash}`,
       senderIsOwner: params.source.run.senderIsOwner,
       provenance: params.source.run.inputProvenance,
     },
@@ -863,7 +951,9 @@ async function runSyntheticOverflowSummary(params: {
   let admitted = false;
   await params.runFollowup({
     prompt: params.prompt,
-    sourceTurnId: runtimeMetadata.sourceTurnId,
+    sourceTurnId: sourceIdentity?.sourceTurnId ?? runtimeMetadata.sourceTurnId,
+    constituentSourceTurnIds:
+      sourceIdentity?.constituentSourceTurnIds ?? runtimeMetadata.constituentSourceTurnIds,
     queueAbortSignal: params.source.queueAbortSignal,
     transcriptPrompt: params.prompt,
     messageId: params.source.messageId,
@@ -921,6 +1011,19 @@ async function drainElidedOverflowSummary(params: {
           (source) => resolveFollowupDeliveryContextKey(source) === entry.contextKey,
         )
       : [];
+  const consumedElidedSources = entry.sources.filter((candidate) =>
+    isDurablyConsumedQueuedSource(
+      candidate,
+      resolveFollowupTranscriptTarget(candidate).sessionEntry,
+    ),
+  );
+  if (consumedElidedSources.length > 0) {
+    consumeQueueSummaryDelivery(params.queue, {
+      droppedCount: consumedElidedSources.length,
+      sources: consumedElidedSources,
+    });
+    return true;
+  }
   const source = retainedSources.at(-1) ?? entry.sources.at(-1);
   if (!source) {
     return false;
@@ -1002,6 +1105,19 @@ async function drainOverflowSummaryGroup(params: {
     return true;
   }
   const sources = resolveOverflowSummarySourceGroup(params.queue);
+  const consumedSources = sources.filter((candidate) =>
+    isDurablyConsumedQueuedSource(
+      candidate,
+      resolveFollowupTranscriptTarget(candidate).sessionEntry,
+    ),
+  );
+  if (consumedSources.length > 0) {
+    consumeQueueSummaryDelivery(params.queue, {
+      droppedCount: consumedSources.length,
+      sources: consumedSources,
+    });
+    return true;
+  }
   const source = sources.at(-1);
   if (!source) {
     return false;
@@ -1063,6 +1179,7 @@ export function scheduleFollowupDrain(
       const collectState = { forceIndividualCollect: false };
       while (queue.items.length > 0 || queue.droppedCount > 0) {
         await dropAbortedFollowups(queue, effectiveRunFollowup);
+        dropDurablyConsumedQueuedItems(queue);
         if (queue.items.length === 0 && queue.droppedCount === 0) {
           break;
         }
@@ -1072,6 +1189,7 @@ export function scheduleFollowupDrain(
         }
         await waitForQueueDebounce(queue, queue.abortController.signal);
         await dropAbortedFollowups(queue, effectiveRunFollowup);
+        dropDurablyConsumedQueuedItems(queue);
         if (queue.items.length === 0 && queue.droppedCount === 0) {
           break;
         }
@@ -1125,16 +1243,17 @@ export function scheduleFollowupDrain(
             // Earlier groups await model work. Recheck membership so overflow
             // eviction cannot leave a stale snapshot eligible for delivery.
             const currentGroupItems = groupItems.filter((item) => queue.items.includes(item));
-            const abortedGroupItems = currentGroupItems.filter(isFollowupRunAborted);
-            if (abortedGroupItems.length > 0) {
-              removeQueuedItemsByRef(queue.items, abortedGroupItems);
-              for (const item of abortedGroupItems) {
+            const { consumed, pending } = partitionDurablyConsumedQueuedSources(currentGroupItems);
+            const abandonedGroupItems = currentGroupItems.filter(
+              (item) => isFollowupRunAborted(item) || consumed.includes(item),
+            );
+            if (abandonedGroupItems.length > 0) {
+              removeQueuedItemsByRef(queue.items, abandonedGroupItems);
+              for (const item of abandonedGroupItems) {
                 completeFollowupRunLifecycle(item);
               }
             }
-            const activeGroupItems = currentGroupItems.filter(
-              (item) => !isFollowupRunAborted(item),
-            );
+            const activeGroupItems = pending.filter((item) => !isFollowupRunAborted(item));
             if (activeGroupItems.length === 0) {
               continue;
             }
@@ -1149,8 +1268,14 @@ export function scheduleFollowupDrain(
               renderItem: renderCollectItem,
             });
             const transcriptPrompt = buildCollectTranscriptInput(activeGroupItems).text;
-            const userTurnTranscriptRecorder =
-              createCollectUserTurnTranscriptRecorder(activeGroupItems);
+            const sourceIdentity = buildAggregateSourceIdentity({
+              items: activeGroupItems,
+              prefix: "followup-collect",
+            });
+            const userTurnTranscriptRecorder = createCollectUserTurnTranscriptRecorder(
+              activeGroupItems,
+              sourceIdentity,
+            );
             const aggregateOwner = resolveAggregateOwner(activeGroupItems);
             const cancellation = createAggregateCancellation(activeGroupItems);
             let admitted = false;
@@ -1195,6 +1320,7 @@ export function scheduleFollowupDrain(
                 enqueuedAt: Date.now(),
                 ...routing,
                 ...collectRuntimeMetadata(activeGroupItems, cancellation.signal),
+                ...sourceIdentity,
                 ...(needsGroupAdmission
                   ? {
                       turnAdoptionLifecycle: {

@@ -138,6 +138,8 @@ export type RequesterSettleWakeState = {
   progressOperationId?: string;
   /** Number of times this batch has been deferred due to unsettled descendants. */
   deferralCount?: number;
+  /** Failed settlement attempts retained with the captured requester wake. */
+  settleFailureCount?: number;
   lastError?: string | null;
   /** Cleanup wanted to retire this row; defer deletion until the outbox resolves. */
   retireAfterSettle?: boolean;
