@@ -73,6 +73,7 @@ export interface ShellViewHost
   readonly navigationSidebar: HTMLElement;
   readonly onboardingMode: boolean;
   readonly routeState: ShellRouteState;
+  readonly storedOutboxes: ReturnType<OutboxStoreRuntime["read"]> | undefined;
   readonly settingsPreloadTimers: Map<EventTarget, ReturnType<typeof globalThis.setTimeout>>;
   readonly settingsSearchQuery: string;
   readonly storedOutboxes: ReturnType<OutboxStoreRuntime["read"]> | undefined;
@@ -242,6 +243,11 @@ export function renderApplicationShell(host: ShellViewHost) {
       sessionKey: host.activeSessionKey,
       connected: gatewayConnected,
       connectionStatus,
+      sessionCatalogSurfaceVisible: !navigationSurfaceHidden,
+      offline: gatewaySnapshot.offlineStable,
+      restartPending: gatewaySnapshot.restartPending === true,
+      suspensionPhase: gatewaySnapshot.suspensionPhase,
+      queuedOutboxCount: host.storedOutboxes?.total ?? 0,
       lastError: gatewaySnapshot.lastError,
       storedOutboxes: host.storedOutboxes,
       terminalAvailable,

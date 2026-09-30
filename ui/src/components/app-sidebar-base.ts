@@ -7,6 +7,7 @@ import type { OutboxStoreRuntime } from "../app/app-shell-gateway.ts";
 import {
   applicationContext,
   type ApplicationContext,
+  type ApplicationGatewaySnapshot,
   type ApplicationNavigationOptions,
 } from "../app/context.ts";
 import type { CatalogOpenTarget } from "../app/settings.ts";
@@ -38,6 +39,11 @@ export abstract class AppSidebarBase extends OpenClawLightDomContentsElement {
   @property({ attribute: false }) enabledRouteIds?: readonly NavigationRouteId[];
   @property({ attribute: false }) connected = false;
   @property({ attribute: false }) connectionStatus: GatewayStatus | null = null;
+  @property({ attribute: false }) sessionCatalogSurfaceVisible = true;
+  @property({ attribute: false }) offline = false;
+  @property({ attribute: false }) restartPending = false;
+  @property({ attribute: false }) suspensionPhase: ApplicationGatewaySnapshot["suspensionPhase"];
+  @property({ attribute: false }) queuedOutboxCount = 0;
   @property({ attribute: false }) lastError: string | null = null;
   @property({ attribute: false }) storedOutboxes:
     | ReturnType<OutboxStoreRuntime["read"]>

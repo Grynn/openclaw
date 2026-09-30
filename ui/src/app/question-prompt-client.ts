@@ -91,6 +91,8 @@ export function requestQuestionGateway(
   if (method !== "question.list") {
     return client.request(method, params, { timeoutMs });
   }
+  // The list is a client-wide snapshot. Pane and sidebar projections hydrate
+  // independently from one read; settlement clears it so retries remain fresh.
   let pending = questionLists.get(client);
   if (!pending) {
     pending = client.request(method, params, { timeoutMs });

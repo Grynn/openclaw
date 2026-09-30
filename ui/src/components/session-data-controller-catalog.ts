@@ -41,6 +41,7 @@ export interface SessionDataControllerHost extends ReactiveControllerHost {
   readonly isConnected: boolean;
   readonly connected: boolean;
   readonly activeRouteId?: string;
+  readonly sessionCatalogSurfaceVisible: boolean;
   getRouteSessionKey(): string;
   readonly sessionDataContext: ApplicationContext | undefined;
   dismissTransientMenus(): boolean;
@@ -57,6 +58,7 @@ export interface SessionCatalogDataOwner {
   readonly context: ApplicationContext | undefined;
   readonly isSessionDataHostConnected: boolean;
   readonly sessionDataHostConnected: boolean;
+  readonly sessionCatalogSurfaceVisible: boolean;
   sessionCatalogs: SessionCatalog[];
   sessionCatalogRefreshStatus: PanelRefreshStatus;
   loadingMoreSessionCatalogIds: ReadonlySet<string>;
@@ -100,10 +102,12 @@ export function areSessionCatalogsSettled(
             catalog.hosts.every((entry) => !entry.pending && !entry.error && !entry.nextCursor),
         )))
   );
+function sessionCatalogSurfaceIsVisible(owner: SessionCatalogDataOwner): boolean {
+  return owner.sessionCatalogSurfaceVisible && document.visibilityState !== "hidden";
 }
 
 function visibleSessionCatalogClient(owner: SessionCatalogDataOwner): GatewayBrowserClient | null {
-  if (document.visibilityState === "hidden") {
+  if (!sessionCatalogSurfaceIsVisible(owner)) {
     return null;
   }
   return sessionCatalogListClient(owner.context?.gateway.snapshot, owner.sessionDataHostConnected);
@@ -178,7 +182,9 @@ export function resolveSessionCatalogAgentId(
 }
 
 export function scheduleSessionCatalogRefresh(owner: SessionCatalogDataOwner): void {
-  if (document.visibilityState === "hidden") {
+  // A hidden navigation surface must not keep scanning the catalog, even while the
+  // document itself is visible.
+  if (!sessionCatalogSurfaceIsVisible(owner)) {
     owner.sessionCatalogLive.cancelScheduledRefreshes();
     return;
   }
@@ -188,7 +194,7 @@ export function scheduleSessionCatalogRefresh(owner: SessionCatalogDataOwner): v
 function requestSessionCatalogRefresh(owner: SessionCatalogDataOwner): Promise<void> {
   const snapshot = owner.context?.gateway.snapshot;
   return owner.sessionCatalogLive.requestRefresh({
-    visible: document.visibilityState !== "hidden",
+    visible: sessionCatalogSurfaceIsVisible(owner),
     connected:
       owner.isSessionDataHostConnected &&
       owner.sessionCatalogAgentId !== null &&
@@ -201,6 +207,10 @@ function requestSessionCatalogRefresh(owner: SessionCatalogDataOwner): Promise<v
 export function updateSessionCatalogData(owner: SessionCatalogDataOwner): void {
   if (owner.context) {
     owner.synchronizeSessionScope();
+  }
+  if (!sessionCatalogSurfaceIsVisible(owner)) {
+    owner.sessionCatalogLive.cancelScheduledRefreshes();
+    return;
   }
   if (
     !visibleSessionCatalogClient(owner) ||
@@ -297,7 +307,7 @@ export async function refreshSessionCatalogs(owner: SessionCatalogDataOwner): Pr
     currentClient: () => owner.sessionCatalogGatewayClient(),
     catalogs: () => owner.sessionCatalogs,
     pageDepths: owner.sessionCatalogPageDepths,
-    connected: () => owner.isSessionDataHostConnected,
+    connected: () => owner.isSessionDataHostConnected && sessionCatalogSurfaceIsVisible(owner),
     catalogChangedEvents: sessionCatalogChangesAdvertised(owner),
     applyFinal: (catalogs, revisedCatalogIds) => {
       owner.sessionCatalogs = owner.sessionCatalogLive.resumeDiscovery(catalogs);

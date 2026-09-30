@@ -22,6 +22,7 @@ import { createDeferred as deferred } from "../../../test/helpers/promise.js";
 import { controlUiLocaleModulesPlugin } from "../../config/control-ui-locales.ts";
 import {
   controlUiBrowserOnlySharedModuleAliases,
+  controlUiCloudflareScriptBypassPlugin,
   createControlUiPrecompressedAssetVariants,
   resolveControlUiBuildInfo,
   resolveControlUiModulePreloadDependencies,
@@ -135,6 +136,32 @@ async function executeControlUiLocaleModule(
 }
 
 describe("Control UI Vite config", () => {
+  it("preserves Cloudflare's async bypass on Vite-generated script tags", async () => {
+    const plugin = controlUiCloudflareScriptBypassPlugin();
+    const transformHook = plugin.transformIndexHtml;
+    if (typeof transformHook !== "object" || !transformHook) {
+      throw new Error("Expected Cloudflare bypass plugin to expose an ordered HTML transform");
+    }
+    expect(plugin.apply).toBe("build");
+    expect(transformHook.order).toBe("post");
+
+    const html = [
+      '<script data-cfasync="false">globalThis.bootstrap = true;</script>',
+      '<script type="module" crossorigin src="./assets/index-AbCd1234.js"></script>',
+    ].join("\n");
+    const transformed = await transformHook.handler.call({} as never, html, {
+      path: "/index.html",
+      filename: "/dist/control-ui/index.html",
+    });
+
+    expect(transformed).toBe(
+      [
+        '<script data-cfasync="false">globalThis.bootstrap = true;</script>',
+        '<script data-cfasync="false" type="module" crossorigin src="./assets/index-AbCd1234.js"></script>',
+      ].join("\n"),
+    );
+  });
+
   it("emits Brotli and gzip variants only for bundled compressible assets", () => {
     const source = Array.from(
       { length: 200 },

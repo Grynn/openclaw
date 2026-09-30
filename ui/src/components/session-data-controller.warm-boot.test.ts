@@ -103,6 +103,7 @@ describe("sidebar warm roster publication", () => {
           return gateway.gateway.snapshot.phase === "connected";
         },
         activeRouteId: "sessions",
+        sessionCatalogSurfaceVisible: true,
         getRouteSessionKey: () => context.gateway.snapshot.sessionKey.trim(),
         sessionDataContext: context,
         addController: () => undefined,

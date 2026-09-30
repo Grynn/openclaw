@@ -237,6 +237,7 @@ export function createPageState(
     chatBranches: [],
     chatBranchesSessionKey: null,
     chatBranchesConnectionEpoch: null,
+    chatBranchesLoading: false,
     chatToolMessages: [],
     guardianNotices: [],
     providerPolicyNotice: null,

@@ -21,6 +21,7 @@ function card(overrides: Partial<ModelProviderCard> = {}): ModelProviderCard {
     hasConfigApiKey: false,
     modelCount: 1,
     availableModelCount: 1,
+    availableAgentRuntimeIds: [],
     ...overrides,
   };
 }
