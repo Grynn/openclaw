@@ -83,6 +83,17 @@ export type AgentDatabaseOperations = AgentDatabaseDomainOperations & {
     input: { sessionKey: string; sessionId: string; cwd?: string };
     output: SessionTranscriptInitializationPublication;
   };
+  "session.transcript.bootstrapComplete": {
+    input: {
+      sessionId: string;
+      sessionKey: string;
+      runId: string;
+      customType: string;
+      expectedLifecycleRevision?: string;
+      expectedWriterRunId?: string;
+    };
+    output: boolean;
+  };
   "database.prepareWrite": { input: undefined; output: void };
   "session.entry.read": { input: { sessionKey: string }; output: InternalSessionEntry | undefined };
   "session.entry.acp": {

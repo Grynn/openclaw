@@ -1,5 +1,12 @@
 import path from "node:path";
 import {
+  isPrimaryBootstrapRun,
+  isWorkspaceBootstrapPending,
+  resolveAttemptBootstrapContext,
+  resolveContextInjectionMode,
+  resolveWorkspaceBootstrapRouting,
+} from "openclaw/plugin-sdk/agent-bootstrap-runtime";
+import {
   resolveAgentWorkspaceMemoryRouting,
   shouldIncludeAgentHarnessRuntimeContext,
 } from "openclaw/plugin-sdk/agent-harness-attempt-runtime";
@@ -44,6 +51,7 @@ export type CodexWorkspaceBootstrapContext = {
   threadDeveloperInstructions?: string;
   turnScopedDeveloperInstructions?: string;
   memoryCollaborationInstructions?: string;
+  shouldRecordCompletedBootstrapTurn: boolean;
 };
 
 /** A child baseline reads the bounded workspace snapshot without invoking admission hooks. */
@@ -76,6 +84,7 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
   sessionAgentId: string;
   tools: readonly CodexDynamicToolSpec[];
   ringZeroActive: boolean;
+  hasBootstrapFileAccess?: boolean;
   sandboxed?: boolean;
 }): Promise<CodexWorkspaceBootstrapContext> {
   const availableToolNames = new Set(
@@ -137,21 +146,56 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
       contextFileOrder: CODEX_BOOTSTRAP_CONTEXT_ORDER,
       promptMemoryWorkspaceDir: params.effectiveWorkspace,
     });
-    const {
-      bootstrapFiles,
-      contextFiles,
-      promptContextFiles,
-      memoryReferenceFiles,
-      memoryToolRoutedBootstrapFiles,
-    } = prepared;
+    const bootstrapRouting = await resolveWorkspaceBootstrapRouting({
+      isWorkspaceBootstrapPending,
+      bootstrapFiles: prepared.bootstrapFiles,
+      bootstrapFilesProvideAccess: false,
+      bootstrapContextRunKind: params.params.bootstrapContextRunKind,
+      trigger: params.params.trigger,
+      sessionKey: params.sessionKey,
+      isPrimaryRun: isPrimaryBootstrapRun(params.sessionKey),
+      isCanonicalWorkspace: params.params.isCanonicalWorkspace,
+      effectiveWorkspace: params.effectiveWorkspace,
+      resolvedWorkspace: params.resolvedWorkspace,
+      hasBootstrapFileAccess: params.hasBootstrapFileAccess === true,
+    });
+    const contextInjectionMode = resolveContextInjectionMode(
+      params.params.config,
+      params.params.agentId ?? params.sessionAgentId,
+    );
+    const selected = await resolveAttemptBootstrapContext({
+      contextInjectionMode,
+      bootstrapContextMode: params.params.bootstrapContextMode,
+      bootstrapContextRunKind: params.params.bootstrapContextRunKind,
+      bootstrapMode: bootstrapRouting.bootstrapMode,
+      hasCompletedBootstrapTurn: async () =>
+        await (
+          await import("../../session-history-worker-runtime.js")
+        ).hasCompletedCodexBootstrapTurnInWorker(params.params.sessionTarget ?? {}),
+      resolveBootstrapContextForRun: async () => ({
+        bootstrapFiles: prepared.bootstrapFiles,
+        contextFiles: prepared.contextFiles,
+      }),
+    });
+    const skipBootstrap = selected.isContinuationTurn || contextInjectionMode === "never";
+    const { bootstrapFiles, contextFiles } = selected;
+    const promptContextFiles = skipBootstrap ? [] : prepared.promptContextFiles;
+    const memoryReferenceFiles = skipBootstrap ? [] : prepared.memoryReferenceFiles;
+    const memoryToolRoutedBootstrapFiles = skipBootstrap
+      ? []
+      : prepared.memoryToolRoutedBootstrapFiles;
     const threadDeveloperInstructionFiles = includeAgentWorkspaceInstructions
-      ? prepared.instructionSnapshot.files
+      ? skipBootstrap
+        ? []
+        : prepared.instructionSnapshot.files
       : [];
-    const turnScopedDeveloperInstructionFiles = injectOpenClawContext ? prepared.personaFiles : [];
+    const turnScopedDeveloperInstructionFiles =
+      injectOpenClawContext && !skipBootstrap ? prepared.personaFiles : [];
     return {
       bootstrapFiles,
       contextFiles,
       inheritsAgentWorkspace,
+      shouldRecordCompletedBootstrapTurn: selected.shouldRecordCompletedBootstrapTurn,
       promptContextFiles,
       threadDeveloperInstructionFiles,
       turnScopedDeveloperInstructionFiles,
@@ -162,18 +206,21 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
       promptContext: renderCodexWorkspaceBootstrapPromptContext(promptContextFiles),
       // Empty is a captured snapshot too; a missing value still permits first capture.
       threadDeveloperInstructions: includeAgentWorkspaceInstructions
-        ? (params.agentWorkspaceDeveloperInstructions ?? prepared.instructionSnapshot.instructions)
+        ? skipBootstrap
+          ? undefined
+          : (params.agentWorkspaceDeveloperInstructions ??
+            prepared.instructionSnapshot.instructions)
         : undefined,
-      turnScopedDeveloperInstructions: injectOpenClawContext
-        ? prepared.personaInstructions
-        : undefined,
-      memoryCollaborationInstructions: injectOpenClawContext
-        ? renderCodexWorkspaceMemoryCollaborationInstructions({
-            files: memoryReferenceFiles,
-            toolNames: memoryToolNames,
-            memoryRecallInstructions: prepared.memoryRecallInstructions,
-          })
-        : undefined,
+      turnScopedDeveloperInstructions:
+        injectOpenClawContext && !skipBootstrap ? prepared.personaInstructions : undefined,
+      memoryCollaborationInstructions:
+        injectOpenClawContext && !skipBootstrap
+          ? renderCodexWorkspaceMemoryCollaborationInstructions({
+              files: memoryReferenceFiles,
+              toolNames: memoryToolNames,
+              memoryRecallInstructions: prepared.memoryRecallInstructions,
+            })
+          : undefined,
     };
   } catch (error) {
     embeddedAgentLog.warn("failed to load codex workspace bootstrap instructions", { error });
@@ -181,6 +228,7 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
       bootstrapFiles: [],
       contextFiles: [],
       inheritsAgentWorkspace,
+      shouldRecordCompletedBootstrapTurn: false,
       threadDeveloperInstructions: includeAgentWorkspaceInstructions
         ? params.agentWorkspaceDeveloperInstructions
         : undefined,

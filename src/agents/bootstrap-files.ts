@@ -2,10 +2,12 @@ import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { ChatType } from "../channels/chat-type.js";
 import { readRecentSessionTranscriptActiveEvents } from "../config/sessions/session-accessor.js";
+import { appendSessionBootstrapCompletionInWorker } from "../config/sessions/session-bootstrap-completion-store.js";
 import type { AgentContextInjection } from "../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isMemoryOriginEligibleForAutomaticInjection } from "../memory-host-sdk/host/types.js";
 import { classifyActiveMemoryWorkspacePaths } from "../plugins/memory-runtime.js";
+import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveAgentConfig, resolveDefaultAgentId } from "./agent-scope.js";
 import { getOrLoadBootstrapFiles } from "./bootstrap-cache.js";
@@ -96,6 +98,30 @@ export async function hasCompletedBootstrapTurn(
   } catch {
     return false;
   }
+}
+
+/** Record a successful full bootstrap turn in the active transcript branch. */
+export async function persistCompletedBootstrapTurn(params: {
+  runId: string;
+  sessionTarget?: AgentRunSessionTarget;
+  assertCurrent?: () => void;
+}): Promise<boolean> {
+  const target = params.sessionTarget;
+  if (
+    !target?.agentId ||
+    !target.sessionId ||
+    !target.sessionKey ||
+    !target.storePath ||
+    isIncognitoSessionKey(target.sessionKey)
+  ) {
+    return false;
+  }
+  return await appendSessionBootstrapCompletionInWorker({
+    runId: params.runId,
+    customType: FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE,
+    sessionTarget: target,
+    ...(params.assertCurrent ? { assertCurrent: params.assertCurrent } : {}),
+  });
 }
 
 /** Builds a session-scoped warning sink that dedupes repeated bootstrap warnings. */

@@ -323,6 +323,7 @@ export async function materializePendingSupervisionBranch(
             ...params.bindingPatch,
             model: nativeModel,
             modelProvider: bindingModelProvider,
+            transcriptCoverage: undefined,
             historyCoveredThrough,
           },
         },
@@ -346,6 +347,7 @@ export async function materializePendingSupervisionBranch(
           threadId: finalThreadId,
           model: nativeModel,
           modelProvider: bindingModelProvider,
+          transcriptCoverage: undefined,
           historyCoveredThrough,
         })
       ) {
@@ -385,6 +387,7 @@ export async function materializePendingSupervisionBranch(
       pendingSupervisionBranch: undefined,
       model: nativeModel,
       modelProvider: bindingModelProvider,
+      transcriptCoverage: undefined,
       historyCoveredThrough,
       lifecycle: { action: "forked" },
     };
@@ -522,6 +525,7 @@ function matchesMaterializedSupervisionBranch(
     threadId: string;
     model: string;
     modelProvider: string | undefined;
+    transcriptCoverage: undefined;
     historyCoveredThrough: string;
   },
 ): boolean {
@@ -533,6 +537,7 @@ function matchesMaterializedSupervisionBranch(
     binding.pendingSupervisionBranch === undefined &&
     binding.model === expected.model &&
     binding.modelProvider === expected.modelProvider &&
+    binding.transcriptCoverage === expected.transcriptCoverage &&
     binding.historyCoveredThrough === expected.historyCoveredThrough
   );
 }

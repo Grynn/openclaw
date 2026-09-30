@@ -17,6 +17,7 @@ import { buildCodexContinuityCalibration } from "./context-engine-projection.js"
 import { flattenCodexDynamicToolFunctions } from "./protocol.js";
 import { readCodexRateLimitsRevision, readRecentCodexRateLimits } from "./rate-limit-cache.js";
 import type { CodexAttemptActiveTurn } from "./run-attempt-active-turn.js";
+import { persistCodexCompletedBootstrapTurnAfterMirror } from "./run-attempt-bootstrap-persistence.js";
 import type { CodexAttemptLifecycleController } from "./run-attempt-lifecycle-controller.js";
 import {
   emitCodexAppServerEvent,
@@ -55,7 +56,8 @@ export async function finalizeCodexAttempt(
 ): Promise<EmbeddedRunAttemptResult> {
   const { prompt, state: resourceState, trajectoryRecorder, markTrajectoryEndRecorded } = resources;
   const { context, systemPromptReport } = prompt;
-  const { runtime, attemptTools, activeTranscriptTarget, hookContext } = context;
+  const { runtime, attemptTools, activeTranscriptTarget, hookContext, workspaceBootstrapContext } =
+    context;
   const { hookRunner } = context;
   const { connection, preparedAuthBinding } = runtime;
   const { effectiveRuntimeProviderId, effectiveRuntimeModelId } = runtime;
@@ -463,6 +465,16 @@ export async function finalizeCodexAttempt(
     } else {
       codexModelCallDiagnostics.emitCompleted(result);
     }
+    await persistCodexCompletedBootstrapTurnAfterMirror({
+      attemptSucceeded,
+      ...(result.compactionCount !== undefined ? { compactionCount: result.compactionCount } : {}),
+      mirroredMessageCount: mirrorOutcome.mirroredMessages.length,
+      runId: params.runId,
+      ...(params.sessionTarget ? { sessionTarget: params.sessionTarget } : {}),
+      shouldRecordCompletedBootstrapTurn:
+        workspaceBootstrapContext.shouldRecordCompletedBootstrapTurn === true,
+      assertCurrent: connection.assertCurrent,
+    });
     const { assistantTranscriptOwned, assistantTranscriptIdempotencyKey, terminalAnchor } =
       mirrorOutcome;
     const shouldCaptureSettledTurnFinalizationContext =
@@ -546,6 +558,39 @@ export async function finalizeCodexAttempt(
     // Refresh replies did not reach the native thread; successful handoff clears its binding.
     if (turnSucceeded && !runAbortController.signal.aborted && !state.pluginRuntimeRefreshStop) {
       try {
+        connection.assertCurrent();
+        const latestAdmission = params.userTurnTranscriptRecorder?.getAdmissionReceipt();
+        const turnStartAdmission = context.transcriptReadFence;
+        const coverageAdmission = turnStartAdmission ? latestAdmission : undefined;
+        if (
+          turnStartAdmission &&
+          (!coverageAdmission ||
+            coverageAdmission.agentId !== turnStartAdmission.agentId ||
+            coverageAdmission.sessionId !== turnStartAdmission.sessionId ||
+            coverageAdmission.sessionKey !== turnStartAdmission.sessionKey ||
+            coverageAdmission.storePath !== turnStartAdmission.storePath ||
+            coverageAdmission.entryId !== turnStartAdmission.entryId ||
+            coverageAdmission.rawSeq !== turnStartAdmission.rawSeq ||
+            coverageAdmission.effectiveParentId !== turnStartAdmission.effectiveParentId ||
+            coverageAdmission.activeMessagePosition !== turnStartAdmission.activeMessagePosition ||
+            coverageAdmission.idempotencyKey !== turnStartAdmission.idempotencyKey ||
+            coverageAdmission.logicalTurnId !== turnStartAdmission.logicalTurnId ||
+            coverageAdmission.role !== turnStartAdmission.role)
+        ) {
+          throw new Error(
+            "Codex turn-start transcript admission changed ownership before coverage",
+          );
+        }
+        const refreshedAdmission = coverageAdmission
+          ? await (
+              await import("../../session-history-worker-runtime.js")
+            ).refreshCodexHistoryAdmissionInWorker(coverageAdmission, runAbortController.signal)
+          : undefined;
+        if (coverageAdmission && !refreshedAdmission) {
+          throw new Error(
+            `Codex turn-start transcript admission is no longer active: ${coverageAdmission.entryId}`,
+          );
+        }
         // Only no-engine continuity prompts may calibrate their measured history.
         // Billing spans every model call; density needs only the latest full prompt.
         const continuityCalibration = context.promptState.noEngineContinuityProjectionApplied
@@ -563,7 +608,16 @@ export async function finalizeCodexAttempt(
             kind: "patch",
             threadId: resourceState.thread.threadId,
             patch: {
-              historyCoveredThrough: new Date().toISOString(),
+              ...(refreshedAdmission
+                ? {
+                    transcriptCoverage: {
+                      schemaVersion: 1,
+                      turnStartAdmission: refreshedAdmission,
+                      steerTargetRunId: params.runId,
+                    },
+                  }
+                : { transcriptCoverage: undefined }),
+              historyCoveredThrough: undefined,
               ...(continuityCalibration ? { continuityCalibration } : {}),
             },
           },

@@ -357,6 +357,9 @@ function openAgentDatabaseBackend(
         assertIdentity: typeof import("../config/sessions/session-accessor.sqlite-scope.js").assertSqliteTranscriptWriteIdentity;
       }
     | undefined;
+  let bootstrapCompletion:
+    | typeof import("../config/sessions/session-bootstrap-completion-store.worker.js")
+    | undefined;
   let replacements:
     | typeof import("../config/sessions/session-accessor.sqlite-replacement-state.js")
     | undefined;
@@ -474,6 +477,21 @@ function openAgentDatabaseBackend(
           deferSqliteWorkerCommitReceipt(current.db, publication);
           admit("commit", publication);
           return publication;
+        },
+      );
+    }
+    if (command.type === "session.transcript.bootstrapComplete" && bootstrapCompletion) {
+      const completion = bootstrapCompletion;
+      return writeTransaction(
+        "session.transcript.bootstrap-complete",
+        "Session bootstrap completion",
+        (current) => {
+          const appended = completion.appendSessionBootstrapCompletionInTransaction(
+            current,
+            command.input,
+          );
+          admit("commit");
+          return appended;
         },
       );
     }
@@ -609,6 +627,13 @@ function openAgentDatabaseBackend(
             assertIdentity: scope.assertSqliteTranscriptWriteIdentity,
           };
         });
+      }
+      if (command.type === "session.transcript.bootstrapComplete") {
+        return import("../config/sessions/session-bootstrap-completion-store.worker.js").then(
+          (module) => {
+            bootstrapCompletion = module;
+          },
+        );
       }
       if (command.type === "session.entries.replace") {
         return import("../config/sessions/session-accessor.sqlite-replacement-state.js").then(

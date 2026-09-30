@@ -23,12 +23,22 @@ import {
 } from "./context-engine-projection.js";
 import { joinPresentSections } from "./developer-instruction-sections.js";
 import { isSystemAgentOnlyCodexDynamicToolAllowlist } from "./dynamic-tool-profile.js";
+import { flattenCodexDynamicToolFunctions } from "./protocol.js";
 import type { CodexAttemptRuntime } from "./run-attempt-runtime.js";
 import type { CodexAttemptTools } from "./run-attempt-tool-setup.js";
 import {
   buildDeveloperInstructions,
   type CodexContextEngineThreadBootstrapProjection,
 } from "./thread-lifecycle.js";
+
+const CODEX_BOOTSTRAP_FILE_TOOL_NAMES = new Set([
+  "apply_patch",
+  "edit",
+  "exec",
+  "exec_command",
+  "read",
+  "write",
+]);
 
 export async function prepareCodexAttemptContext(
   runtime: CodexAttemptRuntime,
@@ -65,8 +75,8 @@ export async function prepareCodexAttemptContext(
     sessionKey: contextSessionKey,
     sessionTarget: params.sessionTarget,
   };
+  const transcriptReadFence = params.userTurnTranscriptRecorder?.getAdmissionReceipt();
   const readFencedHistory = async () => {
-    const transcriptReadFence = params.userTurnTranscriptRecorder?.getAdmissionReceipt();
     const messages = await readMirroredSessionHistoryMessages({
       ...activeTranscriptTarget,
       signal: connection.runAbortController.signal,
@@ -143,7 +153,7 @@ export async function prepareCodexAttemptContext(
       sessionFile: runtimeParams.sessionFile,
       sessionTarget: params.sessionTarget,
       runtimeContext: buildActiveContextEngineRuntimeContext(),
-      transcriptReadFence: params.userTurnTranscriptRecorder?.getAdmissionReceipt(),
+      transcriptReadFence,
       contextEngineHostSupport: CODEX_APP_SERVER_CONTEXT_ENGINE_HOST,
       providerId: effectiveRuntimeProviderId,
       requestedModelId: usesSupervisionConnection ? undefined : params.requestedModelId,
@@ -158,6 +168,11 @@ export async function prepareCodexAttemptContext(
   }
   // The admission fence intentionally excludes this logical turn's committed results.
   historyState.messages.push(...(params.pluginRuntimeRefreshMessages ?? []));
+  const hasBootstrapFileAccess =
+    runtime.nativeToolSurfaceEnabled ||
+    flattenCodexDynamicToolFunctions(toolBridge.availableSpecs).some((tool) =>
+      CODEX_BOOTSTRAP_FILE_TOOL_NAMES.has(tool.name.trim().toLowerCase()),
+    );
   const workspaceBootstrapContext = await buildCodexWorkspaceBootstrapContext({
     params: runtimeParams,
     agentWorkspaceDeveloperInstructions:
@@ -171,6 +186,7 @@ export async function prepareCodexAttemptContext(
     ringZeroActive:
       isHostScopedAgentToolActive("openclaw") &&
       isSystemAgentOnlyCodexDynamicToolAllowlist(runtimeParams.toolsAllow),
+    hasBootstrapFileAccess,
     sandboxed: sandbox?.enabled === true,
   });
   const agentWorkspaceDeveloperInstructions = workspaceBootstrapContext.threadDeveloperInstructions;
@@ -198,12 +214,25 @@ export async function prepareCodexAttemptContext(
         : undefined,
       watchedSessionsContext,
     });
-  const promptState = {
+  const promptState: {
+    promptText: string;
+    promptContextRange: CodexProjectedContextRange | undefined;
+    developerInstructions: string;
+    contextEngineProjection: CodexContextEngineThreadBootstrapProjection | undefined;
+    precomputedStaleBindingContinuityProjectionResolved: boolean;
+    precomputedStaleBindingContinuityProjectionApplied: boolean;
+    precomputedStaleBindingContinuityProjectionThreadId: string | undefined;
+    staleBindingContinuityForcedFreshStart: boolean;
+    noEngineContinuityProjectionApplied: boolean;
+    inactiveThreadBootstrapBindingForcedFreshStart: boolean;
+  } = {
     promptText: params.prompt,
-    promptContextRange: undefined as CodexProjectedContextRange | undefined,
+    promptContextRange: undefined,
     developerInstructions: baseDeveloperInstructions,
-    contextEngineProjection: undefined as CodexContextEngineThreadBootstrapProjection | undefined,
+    contextEngineProjection: undefined,
+    precomputedStaleBindingContinuityProjectionResolved: false,
     precomputedStaleBindingContinuityProjectionApplied: false,
+    precomputedStaleBindingContinuityProjectionThreadId: undefined,
     staleBindingContinuityForcedFreshStart: false,
     // Set by the no-engine continuity appliers; gates calibration recording so a
     // dense direct or active-engine prompt can never persist a density sample
@@ -223,6 +252,7 @@ export async function prepareCodexAttemptContext(
     runtime,
     attemptTools,
     activeTranscriptTarget,
+    transcriptReadFence,
     historyState,
     hookContext,
     hookContextWindowFields,

@@ -1,16 +1,19 @@
 import { fileURLToPath } from "node:url";
+import type { hasCompletedBootstrapTurn } from "openclaw/plugin-sdk/agent-bootstrap-runtime";
 import {
   captureCodexSessionTranscriptReadAdmission,
   SessionTranscriptReadFenceError,
   validateCodexSessionTranscriptReadAdmission,
   validateCodexSessionTranscriptContextVersion,
 } from "openclaw/plugin-sdk/codex-session-transcript-runtime";
+import type { CodexSessionTranscriptAdmissionDeltaResult } from "openclaw/plugin-sdk/codex-session-transcript-runtime";
 import {
   resolveRuntimeWorkerArgv,
   resolveRuntimeWorkerUrl,
   WorkerTaskPool,
 } from "openclaw/plugin-sdk/process-runtime";
 import { isIncognitoSessionKey } from "openclaw/plugin-sdk/session-key-runtime";
+import type { TranscriptTurnAdmission } from "openclaw/plugin-sdk/session-transcript-runtime";
 import {
   runCodexHistoryWorkerInput,
   type CodexHistoryWorkerInput,
@@ -69,6 +72,7 @@ export async function projectCodexSettledHistoryInWorker(
       ? captureCodexSessionTranscriptReadAdmission(resolved.target)
       : undefined;
   const input: CodexHistoryWorkerInput = {
+    kind: "settled",
     target: resolved,
     sessionId: target.sessionId,
     ...(receipt ? { admission: { ...receipt } } : {}),
@@ -84,6 +88,9 @@ export async function projectCodexSettledHistoryInWorker(
       ? await runCodexHistoryWorkerInput(input)
       : await historyReads.run(input, { timeoutMs: 60_000, signal });
   signal?.throwIfAborted();
+  if (result.kind !== "settled") {
+    return { status: "rejected", reason: "history_read_failed" };
+  }
   if (resolved.kind === "sqlite") {
     try {
       if (input.admission) {
@@ -102,4 +109,61 @@ export async function projectCodexSettledHistoryInWorker(
     }
   }
   return result.result;
+}
+
+/** Reads an exact transcript delta off-thread and rechecks both admissions before accepting it. */
+export async function readCodexHistoryAdmissionDeltaInWorker(
+  covered: TranscriptTurnAdmission,
+  current: TranscriptTurnAdmission,
+  signal?: AbortSignal,
+): Promise<CodexSessionTranscriptAdmissionDeltaResult> {
+  signal?.throwIfAborted();
+  const input: CodexHistoryWorkerInput = {
+    kind: "admission-delta",
+    covered: { ...covered },
+    current: { ...current },
+  };
+  const result = isIncognitoSessionKey(current.sessionKey)
+    ? await runCodexHistoryWorkerInput(input)
+    : await historyReads.run(input, { timeoutMs: 60_000, signal });
+  signal?.throwIfAborted();
+  if (result.kind !== "admission-delta") {
+    throw new Error("Codex history worker returned the wrong operation result");
+  }
+  return result.delta;
+}
+
+/** Refresh an exact transcript admission in the existing read-only history worker. */
+export async function refreshCodexHistoryAdmissionInWorker(
+  admission: TranscriptTurnAdmission,
+  signal?: AbortSignal,
+): Promise<TranscriptTurnAdmission | undefined> {
+  signal?.throwIfAborted();
+  const input: CodexHistoryWorkerInput = {
+    kind: "admission-refresh",
+    admission: { ...admission },
+  };
+  const result = isIncognitoSessionKey(admission.sessionKey)
+    ? await runCodexHistoryWorkerInput(input)
+    : await historyReads.run(input, { timeoutMs: 60_000, signal });
+  signal?.throwIfAborted();
+  if (result.kind !== "admission-refresh") {
+    throw new Error("Codex history worker returned the wrong admission refresh result");
+  }
+  return result.admission;
+}
+
+/** Keeps bootstrap-marker reads on the existing transcript history worker. */
+export async function hasCompletedCodexBootstrapTurnInWorker(
+  sessionTarget: NonNullable<Parameters<typeof hasCompletedBootstrapTurn>[0]>,
+): Promise<boolean> {
+  if (isIncognitoSessionKey(sessionTarget.sessionKey ?? "")) {
+    return false;
+  }
+  const input: CodexHistoryWorkerInput = { kind: "bootstrap-status", sessionTarget };
+  const result = await historyReads.run(input, { timeoutMs: 60_000 });
+  if (result.kind !== "bootstrap-status") {
+    throw new Error("Codex history worker returned the wrong bootstrap status result");
+  }
+  return result.completed;
 }

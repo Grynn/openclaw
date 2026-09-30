@@ -61,6 +61,37 @@ const optionalTimestampSchema = z
   .refine((value) => Number.isFinite(Date.parse(value)))
   .optional()
   .catch(undefined);
+const transcriptTurnAdmissionSchema = z
+  .object({
+    agentId: z.string().trim().min(1),
+    sessionId: z.string().trim().min(1),
+    sessionKey: z.string().trim().min(1),
+    storePath: z.string().trim().min(1),
+    generation: z.string().trim().min(1),
+    entryId: z.string().trim().min(1),
+    rawSeq: z.number().int().nonnegative(),
+    effectiveParentId: z.string().nullable(),
+    activeMessagePosition: z.number().int().nonnegative(),
+    idempotencyKey: z.string().optional(),
+    messageFingerprint: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .optional(),
+    logicalTurnId: z.string().trim().min(1),
+    role: z.literal("user"),
+  })
+  .strict();
+/** Exact OpenClaw transcript inputs already admitted to one native Codex thread. */
+export const codexTranscriptCoverageSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    turnStartAdmission: transcriptTurnAdmissionSchema,
+    // Confirmed steering rewrites stamp this run id on every user row Codex
+    // consumed after turn/start. Unstamped concurrent arrivals remain pending.
+    steerTargetRunId: z.string().trim().min(1),
+  })
+  .strict();
+export type CodexTranscriptCoverage = z.infer<typeof codexTranscriptCoverageSchema>;
 const pendingSupervisionBranchSchema = z
   .object({
     sourceThreadId: z.string().trim().min(1),
@@ -210,6 +241,8 @@ const threadBindingSchema = z
     environmentSelectionFingerprint: optionalStringSchema,
     conversationStartId: optionalStringSchema,
     conversationSourceTransferComplete: z.literal(true).optional().catch(undefined),
+    transcriptCoverage: codexTranscriptCoverageSchema.optional().catch(undefined),
+    // Legacy fallback for bindings written before exact transcript coverage.
     historyCoveredThrough: optionalTimestampSchema,
     // Observed density of the last completed turn on this thread: prompt chars
     // actually sent vs provider-reported input tokens. Read by the no-engine
