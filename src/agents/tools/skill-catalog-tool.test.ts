@@ -5,14 +5,14 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { createCanonicalFixtureSkill } from "../../skills/test-support/test-helpers.js";
 import { WORKSPACE_SKILLS_PROMPT_FORMAT_VERSION, type SkillSnapshot } from "../../skills/types.js";
 import type { AnyAgentTool } from "./common.js";
-import {
-  createSkillCatalogTool,
-  SKILL_CATALOG_MAX_FILE_BYTES,
-  SKILL_CATALOG_MAX_OUTPUT_BYTES,
-  SKILL_CATALOG_MAX_PAGE_BYTES,
-  SKILL_CATALOG_MAX_QUERY_CHARS,
-  SKILL_CATALOG_MAX_SEARCH_LIMIT,
-} from "./skill-catalog-tool.js";
+import { createSkillCatalogTool } from "./skill-catalog-tool.js";
+
+// Independent user-visible limits: these assertions must fail if the tool expands its budget.
+const MAX_FILE_BYTES = 256_000;
+const MAX_OUTPUT_BYTES = 32_000;
+const MAX_PAGE_BYTES = 12_000;
+const MAX_QUERY_CHARS = 512;
+const MAX_SEARCH_LIMIT = 25;
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -69,7 +69,7 @@ async function readAllPages(
   let pages = 0;
   while (true) {
     const result = await tool.execute(`page-${pages}`, { ...params, offset });
-    expect(outputBytes(result)).toBeLessThanOrEqual(SKILL_CATALOG_MAX_OUTPUT_BYTES);
+    expect(outputBytes(result)).toBeLessThanOrEqual(MAX_OUTPUT_BYTES);
     const details = result.details as {
       bytes: number;
       content: string;
@@ -78,7 +78,7 @@ async function readAllPages(
       totalBytes: number;
     };
     expect(details.offset).toBe(offset);
-    expect(details.bytes).toBeLessThanOrEqual(SKILL_CATALOG_MAX_PAGE_BYTES);
+    expect(details.bytes).toBeLessThanOrEqual(MAX_PAGE_BYTES);
     chunks.push(details.content);
     pages += 1;
     if (details.nextOffset === null) {
@@ -130,13 +130,13 @@ describe("skill_catalog", () => {
     const dir = tempDirs.make("openclaw-skill-catalog-");
     const filePath = path.join(dir, "SKILL.md");
     const content = `# Alpha\n\n${"🙂 complete instructions\n".repeat(700)}`;
-    expect(Buffer.byteLength(content, "utf8")).toBeGreaterThan(SKILL_CATALOG_MAX_PAGE_BYTES);
-    expect(Buffer.byteLength(content, "utf8")).toBeLessThan(SKILL_CATALOG_MAX_FILE_BYTES);
+    expect(Buffer.byteLength(content, "utf8")).toBeGreaterThan(MAX_PAGE_BYTES);
+    expect(Buffer.byteLength(content, "utf8")).toBeLessThan(MAX_FILE_BYTES);
     await fs.writeFile(filePath, content);
     const tool = requireTool(createSnapshot([{ name: "alpha", filePath }]));
 
     const read = await tool.execute("read", { action: "read", name: "alpha" });
-    expect(outputBytes(read)).toBeLessThanOrEqual(SKILL_CATALOG_MAX_OUTPUT_BYTES);
+    expect(outputBytes(read)).toBeLessThanOrEqual(MAX_OUTPUT_BYTES);
     expect(read.details).toMatchObject({
       action: "read",
       name: "alpha",
@@ -178,25 +178,25 @@ describe("skill_catalog", () => {
         {
           name: "escaped",
           filePath: "node://one/skills/escaped/SKILL.md",
-          readContent: "\n".repeat(SKILL_CATALOG_MAX_OUTPUT_BYTES),
+          readContent: "\n".repeat(MAX_OUTPUT_BYTES),
         },
       ]),
     );
     await expect(
       escapedBeyondOutputBudget.execute("escaped", { action: "read", name: "escaped" }),
-    ).rejects.toThrow(`returned whole within ${SKILL_CATALOG_MAX_OUTPUT_BYTES} bytes`);
+    ).rejects.toThrow(`returned whole within ${MAX_OUTPUT_BYTES} bytes`);
 
     const oversized = requireTool(
       createSnapshot([
         {
           name: "large",
           filePath: "node://one/skills/large/SKILL.md",
-          readContent: "x".repeat(SKILL_CATALOG_MAX_FILE_BYTES + 1),
+          readContent: "x".repeat(MAX_FILE_BYTES + 1),
         },
       ]),
     );
     await expect(oversized.execute("large", { action: "read", name: "large" })).rejects.toThrow(
-      `exceeds ${SKILL_CATALOG_MAX_FILE_BYTES} bytes`,
+      `exceeds ${MAX_FILE_BYTES} bytes`,
     );
   });
 
@@ -317,15 +317,15 @@ describe("skill_catalog", () => {
     await expect(
       tool.execute("query", {
         action: "search",
-        query: "x".repeat(SKILL_CATALOG_MAX_QUERY_CHARS + 1),
+        query: "x".repeat(MAX_QUERY_CHARS + 1),
       }),
-    ).rejects.toThrow(`at most ${SKILL_CATALOG_MAX_QUERY_CHARS}`);
+    ).rejects.toThrow(`at most ${MAX_QUERY_CHARS}`);
     await expect(
       tool.execute("limit", {
         action: "search",
-        limit: SKILL_CATALOG_MAX_SEARCH_LIMIT + 1,
+        limit: MAX_SEARCH_LIMIT + 1,
       }),
-    ).rejects.toThrow(`1 to ${SKILL_CATALOG_MAX_SEARCH_LIMIT}`);
+    ).rejects.toThrow(`1 to ${MAX_SEARCH_LIMIT}`);
 
     const dir = tempDirs.make("openclaw-skill-invalid-text-");
     const filePath = path.join(dir, "SKILL.md");

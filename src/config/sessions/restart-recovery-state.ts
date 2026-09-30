@@ -361,7 +361,7 @@ export function sameRestartRecoveryDeliveryConstituentSourceTurnIds(
   return sameOptionalStringArray(left, normalizeStringArray(right));
 }
 
-export function mergeRestartRecoveryTerminalSourceTurnIdGroups(
+function mergeRestartRecoveryTerminalSourceTurnIdGroups(
   current: unknown,
   appended: unknown,
 ): string[][] | undefined {

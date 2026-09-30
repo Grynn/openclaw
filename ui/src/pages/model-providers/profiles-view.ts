@@ -72,7 +72,7 @@ function profileSource(profile: ProviderProfile): string | undefined {
   }
 }
 
-export function apiKeySource(card: ModelProviderCard): string | undefined {
+function apiKeySource(card: ModelProviderCard): string | undefined {
   if (card.apiKey?.source === "config") {
     return t("modelProviders.credentials.configKey");
   }

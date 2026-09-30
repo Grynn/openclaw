@@ -2,6 +2,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { MEMORY_EMBEDDING_CACHE_TABLE } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { runSqliteImmediateTransactionSync } from "openclaw/plugin-sdk/sqlite-runtime";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   prepareMemoryEmbeddingCacheInsertIgnore,
   prepareMemoryEmbeddingCacheUpsert,
@@ -25,10 +26,6 @@ type ChunkEmbeddingRow = {
   embedding: Uint8Array;
   updated_at: number;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function isCacheRow(value: unknown): value is CacheRow {
   return (

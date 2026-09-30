@@ -82,7 +82,7 @@ const transcriptTurnAdmissionSchema = z
   })
   .strict();
 /** Exact OpenClaw transcript inputs already admitted to one native Codex thread. */
-export const codexTranscriptCoverageSchema = z
+const codexTranscriptCoverageSchema = z
   .object({
     schemaVersion: z.literal(1),
     turnStartAdmission: transcriptTurnAdmissionSchema,

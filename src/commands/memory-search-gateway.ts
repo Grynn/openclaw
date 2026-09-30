@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { theme } from "../../packages/terminal-core/src/theme.js";
 import { callGatewayFromCli, canFallbackToImplicitLocalGateway } from "../cli/gateway-rpc.js";
 import { readGatewayDispatchConfigWithShellEnvFallback } from "../config/gateway-dispatch-config.js";
@@ -19,10 +20,6 @@ type MemorySearchGatewayResponse = {
   warning?: string;
   action?: string;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function isMemorySearchGatewayResponse(value: unknown): value is MemorySearchGatewayResponse {
   return (

@@ -6,7 +6,6 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
-import { createEmptyTaskStatusSummary } from "../tasks/task-registry.summary.js";
 import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
 
 const acpMocks = vi.hoisted(() => ({
@@ -83,14 +82,6 @@ vi.mock("../config/sessions/session-sqlite-target.js", async (importOriginal) =>
       actual.resolveSqliteTargetFromSessionStorePath(...args),
   };
 });
-
-vi.mock("../tasks/task-registry.maintenance.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../tasks/task-registry.maintenance.js")>()),
-  getInspectableTaskStatusSummaryReadOnly: async () => ({
-    state: "ready" as const,
-    ...createEmptyTaskStatusSummary(),
-  }),
-}));
 
 import { getStatusSummary } from "./summary.js";
 

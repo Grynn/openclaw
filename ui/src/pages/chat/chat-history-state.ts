@@ -48,7 +48,7 @@ type ChatHistoryLoadState =
     }
   | ({ phase: "failed"; message: string; retryable: boolean } & ChatHistoryLoadRequest);
 
-export type InFlightChatBranchesRequest = {
+type InFlightChatBranchesRequest = {
   client: GatewayBrowserClient;
   connectionEpoch: number;
   key: string;

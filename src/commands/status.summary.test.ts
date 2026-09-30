@@ -460,7 +460,7 @@ describe("getStatusSummary", () => {
   });
 
   it("passes agent scope when listing configured agent session stores", async () => {
-    vi.mocked(listGatewayAgentsBasic).mockReturnValue({
+    vi.mocked(listGatewayAgentsBasic).mockResolvedValue({
       defaultId: "main",
       ownership: "sole",
       selectionRequired: false,
