@@ -934,6 +934,15 @@ describe("memory manager reindex recovery", () => {
     await harness.sync({ reason: "search" });
     expect(sessionSync).not.toHaveBeenCalled();
     now += 30_000;
+    sessionSync.mockRejectedValueOnce(new Error("session retry failed"));
+    await expect(harness.sync({ reason: "search" })).rejects.toThrow("session retry failed");
+    expect(harness.fullReindexRetryBackoff).toEqual({ attempts: 2, retryAt: now + 60_000 });
+    expect(harness.sessionsFullRetryDirty).toBe(true);
+
+    sessionSync.mockClear();
+    await harness.sync({ reason: "search" });
+    expect(sessionSync).not.toHaveBeenCalled();
+    now = harness.fullReindexRetryBackoff.retryAt;
     await harness.sync({ reason: "search" });
 
     expect(sessionSync).toHaveBeenCalledExactlyOnceWith(
