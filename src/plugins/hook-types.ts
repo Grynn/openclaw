@@ -1,4 +1,5 @@
 import type { AgentMessage } from "../../packages/agent-core/src/types.js";
+import type { ContextWindowInfo } from "../agents/context-window-guard.js";
 import type { NormalizedUsage } from "../agents/usage.js";
 import type {
   GetReplyOptions,
@@ -261,7 +262,7 @@ type PluginHookContextWindow = {
   /** Resolved effective context-token budget after model/config/agent caps. */
   contextTokenBudget?: number;
   /** Source that supplied the resolved context-token budget. */
-  contextWindowSource?: PluginHookContextWindowSource;
+  contextWindowSource?: ContextWindowInfo["source"];
   /** Native/configured reference window when a lower cap wins. */
   contextWindowReferenceTokens?: number;
 };
@@ -314,8 +315,6 @@ export type PluginHookAgentContext = PluginHookContextWindow & {
    */
   readonly hookInvocation?: Readonly<{ assertActive(): void }>;
 };
-
-type PluginHookContextWindowSource = "model" | "modelsConfig" | "agentContextTokens" | "default";
 
 export type PluginHookBeforeAgentReplyEvent = {
   cleanedBody: string;

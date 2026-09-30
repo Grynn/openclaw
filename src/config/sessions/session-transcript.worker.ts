@@ -243,6 +243,14 @@ serveOwnedWorkerTasks(
           result: opened.found ? opened.value : undefined,
         };
       }
+      if (request.kind === "bootstrap-control") {
+        const { readLatestSessionTranscriptControlEvent } =
+          await import("./session-accessor.sqlite-active-events.js");
+        return {
+          kind: "bootstrap-control" as const,
+          result: readLatestSessionTranscriptControlEvent(request.target, request.customType),
+        };
+      }
       if (request.kind === "transcript-search") {
         const { searchSessionTranscriptsReadOnlySync } =
           await import("./session-transcript-search.js");

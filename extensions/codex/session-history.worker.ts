@@ -1,4 +1,3 @@
-import { hasCompletedBootstrapTurn } from "openclaw/plugin-sdk/agent-bootstrap-runtime";
 import {
   readCodexSessionTranscriptMessagesBetweenAdmissions,
   refreshCodexSessionTranscriptAdmission,
@@ -29,11 +28,7 @@ type CodexSettledHistoryWorkerInput = {
 export type CodexHistoryWorkerInput =
   | CodexSettledHistoryWorkerInput
   | { kind: "admission-delta"; covered: TranscriptTurnAdmission; current: TranscriptTurnAdmission }
-  | { kind: "admission-refresh"; admission: TranscriptTurnAdmission }
-  | {
-      kind: "bootstrap-status";
-      sessionTarget: NonNullable<Parameters<typeof hasCompletedBootstrapTurn>[0]>;
-    };
+  | { kind: "admission-refresh"; admission: TranscriptTurnAdmission };
 export type CodexHistoryWorkerResult =
   | {
       kind: "settled";
@@ -41,20 +36,13 @@ export type CodexHistoryWorkerResult =
       version?: SessionTranscriptContextVersion;
     }
   | { kind: "admission-delta"; delta: CodexSessionTranscriptAdmissionDeltaResult }
-  | { kind: "admission-refresh"; admission?: TranscriptTurnAdmission }
-  | { kind: "bootstrap-status"; completed: boolean };
+  | { kind: "admission-refresh"; admission?: TranscriptTurnAdmission };
 
 export async function runCodexHistoryWorkerInput(
   input: unknown,
 ): Promise<CodexHistoryWorkerResult> {
   // SAFETY: The paired runtime constructs this request; the SQLite snapshot validates admission.
   const request = input as CodexHistoryWorkerInput;
-  if (request.kind === "bootstrap-status") {
-    return {
-      kind: "bootstrap-status",
-      completed: await hasCompletedBootstrapTurn(request.sessionTarget),
-    };
-  }
   if (request.kind === "admission-refresh") {
     return {
       kind: "admission-refresh",

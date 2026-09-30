@@ -77,6 +77,12 @@ export function createSessionHistoryWorkerReaders(
       (request) => ({ kind: "transcript-match", request }),
       (value) => value.result,
     ),
+    readBootstrapControl: reader(
+      "bootstrap-control",
+      "bootstrap control",
+      (input) => ({ kind: "bootstrap-control", ...input }),
+      (value) => value.result,
+    ),
     readHistoricalEvictionCandidates: reader(
       "historical-eviction-candidates",
       "eviction candidates",

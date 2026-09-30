@@ -540,7 +540,7 @@ describe("resolveEmbeddedRuntimeModelPolicy", () => {
 
     expect(result.contextTokenBudget).toBe(32_000);
     expect(result.contextWindowInfo).toEqual({
-      source: "model",
+      source: "runContextTokenBudget",
       tokens: 32_000,
       referenceTokens: 272_000,
     });
@@ -575,35 +575,57 @@ describe("resolveEmbeddedRuntimeModelPolicy", () => {
 });
 
 describe("native model-owned harness policy", () => {
-  it("does not apply outer context guards, budgets, or authored caps", () => {
-    const runtimeModel = createRuntimeModel();
-    const result = resolveEmbeddedRunEffectiveModel({
-      runParams: {
-        sessionId: "native-session",
-        workspaceDir: hookContext.workspaceDir,
-        prompt: "hello",
-        runId: "native-run",
-        timeoutMs: 5_000,
-        contextTokenBudget: 32_000,
-        config: {
-          models: {
-            providers: {
-              openai: {
-                baseUrl: "https://api.openai.com/v1",
-                models: [createConfiguredModel({ contextWindow: 1, contextTokens: 1 })],
+  it.each([
+    { requested: undefined, expected: undefined },
+    { requested: 32_000, expected: 32_000 },
+    { requested: 500_000, expected: 272_000 },
+    { requested: Number.NaN, expected: undefined },
+  ])(
+    "honors an explicit maintenance budget $requested without outer model policy",
+    ({ requested, expected }) => {
+      const runtimeModel = createRuntimeModel();
+      const result = resolveEmbeddedRunEffectiveModel({
+        runParams: {
+          sessionId: "native-session",
+          workspaceDir: hookContext.workspaceDir,
+          prompt: "hello",
+          runId: "native-run",
+          timeoutMs: 5_000,
+          contextTokenBudget: requested,
+          config: {
+            models: {
+              providers: {
+                openai: {
+                  baseUrl: "https://api.openai.com/v1",
+                  models: [createConfiguredModel({ contextWindow: 1, contextTokens: 1 })],
+                },
               },
             },
           },
         },
-      },
-      provider: "openai",
-      modelConfigProvider: "openai",
-      modelId: runtimeModel.id,
-      agentHarnessId: "codex",
-      runtimeModel,
-      nativeModelOwned: true,
-    });
+        provider: "openai",
+        modelConfigProvider: "openai",
+        modelId: runtimeModel.id,
+        agentHarnessId: "codex",
+        runtimeModel,
+        nativeModelOwned: true,
+      });
 
-    expect(result).toEqual({ effectiveModel: runtimeModel });
-  });
+      if (expected === undefined) {
+        expect(result).toEqual({ effectiveModel: runtimeModel });
+      } else {
+        expect(result.contextTokenBudget).toBe(expected);
+        expect(result.effectiveModel.contextWindow).toBe(expected);
+        expect(result.effectiveModel.maxTokens).toBe(runtimeModel.maxTokens);
+        expect(result).not.toHaveProperty("authoredContextTokenCap");
+        if (expected === 32_000) {
+          expect(result.contextWindowInfo).toEqual({
+            tokens: 32_000,
+            source: "runContextTokenBudget",
+          });
+        }
+      }
+      expect(runtimeModel.contextWindow).toBe(1_050_000);
+    },
+  );
 });

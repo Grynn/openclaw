@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { expect, it } from "vitest";
@@ -229,6 +230,11 @@ it.each(["completed", "interrupted"] as const)(
         await setSessionMcpRuntimeScheduler(scheduler);
         await state.writeConfig(cfg);
         setRuntimeConfigSnapshot(cfg);
+        await fs.writeFile(
+          path.join(state.workspaceDir, "AGENTS.md"),
+          "PRIVATE_FLUSH_AGENTS_SENTINEL",
+          "utf8",
+        );
         await replaceSessionEntry(scope, {
           sessionId: scope.sessionId,
           updatedAt: Date.now(),
@@ -339,7 +345,8 @@ it.each(["completed", "interrupted"] as const)(
         admission.release();
         admission = undefined;
         expect(requests).toHaveLength(1);
-        expect(runtimeBudgets).toEqual([128_000]);
+        expect(runtimeBudgets).toEqual([64_000]);
+        expect(JSON.stringify(requests[0])).not.toContain("PRIVATE_FLUSH_AGENTS_SENTINEL");
         for (const sessionId of firstPrivateSessionIds) {
           expect
             .soft(

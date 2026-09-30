@@ -71,7 +71,6 @@ import type { VerboseLevel } from "../thinking.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import {
   buildEmbeddedRunExecutionParams,
-  resolveModelFallbackOptions,
   resolveRunThinkingLevelForFallbackCandidate,
 } from "./agent-runner-utils.js";
 import type { CompactionNoticePhase } from "./compaction-notice.js";
@@ -83,6 +82,7 @@ import {
 } from "./memory-flush-errors.js";
 import {
   hasAlreadyFlushedForCurrentCompaction,
+  resolveMemoryFlushModelFallbackOptions,
   resolveMaxActiveTranscriptBytes,
   resolveCompactionThreshold,
   resolveEffectivePromptTokens,
@@ -146,40 +146,6 @@ function estimatePromptTokensForMemoryFlush(prompt?: string): number | undefined
   const message: AgentMessage = { role: "user", content: trimmed, timestamp: Date.now() };
   const tokens = asPositiveFiniteNumber(estimateMessagesTokens([message]));
   return tokens === undefined ? undefined : Math.ceil(tokens);
-}
-
-function resolveMemoryFlushModelFallbackOptions(
-  run: FollowupRun["run"],
-  model?: string,
-  configOverride: FollowupRun["run"]["config"] = run.config,
-) {
-  const options = resolveModelFallbackOptions(run, configOverride);
-  const override = normalizeOptionalString(model);
-  if (!override) {
-    return options;
-  }
-  // A memory-flush maintenance model is an exact override: do not let a failed
-  // local flush silently fall through to the paid active conversation fallback.
-  const slashIdx = override.indexOf("/");
-  if (slashIdx > 0) {
-    const overrideProvider = override.slice(0, slashIdx).trim();
-    const overrideModel = override.slice(slashIdx + 1).trim();
-    if (overrideProvider && overrideModel) {
-      return {
-        ...options,
-        provider: overrideProvider,
-        model: overrideModel,
-        requestedRouteResolution: "raw" as const,
-        fallbacksOverride: [],
-      };
-    }
-  }
-  return {
-    ...options,
-    model: override,
-    requestedRouteResolution: "raw" as const,
-    fallbacksOverride: [],
-  };
 }
 
 type FollowupRuntimeParams = {
@@ -1576,7 +1542,8 @@ export async function runMemoryFlushIfNeeded(params: {
           allowEmptyAssistantReplyAsSilent: true,
           terminalReplyExpectation: "optional",
           trigger: "memory",
-          contextTokenBudget: contextWindowTokens,
+          contextTokenBudget: Math.min(contextWindowTokens, 64_000),
+          bootstrapContextMode: "lightweight",
           memoryFlushWritePath,
           initialTurnTainted:
             !params.followupRun.run.senderIsOwner || sessionLogSnapshot?.turnTainted === true,

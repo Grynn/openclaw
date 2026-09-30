@@ -1,5 +1,4 @@
 import { fileURLToPath } from "node:url";
-import type { hasCompletedBootstrapTurn } from "openclaw/plugin-sdk/agent-bootstrap-runtime";
 import {
   captureCodexSessionTranscriptReadAdmission,
   SessionTranscriptReadFenceError,
@@ -151,19 +150,4 @@ export async function refreshCodexHistoryAdmissionInWorker(
     throw new Error("Codex history worker returned the wrong admission refresh result");
   }
   return result.admission;
-}
-
-/** Keeps bootstrap-marker reads on the existing transcript history worker. */
-export async function hasCompletedCodexBootstrapTurnInWorker(
-  sessionTarget: NonNullable<Parameters<typeof hasCompletedBootstrapTurn>[0]>,
-): Promise<boolean> {
-  if (isIncognitoSessionKey(sessionTarget.sessionKey ?? "")) {
-    return false;
-  }
-  const input: CodexHistoryWorkerInput = { kind: "bootstrap-status", sessionTarget };
-  const result = await historyReads.run(input, { timeoutMs: 60_000 });
-  if (result.kind !== "bootstrap-status") {
-    throw new Error("Codex history worker returned the wrong bootstrap status result");
-  }
-  return result.completed;
 }

@@ -88,6 +88,13 @@ type SessionTranscriptMatchWorkerInput = {
   request: import("./session-transcript-match.js").SessionTranscriptEventMatchRequest;
 };
 
+type SessionBootstrapControlWorkerInput = {
+  kind: "bootstrap-control";
+  database: { agentId: string; path: string };
+  target: ResolvedTranscriptReadScope;
+  customType: string;
+};
+
 type SessionTranscriptSearchWorkerInput = {
   kind: "transcript-search";
   database: { agentId: string; path: string };
@@ -486,6 +493,7 @@ export type SessionHistoryWorkerInput =
   | SessionIdentityEvidenceWorkerInput
   | SessionUsageCacheWorkerInput
   | SessionTranscriptSearchWorkerInput
+  | SessionBootstrapControlWorkerInput
   | SessionTranscriptMatchWorkerInput;
 
 export type SessionTranscriptWorkerInput =
@@ -516,6 +524,10 @@ export type SessionTranscriptWorkerValues = {
   };
   "transcript-search": { kind: "transcript-search"; result: SessionTranscriptSearchResult };
   "transcript-match": { kind: "transcript-match"; result: { event: TranscriptEvent } | undefined };
+  "bootstrap-control": {
+    kind: "bootstrap-control";
+    result: "custom" | "compaction" | "reset" | undefined;
+  };
   "cold-metadata": SessionColdMetadataWorkerResult;
   "transcript-hydration": SessionTranscriptHydrationWorkerResult;
   "current-turn-entry": SessionTranscriptCurrentTurnEntryRead;
@@ -595,6 +607,9 @@ export type SessionHistoryWorkerDatabase = {
   findTranscriptEvent: (
     request: SessionTranscriptMatchWorkerInput["request"],
   ) => Promise<{ event: TranscriptEvent } | undefined>;
+  readBootstrapControl: (
+    input: Omit<SessionBootstrapControlWorkerInput, "kind" | "database">,
+  ) => Promise<"custom" | "compaction" | "reset" | undefined>;
   readHistoricalEvictionCandidates: (
     input: Omit<SessionHistoricalEvictionCandidatesWorkerInput, "kind" | "database">,
   ) => Promise<string[]>;

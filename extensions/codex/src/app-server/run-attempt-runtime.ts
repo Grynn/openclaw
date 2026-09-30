@@ -88,9 +88,9 @@ export async function prepareCodexAttemptRuntime(connection: CodexAttemptConnect
   const effectiveContextWindowInfo = usesSupervisionConnection
     ? undefined
     : params.contextWindowInfo;
-  const effectiveContextTokenBudget = usesSupervisionConnection
-    ? undefined
-    : params.contextTokenBudget;
+  // The outer run supplies a budget only when explicitly narrowed for this turn.
+  // Keep that OpenClaw history/projection bound without adopting outer model ownership.
+  const effectiveContextTokenBudget = params.contextTokenBudget;
   const effectiveRuntimeProviderId = usesSupervisionConnection
     ? (mutable.startupBinding?.modelProvider ?? "codex")
     : params.provider;
@@ -134,6 +134,9 @@ export async function prepareCodexAttemptRuntime(connection: CodexAttemptConnect
         thinkLevel: _outerThinkLevel,
         fastMode: _outerFastMode,
         sessionKey: contextSessionKey,
+        ...(effectiveContextTokenBudget === undefined
+          ? {}
+          : { contextTokenBudget: effectiveContextTokenBudget }),
       }
     : {
         ...params,

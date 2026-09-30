@@ -71,6 +71,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
   } = runtime;
   const {
     params,
+    sessionAgentId,
     activeContextEngine,
     usesSupervisionConnection,
     mutable,
@@ -220,6 +221,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
             expectedBinding: buildContextEngineBinding(
               { ...runtimeParams },
               contextEngineProjection,
+              sessionAgentId,
             ),
             projection: contextEngineProjection,
             dynamicToolsFingerprint: codexDynamicToolsFingerprint(toolBridge.specs),

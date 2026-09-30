@@ -17,7 +17,6 @@ import {
 } from "./attempt-context.js";
 import { buildCodexWorkspaceBootstrapContext } from "./attempt-workspace-context.js";
 import {
-  resolveCodexContextEngineProjectionMaxChars,
   resolveCodexContinuityProjectionMaxChars,
   type CodexProjectedContextRange,
 } from "./context-engine-projection.js";
@@ -28,6 +27,7 @@ import type { CodexAttemptRuntime } from "./run-attempt-runtime.js";
 import type { CodexAttemptTools } from "./run-attempt-tool-setup.js";
 import {
   buildDeveloperInstructions,
+  resolveCodexContextEngineProjectionMaxCharsForAttempt,
   type CodexContextEngineThreadBootstrapProjection,
 } from "./thread-lifecycle.js";
 
@@ -241,13 +241,17 @@ export async function prepareCodexAttemptContext(
     inactiveThreadBootstrapBindingForcedFreshStart:
       initialInactiveThreadBootstrapBindingForcedFreshStart,
   };
-  const codexContextProjectionMaxChars = resolveCodexContextEngineProjectionMaxChars({
-    contextTokenBudget: effectiveContextTokenBudget,
-  });
-  const codexContinuityProjectionMaxChars = resolveCodexContinuityProjectionMaxChars({
-    contextTokenBudget: effectiveContextTokenBudget,
-    calibration: connection.mutable.continuityCalibration,
-  });
+  const codexContextProjectionMaxChars = resolveCodexContextEngineProjectionMaxCharsForAttempt(
+    runtimeParams,
+    sessionAgentId,
+  );
+  const codexContinuityProjectionMaxChars = Math.min(
+    resolveCodexContinuityProjectionMaxChars({
+      contextTokenBudget: effectiveContextTokenBudget,
+      calibration: connection.mutable.continuityCalibration,
+    }),
+    codexContextProjectionMaxChars,
+  );
   return {
     runtime,
     attemptTools,

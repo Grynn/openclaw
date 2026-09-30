@@ -1,8 +1,10 @@
 import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { ChatType } from "../channels/chat-type.js";
-import { readRecentSessionTranscriptActiveEvents } from "../config/sessions/session-accessor.js";
-import { appendSessionBootstrapCompletionInWorker } from "../config/sessions/session-bootstrap-completion-store.js";
+import {
+  appendSessionBootstrapCompletionInWorker,
+  readSessionBootstrapCompletionInWorker,
+} from "../config/sessions/session-bootstrap-completion-store.js";
 import type { AgentContextInjection } from "../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isMemoryOriginEligibleForAutomaticInjection } from "../memory-host-sdk/host/types.js";
@@ -37,7 +39,6 @@ import {
 
 export type BootstrapContextMode = "full" | "lightweight";
 
-const CONTINUATION_SCAN_MAX_RECORDS = 500;
 export const FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE = "openclaw:bootstrap-context:full";
 const BOOTSTRAP_WARNING_DEDUPE_LIMIT = 1024;
 const seenBootstrapWarnings = new Set<string>();
@@ -76,25 +77,14 @@ export async function hasCompletedBootstrapTurn(
   sessionTarget?: AgentRunSessionTarget,
 ): Promise<boolean> {
   const { agentId, sessionId, sessionKey, storePath } = sessionTarget ?? {};
-  if (!agentId || !sessionId || !sessionKey || !storePath) {
+  if (!agentId || !sessionId || !sessionKey || !storePath || isIncognitoSessionKey(sessionKey)) {
     return false;
   }
   try {
-    const records = readRecentSessionTranscriptActiveEvents(
-      { agentId, sessionId, sessionKey, storePath },
-      CONTINUATION_SCAN_MAX_RECORDS,
-    );
-    for (const entry of records.toReversed()) {
-      const record = entry as { type?: string; customType?: string } | null | undefined;
-      // Context before compaction/reset is not reusable on the active branch.
-      if (record?.type === "compaction" || record?.type === "reset") {
-        return false;
-      }
-      if (record?.type === "custom" && record.customType === FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE) {
-        return true;
-      }
-    }
-    return false;
+    return await readSessionBootstrapCompletionInWorker({
+      customType: FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE,
+      sessionTarget: { agentId, sessionId, sessionKey, storePath },
+    });
   } catch {
     return false;
   }

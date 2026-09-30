@@ -1,5 +1,6 @@
 import path from "node:path";
 import {
+  hasCompletedBootstrapTurn,
   isPrimaryBootstrapRun,
   isWorkspaceBootstrapPending,
   resolveAttemptBootstrapContext,
@@ -168,10 +169,9 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
       bootstrapContextMode: params.params.bootstrapContextMode,
       bootstrapContextRunKind: params.params.bootstrapContextRunKind,
       bootstrapMode: bootstrapRouting.bootstrapMode,
+      isPrimaryRun: isPrimaryBootstrapRun(params.sessionKey),
       hasCompletedBootstrapTurn: async () =>
-        await (
-          await import("../../session-history-worker-runtime.js")
-        ).hasCompletedCodexBootstrapTurnInWorker(params.params.sessionTarget ?? {}),
+        await hasCompletedBootstrapTurn(params.params.sessionTarget),
       resolveBootstrapContextForRun: async () => ({
         bootstrapFiles: prepared.bootstrapFiles,
         contextFiles: prepared.contextFiles,
