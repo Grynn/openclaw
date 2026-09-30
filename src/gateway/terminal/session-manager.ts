@@ -38,7 +38,9 @@ import type {
 import {
   terminalAttachSummary,
   terminalSessionRecipientIds,
+  terminalSnapshotRange,
   terminalSessionSummary,
+  type TerminalSnapshotRange,
 } from "./session-projection.js";
 import type { TerminalAttachSummary, TerminalSessionSummary } from "./session-types.js";
 export { DEFAULT_TERMINAL_DETACH_SECONDS } from "./session-limits.js";
@@ -497,6 +499,16 @@ export class TerminalSessionManager {
     return this.agentOwnedSession(owner, sessionId)?.buffer.snapshot();
   }
 
+  /** Raw agent-owned scrollback plus its stable cumulative UTF-16 cursor range. */
+  snapshotAgentRange(
+    owner: AgentTerminalOwner,
+    sessionId: string,
+  ): TerminalSnapshotRange | undefined {
+    const session = this.agentOwnedSession(owner, sessionId);
+    return session ? terminalSnapshotRange(session) : undefined;
+  }
+
+  /** Live sessions owned by one agent tool caller. */
   listAgent(owner: AgentTerminalOwner): TerminalSessionSummary[] {
     return [...this.sessions.values()]
       .filter((session) => !session.closed && agentTerminalOwnerMatches(session.owner, owner))
