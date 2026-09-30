@@ -5,7 +5,11 @@ import type { FastMode } from "@openclaw/normalization-core/string-coerce";
 import { normalizeFastMode } from "../auto-reply/thinking.shared.js";
 import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { type FastModeSource, resolveFastModeModelAutoOnSeconds } from "../shared/fast-mode.js";
+import {
+  type FastModeSource,
+  resolveFastModeModelAllowed,
+  resolveFastModeModelAutoOnSeconds,
+} from "../shared/fast-mode.js";
 import { resolveAgentConfig } from "./agent-scope.js";
 import { resolveModelExtraParamSources } from "./model-extra-params.js";
 
@@ -26,6 +30,7 @@ export type { FastModeAutoProgressState } from "../shared/fast-mode.js";
 type FastModeState = {
   mode: FastMode;
   enabled: boolean;
+  allowed: boolean;
   source: FastModeSource;
   fastAutoOnSeconds: number;
 };
@@ -48,6 +53,10 @@ export function resolveFastModeState(params: {
     ...params,
     modelParamSources: [agentModelParams, modelParams],
   });
+  // A model that forbids fast mode outranks every session, agent, and config choice.
+  if (!resolveFastModeModelAllowed(params)) {
+    return { mode: false, enabled: false, allowed: false, source: "config", fastAutoOnSeconds };
+  }
   let mode = normalizeFastMode(params.sessionEntry?.fastMode);
   let source: FastModeSource = "session";
   if (mode === undefined) {
@@ -71,6 +80,7 @@ export function resolveFastModeState(params: {
   return {
     mode: mode ?? false,
     enabled: mode === "auto" || mode === true,
+    allowed: true,
     source: mode === undefined ? "default" : source,
     fastAutoOnSeconds,
   };

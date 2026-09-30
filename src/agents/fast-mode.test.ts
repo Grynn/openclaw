@@ -31,6 +31,113 @@ describe("resolveFastModeState", () => {
     expect(state.source).toBe("session");
   });
 
+  it("hard-disables fast mode when the model policy forbids it", () => {
+    const state = resolveFastModeState({
+      cfg: {
+        agents: {
+          defaults: {
+            fastModeDefault: "auto",
+            models: {
+              "anthropic/claude-sonnet-5": { params: { fastModeAllowed: false } },
+            },
+          },
+        },
+      } as OpenClawConfig,
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+      agentId: "main",
+      sessionEntry: { fastMode: true },
+    });
+
+    expect(state).toMatchObject({
+      mode: false,
+      enabled: false,
+      allowed: false,
+      source: "config",
+    });
+  });
+
+  it("does not apply another model's fast-mode prohibition", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          fastModeDefault: "auto",
+          models: {
+            "anthropic/claude-sonnet-5": { params: { fastModeAllowed: false } },
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    const state = resolveFastModeState({
+      cfg,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      agentId: "main",
+    });
+
+    expect(state).toMatchObject({ mode: "auto", enabled: true, allowed: true });
+  });
+
+  it("hard-disables future models through a provider-wide policy", () => {
+    const state = resolveFastModeState({
+      cfg: {
+        models: {
+          providers: {
+            anthropic: {
+              baseUrl: "https://api.anthropic.com",
+              models: [],
+              params: { fastModeAllowed: false },
+            },
+          },
+        },
+      } as OpenClawConfig,
+      provider: "anthropic",
+      model: "claude-future",
+      sessionEntry: { fastMode: true },
+    });
+
+    expect(state).toMatchObject({ mode: false, enabled: false, allowed: false });
+  });
+
+  it("lets an exact model policy override the provider-wide policy", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          models: {
+            "anthropic/claude-opus-5": { params: { fastModeAllowed: true } },
+          },
+        },
+      },
+      models: {
+        providers: {
+          anthropic: {
+            baseUrl: "https://api.anthropic.com",
+            models: [],
+            params: { fastModeAllowed: false },
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    expect(
+      resolveFastModeState({
+        cfg,
+        provider: "anthropic",
+        model: "claude-opus-5",
+        sessionEntry: { fastMode: true },
+      }),
+    ).toMatchObject({ mode: true, enabled: true, allowed: true });
+    expect(
+      resolveFastModeState({
+        cfg,
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        sessionEntry: { fastMode: true },
+      }),
+    ).toMatchObject({ mode: false, enabled: false, allowed: false });
+  });
+
   it("keeps auto as the persisted mode and starts enabled", () => {
     const state = resolveFastModeState({
       cfg: {} as OpenClawConfig,

@@ -1622,6 +1622,60 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     });
   });
 
+  it("keeps the fast mode cutoff timestamp across live model switch retries", async () => {
+    let invocation = 0;
+    state.runWithModelFallbackMock.mockImplementation(async (params: FallbackRunnerParams) => {
+      invocation++;
+      const result = await runInitialFallbackAttempt(params);
+      if (invocation === 1) {
+        throw new LiveSessionModelSwitchError({
+          provider: "openai",
+          model: "gpt-5.4",
+        });
+      }
+      return {
+        result,
+        provider: params.provider,
+        model: params.model,
+        attempts: [],
+      };
+    });
+    state.runAgentAttemptMock.mockResolvedValue(makeSuccessResult("openai", "gpt-5.4"));
+
+    await runBasicAgentCommand();
+
+    const firstAttempt = mockCallArg(state.runAgentAttemptMock, 0) as {
+      fastModeStartedAtMs?: number;
+    };
+    const secondAttempt = mockCallArg(state.runAgentAttemptMock, 1) as {
+      fastModeStartedAtMs?: number;
+    };
+    expect(firstAttempt.fastModeStartedAtMs).toBe(secondAttempt.fastModeStartedAtMs);
+  });
+
+  it("blocks an explicit run fast mode when the selected model forbids it", async () => {
+    state.runtimeConfigMock = {
+      agents: {
+        defaults: {
+          model: { primary: "anthropic/claude" },
+          models: {
+            "anthropic/claude": { params: { fastModeAllowed: false } },
+          },
+        },
+      },
+    };
+    setupSingleAttemptFallback();
+    state.runAgentAttemptMock.mockResolvedValue(makeSuccessResult("anthropic", "claude"));
+
+    await agentCommand({
+      message: "hello",
+      to: "+1234567890",
+      fastMode: true,
+    });
+
+    expectRecordFields(mockCallArg(state.runAgentAttemptMock), { fastMode: false });
+  });
+
   it("reuses durable user-turn proof across live model switch retries", async () => {
     setupModelSwitchRetry({ provider: "openai", model: "gpt-5.4" }, true);
     state.runAgentAttemptMock.mockImplementation(async (attemptParams: unknown) => {

@@ -3,6 +3,7 @@ import { resolveAgentConfig } from "../../agents/agent-scope.js";
 import { DEFAULT_PROVIDER } from "../../agents/defaults.js";
 import { resolveExtraParams } from "../../agents/embedded-agent-runner/extra-params.js";
 import { resolveFastModeState } from "../../agents/fast-mode.js";
+import { resolveModelRuntimePolicy } from "../../agents/model-runtime-policy.js";
 import { resolveAllowedModelRefCore } from "../../agents/model-selection-resolve.js";
 import { resolveConfiguredThinkingDefault } from "../../agents/model-thinking-default.js";
 import type { ResolvedPublishedModelCatalogOwner } from "../../agents/prepared-model-catalog.types.js";
@@ -35,6 +36,42 @@ function resolveCronPayloadModel(cfg: OpenClawConfig, raw: string) {
 }
 
 describe("resolveCronAgentConfig model policy preservation", () => {
+  it("preserves default model runtime policy through a sparse agent override", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          models: {
+            "anthropic/claude-sonnet-5": {
+              alias: "Sonnet",
+              agentRuntime: { id: "claude-cli" },
+            },
+          },
+        },
+        entries: {
+          main: {
+            models: {
+              "anthropic/claude-sonnet-5": { alias: "Main Sonnet" },
+            },
+          },
+        },
+      },
+    };
+
+    const cronCfg = buildCronConfig(cfg, "main");
+    expect(cronCfg.agents?.defaults?.models?.["anthropic/claude-sonnet-5"]).toEqual({
+      alias: "Main Sonnet",
+      agentRuntime: { id: "claude-cli" },
+    });
+    expect(
+      resolveModelRuntimePolicy({
+        config: cronCfg,
+        provider: "anthropic",
+        modelId: "claude-sonnet-5",
+        agentId: "main",
+      }).policy,
+    ).toEqual({ id: "claude-cli" });
+  });
+
   it("keeps ACP harness models out of native defaults while preserving empty fallbacks", async () => {
     const fallbacks: string[] = [];
     const primary = "native/primary@native:test-profile";
