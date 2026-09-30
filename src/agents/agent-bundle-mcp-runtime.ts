@@ -50,7 +50,7 @@ import {
   hashMcpResolvedConnections,
   partitionMcpServersByConnectionScope,
 } from "./mcp-connection-resolver.js";
-import { redactMcpDiagnosticError } from "./mcp-error.js";
+import { isMcpServiceAvailabilityError, redactMcpDiagnosticError } from "./mcp-error.js";
 import { createMcpJsonSchemaValidator } from "./mcp-json-schema-validator.js";
 import {
   buildMcpClientCapabilities,
@@ -896,9 +896,14 @@ function createServerMcpRuntime(
         };
       } catch (error) {
         const message = redactMcpDiagnosticError(error);
+        const serviceUnavailable =
+          error instanceof McpStartupBackoffError
+            ? error.serviceUnavailable
+            : isMcpServiceAvailabilityError(error);
         startupRetryAfterMs =
           error instanceof McpStartupBackoffError ? error.retryAfterMs : undefined;
         if (
+          params.logCatalogFailures !== false &&
           !retiredCatalog &&
           (!(error instanceof McpStartupBackoffError) || error.reportFailure)
         ) {
@@ -913,6 +918,7 @@ function createServerMcpRuntime(
             safeServerName,
             launchSummary: launchDescription,
             message,
+            ...(serviceUnavailable ? { errorCode: "mcp-service-unavailable" as const } : {}),
           },
         ];
         if (
