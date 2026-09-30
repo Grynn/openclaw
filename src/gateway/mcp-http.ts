@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import { createServer as createHttpServer, type ServerResponse } from "node:http";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { readAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
+import { resolveSessionAgentIds } from "../agents/agent-scope.js";
+import { withoutCronCreatorAuthority } from "../agents/cron-creator-authority-context.js";
 import { withAgentQuestionAnswerAuthority } from "../agents/harness/host-private-capabilities.js";
 import { acknowledgeInternalToolResult } from "../agents/runtime/internal-hooks.js";
 import { resolveToolLoopDetectionConfig } from "../agents/tool-loop-detection-config.js";
@@ -9,6 +11,7 @@ import { isAutomationsToolName } from "../agents/tools/automations-tool-name.js"
 import {
   createAdmittedGatewayToolCallerIdentity,
   withGatewayToolCallerIdentity,
+  withoutGatewayToolCallerIdentity,
 } from "../agents/tools/gateway-caller-context.js";
 import { getRuntimeConfig } from "../config/io.js";
 import { resolveSessionEntryAccessTarget } from "../config/sessions/session-accessor.js";
@@ -19,6 +22,11 @@ import {
   sendHttpRequestRejection,
 } from "../infra/http-request-lifecycle.js";
 import { logDebug, logWarn } from "../logger.js";
+import {
+  getPluginRuntimeGatewayRequestScope,
+  withPluginRuntimeGatewayContextResolver,
+  withPluginRuntimeGatewayRequestScope,
+} from "../plugins/runtime/gateway-request-scope.js";
 import { runOutsidePluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { runOutsideGatewayRootWorkAdmission } from "../process/gateway-work-admission.js";
 import {
@@ -52,6 +60,7 @@ import {
   resolveMcpRequestContext,
   validateMcpLoopbackRequest,
 } from "./mcp-http.request.js";
+import { runOutsideOperatorToolGatewayAuthority } from "./operator-tool-gateway-authority.js";
 
 // Loopback MCP server exposes gateway-scoped tools to local MCP clients over a
 // bearer-token HTTP endpoint bound to 127.0.0.1. Only one active server/runtime
@@ -267,38 +276,73 @@ async function startMcpLoopbackServer(
           return;
         }
         const yieldContext = resolveMcpLoopbackYieldContext(cliRequestCaptureHandle);
-        // Tools capture their creator at construction, not the later HTTP execution scope.
+        const callerIdentity = boundClientGrant
+          ? createAdmittedGatewayToolCallerIdentity({
+              admittedRunContext: boundClientGrant.admittedRunContext,
+              receiptAuthority: boundClientGrant.isCurrent,
+              cronAuthorityCheck: boundClientGrant.cronAuthorityCheck,
+              mintCronRequesterGrant: boundClientGrant.mintCronRequesterGrant,
+              agentId: resolveSessionAgentIds({
+                config: cfg,
+                sessionKey: requestContext.sessionKey,
+                agentId: requestContext.agentId,
+              }).sessionAgentId,
+              sessionKey: requestContext.sessionKey,
+              turnSourceChannel: requestContext.messageProvider,
+              turnSourceLocal:
+                !requestContext.messageProvider &&
+                requestContext.cronCreatorCallerOrigin?.kind === "local"
+                  ? true
+                  : undefined,
+              turnSourceTo: requestContext.currentChannelId,
+              turnSourceAccountId: requestContext.accountId,
+              turnSourceThreadId: requestContext.currentThreadTs,
+            })
+          : undefined;
+        if (callerIdentity && boundClientGrant?.personalToolParticipants) {
+          callerIdentity.personalToolParticipants = boundClientGrant.personalToolParticipants;
+        }
+        // Tools bind their creator at construction, before the later tools/call scope.
         const scopedTools = await withAgentQuestionAnswerAuthority(
           boundClientGrant?.questionAnswerAuthority,
-          () =>
-            toolCache.resolve({
-              context: requestContext,
-              sessionControlAuthority: readAdmittedRunOperatorAuthority(
-                boundClientGrant?.admittedRunContext,
-              ),
-              rootedExecution: boundClientGrant?.rootedExecution,
-              messageActionTurnCapability: boundClientGrant?.messageActionTurnCapability,
-              cfg,
-              signal: requestAbort.signal,
-              ...(boundClientGrant?.toolAuth
-                ? {
-                    authProfileStore: boundClientGrant.toolAuth.store,
-                    ...(boundClientGrant.toolAuth.agentDir
-                      ? { authProfileStoreAgentDir: boundClientGrant.toolAuth.agentDir }
+          () => {
+            const construct = () =>
+              withGatewayToolCallerIdentity(callerIdentity, () =>
+                (boundClientGrant?.constructCronManagementTools ?? ((run) => run()))(() =>
+                  toolCache.resolve({
+                    context: requestContext,
+                    sessionControlAuthority: readAdmittedRunOperatorAuthority(
+                      boundClientGrant?.admittedRunContext,
+                    ),
+                    rootedExecution: boundClientGrant?.rootedExecution,
+                    messageActionTurnCapability: boundClientGrant?.messageActionTurnCapability,
+                    cfg,
+                    signal: requestAbort.signal,
+                    ...(boundClientGrant?.toolAuth
+                      ? {
+                          authProfileStore: boundClientGrant.toolAuth.store,
+                          ...(boundClientGrant.toolAuth.agentDir
+                            ? { authProfileStoreAgentDir: boundClientGrant.toolAuth.agentDir }
+                            : {}),
+                        }
                       : {}),
-                  }
-                : {}),
-              ...(boundGrantToken ? { grantToken: boundGrantToken } : {}),
-              // Same liveness check `authorizeToolCall` applies after the hook,
-              // handed to run-contract tools so a revocation that lands while a
-              // call is in flight also fails the durable write.
-              isGrantCurrent: authorizeToolCall,
-              yieldContextCacheKey: yieldContext?.cacheKey,
-              onYield: yieldContext?.onYield,
-              ...(boundClientGrant?.skillLibraryAuthoring
-                ? { skillLibraryAuthoring: boundClientGrant.skillLibraryAuthoring }
-                : {}),
-            }),
+                    ...(boundGrantToken ? { grantToken: boundGrantToken } : {}),
+                    // Same liveness check `authorizeToolCall` applies after the hook,
+                    // handed to run-contract tools so a revocation that lands while a
+                    // call is in flight also fails the durable write.
+                    isGrantCurrent: authorizeToolCall,
+                    yieldContextCacheKey: yieldContext?.cacheKey,
+                    onYield: yieldContext?.onYield,
+                    ...(boundClientGrant?.skillLibraryAuthoring
+                      ? { skillLibraryAuthoring: boundClientGrant.skillLibraryAuthoring }
+                      : {}),
+                  }),
+                ),
+              );
+            return boundClientGrant?.requestScope
+              ? withPluginRuntimeGatewayRequestScope(boundClientGrant.requestScope, construct)
+              : construct();
+          },
         );
 
         // Discovery may outlive the requesting connection or grant.
@@ -392,31 +436,13 @@ async function startMcpLoopbackServer(
                     }
                   : undefined,
               });
-            const callerIdentity = boundClientGrant
-              ? createAdmittedGatewayToolCallerIdentity({
-                  admittedRunContext: boundClientGrant.admittedRunContext,
-                  receiptAuthority: boundClientGrant.isCurrent,
-                  cronAuthorityCheck: boundClientGrant.cronAuthorityCheck,
-                  mintCronRequesterGrant: boundClientGrant.mintCronRequesterGrant,
-                  agentId: scopedTools.agentId,
-                  sessionKey: requestContext.sessionKey,
-                  turnSourceChannel: requestContext.messageProvider,
-                  turnSourceLocal:
-                    !requestContext.messageProvider &&
-                    requestContext.cronCreatorCallerOrigin?.kind === "local"
-                      ? true
-                      : undefined,
-                  turnSourceTo: requestContext.currentChannelId,
-                  turnSourceAccountId: requestContext.accountId,
-                  turnSourceThreadId: requestContext.currentThreadTs,
-                })
-              : undefined;
-            if (callerIdentity && boundClientGrant?.personalToolParticipants) {
-              callerIdentity.personalToolParticipants = boundClientGrant.personalToolParticipants;
-            }
-            response = await withGatewayToolCallerIdentity(callerIdentity, () =>
-              runWithTrackedCancellation(requestAbort.signal, handleRequest),
-            );
+            const handleAsCaller = () =>
+              withGatewayToolCallerIdentity(callerIdentity, () =>
+                runWithTrackedCancellation(requestAbort.signal, handleRequest),
+              );
+            response = await (boundClientGrant?.requestScope
+              ? withPluginRuntimeGatewayRequestScope(boundClientGrant.requestScope, handleAsCaller)
+              : handleAsCaller());
           } finally {
             markMcpLoopbackToolCallFinished(cliCaptureHandle);
           }
@@ -554,8 +580,22 @@ export async function ensureMcpLoopbackServer(port = 0): Promise<void> {
     // The listener owns its context until Gateway close; callers own only requests.
     // The first turn's work and plugin generation can retire before later requests.
     const work = new AsyncWorkScope();
-    activeMcpLoopbackServerPromise = runOutsidePluginRuntimeGenerationScope(() =>
-      runOutsideGatewayRootWorkAdmission(() => work.run(() => startMcpLoopbackServer(port, work))),
+    const resolveGatewayContext = getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext;
+    activeMcpLoopbackServerPromise = runOutsideOperatorToolGatewayAuthority(() =>
+      withoutCronCreatorAuthority(() =>
+        withoutGatewayToolCallerIdentity(() =>
+          withPluginRuntimeGatewayContextResolver(
+            resolveGatewayContext,
+            () =>
+              runOutsidePluginRuntimeGenerationScope(() =>
+                runOutsideGatewayRootWorkAdmission(() =>
+                  work.run(() => startMcpLoopbackServer(port, work)),
+                ),
+              ),
+            { inheritRequestScope: false },
+          ),
+        ),
+      ),
     )
       .then((close) => {
         closeActiveMcpLoopbackServer = close;
