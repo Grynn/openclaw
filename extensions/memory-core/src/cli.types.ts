@@ -13,6 +13,7 @@ export type MemorySearchCommandOptions = MemoryCommandOptions & {
   query?: string;
   maxResults?: number;
   minScore?: number;
+  local?: boolean;
 };
 
 export type MemoryResetCommandOptions = { agent?: string; yes?: boolean };

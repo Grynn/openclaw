@@ -960,6 +960,14 @@ async function runCliWithPreparedOutputMode(
   const loadGlobalEnv = !isGatewayRunInvocation;
   startupTrace.mark("argv");
 
+  let routeFirstOwnershipPromise: Promise<boolean> | null = null;
+  const isRouteFirstOwnedInvocation = (): Promise<boolean> => {
+    routeFirstOwnershipPromise ??= import("./program/routes.js").then(({ findRoutedCommand }) =>
+      Boolean(findRoutedCommand(normalizedInvocation.commandPath, normalizedArgv)),
+    );
+    return routeFirstOwnershipPromise;
+  };
+
   // Enforce the minimum supported runtime before gateway selection can read or recover config.
   const { assertSupportedRuntime, isCurrentRuntimeSupported } =
     await import("../infra/runtime-guard.js");
@@ -1159,7 +1167,8 @@ async function runCliWithPreparedOutputMode(
       !isHelpOrVersionInvocation &&
       !bareSessionInvocation &&
       normalizedInvocation.primary &&
-      !isKnownBuiltInCommandRoot(normalizedInvocation.primary)
+      !isKnownBuiltInCommandRoot(normalizedInvocation.primary) &&
+      !(await isRouteFirstOwnedInvocation())
     ) {
       const config = await withConsoleLogsRoutedToStderr(readBestEffortCliConfig);
       if (
@@ -1173,7 +1182,7 @@ async function runCliWithPreparedOutputMode(
     }
     if (!isHelpOrVersionInvocation && shouldStartProxyForCli(normalizedArgv)) {
       const config = await withConsoleLogsRoutedToStderr(readBestEffortCliConfig);
-      if (!bareSessionInvocation) {
+      if (!bareSessionInvocation && !(await isRouteFirstOwnedInvocation())) {
         const unownedPrimary = await resolveUnownedCliPrimary({
           argv: normalizedArgv,
           config,
@@ -1251,7 +1260,7 @@ async function runCliWithPreparedOutputMode(
     // still dispatch normally. See #81077.
     {
       const unownedPrimaryCandidate = resolveUnownedCliPrimaryCandidate(normalizedArgv);
-      if (unownedPrimaryCandidate) {
+      if (unownedPrimaryCandidate && !(await isRouteFirstOwnedInvocation())) {
         const config = await readBestEffortCliConfig();
         const unownedPrimary = await resolveUnownedCliPrimary({
           argv: normalizedArgv,

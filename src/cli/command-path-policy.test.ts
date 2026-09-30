@@ -470,11 +470,11 @@ describe("command-path-policy", () => {
     expectResolvedPolicy(["skills", "search"], {
       configGuard: "skip",
     });
-    expectResolvedPolicy(["memory", "search"], {
-      configGuard: "skip",
-      loadPlugins: "always",
-      pluginRegistry: { scope: "memory" },
-    });
+    const memorySearchPolicy = resolveCliCommandPathPolicy(["memory", "search"]);
+    expect(memorySearchPolicy.configGuard).toBe("skip");
+    expectLoadPluginsResolver(memorySearchPolicy);
+    expect(memorySearchPolicy.networkProxy).toBe("bypass");
+    expect(memorySearchPolicy.pluginRegistry).toEqual({ scope: "memory" });
     const memoryStatusPolicy = resolveCliCommandPathPolicy(["memory", "status"]);
     expectConfigGuardResolver(memoryStatusPolicy);
     expect(memoryStatusPolicy.loadPlugins).toBe("always");
