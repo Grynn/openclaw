@@ -14,9 +14,9 @@ export function findRoutedCommand(
       continue;
     }
     const definition = routedCommandDefinitions[entry.route.id];
-    const args = definition.parseArgs(argv);
-    if (args !== null) {
-      return async () => await definition.runParsedArgs(args as never);
+    const run = definition.bindArgs(argv);
+    if (run) {
+      return run;
     }
   }
   return null;

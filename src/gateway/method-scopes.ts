@@ -157,7 +157,9 @@ function resolveDynamicLeastPrivilegeOperatorScopesForMethod(
   if (method === "memory.search") {
     const recordRecall =
       params && typeof params === "object" && !Array.isArray(params)
-        ? (params as { recordRecall?: unknown }).recordRecall
+        ? "recordRecall" in params
+          ? params.recordRecall
+          : undefined
         : undefined;
     return [recordRecall === true ? WRITE_SCOPE : READ_SCOPE];
   }

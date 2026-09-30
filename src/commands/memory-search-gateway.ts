@@ -14,14 +14,34 @@ type MemorySearchGatewayArgs = {
 };
 
 type MemorySearchGatewayResponse = {
-  agentId: string;
-  provider: string;
-  searchMode: "hybrid" | "fts-only";
-  results: MemorySearchResult[];
+  results: Array<Pick<MemorySearchResult, "path" | "startLine" | "endLine" | "score" | "snippet">>;
   stale?: true;
   warning?: string;
   action?: string;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isMemorySearchGatewayResponse(value: unknown): value is MemorySearchGatewayResponse {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.results) &&
+    value.results.every(
+      (result: unknown) =>
+        isRecord(result) &&
+        typeof result.path === "string" &&
+        typeof result.startLine === "number" &&
+        typeof result.endLine === "number" &&
+        typeof result.score === "number" &&
+        typeof result.snippet === "string",
+    ) &&
+    (value.stale === undefined || value.stale === true) &&
+    (value.warning === undefined || typeof value.warning === "string") &&
+    (value.action === undefined || typeof value.action === "string")
+  );
+}
 
 /** Search through the Gateway's watched, shared memory manager. */
 export async function memorySearchGatewayCommand(
@@ -30,7 +50,7 @@ export async function memorySearchGatewayCommand(
 ): Promise<boolean> {
   let response: MemorySearchGatewayResponse;
   try {
-    response = (await callGatewayFromCli(
+    const result = await callGatewayFromCli(
       "memory.search",
       { timeout: "30000" },
       {
@@ -41,7 +61,11 @@ export async function memorySearchGatewayCommand(
         ...(args.minScore === undefined ? {} : { minScore: args.minScore }),
       },
       { mode: "cli", scopes: ["operator.read", "operator.write"] },
-    )) as MemorySearchGatewayResponse;
+    );
+    if (!isMemorySearchGatewayResponse(result)) {
+      return false;
+    }
+    response = result;
   } catch (error) {
     const config = await readGatewayDispatchConfigWithShellEnvFallback();
     if (
@@ -55,9 +79,6 @@ export async function memorySearchGatewayCommand(
     }
     // Commander can use the existing local manager for an unavailable implicit
     // local Gateway or one older than the memory.search RPC surface.
-    return false;
-  }
-  if (!response || !Array.isArray(response.results)) {
     return false;
   }
   if (args.json) {

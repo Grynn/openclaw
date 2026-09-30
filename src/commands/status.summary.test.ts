@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { SESSION_TOTAL_TOKENS_VERSION } from "../config/sessions/types.js";
 import { setActiveDegradedPlugins } from "../plugins/runtime-degraded-state.js";
 import {
@@ -484,14 +485,10 @@ describe("getStatusSummary", () => {
 
     expect(statusSummaryMocks.listSessionEntriesCore).toHaveBeenCalledWith({
       agentId: "main",
-      clone: false,
-      projection: "list",
       storePath: "/tmp/main/sessions.json",
     });
     expect(statusSummaryMocks.listSessionEntriesCore).toHaveBeenCalledWith({
       agentId: "ops",
-      clone: false,
-      projection: "list",
       storePath: "/tmp/ops/sessions.json",
     });
     expect(summary.sessions.count).toBe(2);

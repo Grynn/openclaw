@@ -76,7 +76,6 @@ export interface ShellViewHost
   readonly storedOutboxes: ReturnType<OutboxStoreRuntime["read"]> | undefined;
   readonly settingsPreloadTimers: Map<EventTarget, ReturnType<typeof globalThis.setTimeout>>;
   readonly settingsSearchQuery: string;
-  readonly storedOutboxes: ReturnType<OutboxStoreRuntime["read"]> | undefined;
   readonly viewCallbacks: ShellViewCallbacks;
   closeNavDrawer(options?: { restoreFocus?: boolean }): void;
   newSessionRouteAgentId(): string;

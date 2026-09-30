@@ -150,7 +150,6 @@ extensions/codex/src/app-server/plugin-inventory.ts	6
 extensions/codex/src/app-server/plugin-metadata-cache.ts	5
 extensions/codex/src/app-server/plugin-thread-app-admission.ts	1
 extensions/codex/src/app-server/protocol-validators.ts	3
-extensions/codex/src/app-server/run-attempt-context.ts	2
 extensions/codex/src/app-server/run-attempt-resources.ts	12
 extensions/codex/src/app-server/run-attempt-runtime.ts	1
 extensions/codex/src/app-server/run-attempt-server-requests.ts	2
@@ -1864,7 +1863,7 @@ src/cli/cron-cli/list-jobs.ts	4
 src/cli/cron-cli/register.cron-add.ts	1
 src/cli/cron-cli/register.cron-edit.ts	1
 src/cli/cron-cli/register.cron-scratch.ts	2
-src/cli/cron-cli/register.cron-simple.ts	2
+src/cli/cron-cli/register.cron-simple.ts	1
 src/cli/cron-cli/shared.ts	8
 src/cli/devices-cli.runtime.ts	10
 src/cli/directory-cli.ts	2

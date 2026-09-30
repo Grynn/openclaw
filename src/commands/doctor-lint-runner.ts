@@ -111,11 +111,14 @@ export async function runDoctorLintCliInProcess(
     reported = execution;
   };
   try {
-    const prepare = () => withArtifactPreservingStateReads(() =>
-      prepareDoctorLintExecution(runtime, opts, reportBeforeDisposal ? report : undefined),
-    );
+    const prepare = () =>
+      withArtifactPreservingStateReads(() =>
+        prepareDoctorLintExecution(runtime, opts, reportBeforeDisposal ? report : undefined),
+      );
     const execution =
-      detectDoctorLintOutputMode(opts) === "json" ? await withSuppressedNotes(prepare) : await prepare();
+      detectDoctorLintOutputMode(opts) === "json"
+        ? await withSuppressedNotes(prepare)
+        : await prepare();
     if (!reported) {
       report(execution);
     } else {

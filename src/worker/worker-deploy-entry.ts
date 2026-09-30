@@ -1,7 +1,7 @@
 import { flushCompileCache } from "node:module";
+import { getFsSafeNativeConfig } from "@openclaw/fs-safe/config";
 import "./worker-deploy-runtime.js";
 import { formatCliOperatorError } from "../cli/failure-output.js";
-import { getFsSafeNativeConfig } from "../infra/fs-safe-defaults.js";
 import { assertSupportedRuntime } from "../infra/runtime-guard.js";
 import { drainProcessOutput } from "../process/output-drain.js";
 import workerDeployBrowserRuntime from "./worker-deploy-browser-runtime.js";

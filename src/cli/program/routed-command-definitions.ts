@@ -18,20 +18,20 @@ import {
   parseStatusRouteArgs,
 } from "./route-args.js";
 
-type RouteArgParser<TArgs> = (argv: string[]) => TArgs | null;
-
-type ParsedRouteArgs<TParse extends RouteArgParser<unknown>> = Exclude<ReturnType<TParse>, null>;
-
 /** Typed parsed route definition that binds one parser to its runner. */
-type RoutedCommandDefinition<TParse extends RouteArgParser<unknown>> = {
-  parseArgs: TParse;
-  runParsedArgs: (args: ParsedRouteArgs<TParse>) => Promise<void | boolean>;
+type RoutedCommandDefinition<TArgs> = {
+  parseArgs: (argv: string[]) => TArgs | null;
+  runParsedArgs: (args: TArgs) => Promise<void | boolean>;
 };
 
-function defineRoutedCommand<TParse extends RouteArgParser<unknown>>(
-  definition: RoutedCommandDefinition<TParse>,
-): RoutedCommandDefinition<TParse> {
-  return definition;
+function defineRoutedCommand<TArgs>(definition: RoutedCommandDefinition<TArgs>) {
+  return {
+    ...definition,
+    bindArgs(argv: string[]): (() => Promise<void | boolean>) | null {
+      const args = definition.parseArgs(argv);
+      return args === null ? null : () => definition.runParsedArgs(args);
+    },
+  };
 }
 
 const loadConfigCli = createLazyPromise(() => import("../config-cli.js"));

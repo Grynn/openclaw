@@ -14,12 +14,68 @@ import type { MemoryIndexMeta } from "./manager-reindex-state.js";
 const BATCH_SIZE = 100;
 const META_KEY = "memory_index_meta_v1";
 
-function readSourceMeta(sourceDb: DatabaseSync): MemoryIndexMeta | null {
-  const row = sourceDb
-    .prepare("SELECT value FROM memory_index_meta WHERE key = ?")
-    .get(META_KEY) as { value: string } | undefined;
+type SourceEmbeddingMeta = Pick<
+  MemoryIndexMeta,
+  "provider" | "model" | "providerKey" | "vectorDims"
+>;
+type CacheRow = MemoryEmbeddingCacheRow & { rowid: number };
+type ChunkEmbeddingRow = {
+  rowid: number;
+  hash: string;
+  embedding: Uint8Array;
+  updated_at: number;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isCacheRow(value: unknown): value is CacheRow {
+  return (
+    isRecord(value) &&
+    typeof value.rowid === "number" &&
+    typeof value.provider === "string" &&
+    typeof value.model === "string" &&
+    typeof value.provider_key === "string" &&
+    typeof value.hash === "string" &&
+    value.embedding instanceof Uint8Array &&
+    (value.dims === null || typeof value.dims === "number") &&
+    typeof value.updated_at === "number"
+  );
+}
+
+function isChunkEmbeddingRow(value: unknown): value is ChunkEmbeddingRow {
+  return (
+    isRecord(value) &&
+    typeof value.rowid === "number" &&
+    typeof value.hash === "string" &&
+    value.embedding instanceof Uint8Array &&
+    typeof value.updated_at === "number"
+  );
+}
+
+function readSourceMeta(sourceDb: DatabaseSync): SourceEmbeddingMeta | null {
+  const row = sourceDb.prepare("SELECT value FROM memory_index_meta WHERE key = ?").get(META_KEY);
+  if (typeof row?.value !== "string") {
+    return null;
+  }
   try {
-    return row?.value ? (JSON.parse(row.value) as MemoryIndexMeta) : null;
+    const parsed: unknown = JSON.parse(row.value);
+    if (
+      !isRecord(parsed) ||
+      typeof parsed.provider !== "string" ||
+      typeof parsed.model !== "string" ||
+      (parsed.providerKey !== undefined && typeof parsed.providerKey !== "string") ||
+      (parsed.vectorDims !== undefined && typeof parsed.vectorDims !== "number")
+    ) {
+      return null;
+    }
+    return {
+      provider: parsed.provider,
+      model: parsed.model,
+      ...(parsed.providerKey === undefined ? {} : { providerKey: parsed.providerKey }),
+      ...(parsed.vectorDims === undefined ? {} : { vectorDims: parsed.vectorDims }),
+    };
   } catch {
     return null;
   }
@@ -33,7 +89,6 @@ export async function seedMemoryEmbeddingCache(params: {
   if (!params.enabled) {
     return;
   }
-  type CacheRow = MemoryEmbeddingCacheRow & { rowid: number };
   const selectBatch = params.sourceDb.prepare(
     `SELECT rowid, provider, model, provider_key, hash, embedding, dims, updated_at
      FROM ${MEMORY_EMBEDDING_CACHE_TABLE}
@@ -44,7 +99,10 @@ export async function seedMemoryEmbeddingCache(params: {
   const upsert = prepareMemoryEmbeddingCacheUpsert(params.targetDb);
   let lastRowid = 0;
   while (true) {
-    const batch = selectBatch.all(lastRowid, BATCH_SIZE) as CacheRow[];
+    const batch: unknown[] = selectBatch.all(lastRowid, BATCH_SIZE);
+    if (!batch.every(isCacheRow)) {
+      throw new Error("Invalid embedding cache row in source database");
+    }
     if (batch.length === 0) {
       break;
     }
@@ -76,7 +134,7 @@ export async function seedMemoryEmbeddingCacheFromChunks(params: {
   sourceDb: DatabaseSync;
   targetDb: DatabaseSync;
   enabled: boolean;
-  sourceMeta?: MemoryIndexMeta | null;
+  sourceMeta?: SourceEmbeddingMeta | null;
 }): Promise<void> {
   if (!params.enabled) {
     return;
@@ -121,12 +179,6 @@ export async function seedMemoryEmbeddingCacheFromChunks(params: {
     return;
   }
 
-  type ChunkEmbeddingRow = {
-    rowid: number;
-    hash: string;
-    embedding: Uint8Array;
-    updated_at: number;
-  };
   const selectBatch = params.sourceDb.prepare(
     `SELECT rowid AS rowid, hash, embedding, updated_at
      FROM memory_index_chunks
@@ -137,7 +189,10 @@ export async function seedMemoryEmbeddingCacheFromChunks(params: {
   const insert = prepareMemoryEmbeddingCacheInsertIgnore(params.targetDb);
   let lastRowid = 0;
   while (true) {
-    const batch = selectBatch.all(lastRowid, identity.model, BATCH_SIZE) as ChunkEmbeddingRow[];
+    const batch: unknown[] = selectBatch.all(lastRowid, identity.model, BATCH_SIZE);
+    if (!batch.every(isChunkEmbeddingRow)) {
+      throw new Error("Invalid embedding chunk row in source database");
+    }
     if (batch.length === 0) {
       return;
     }

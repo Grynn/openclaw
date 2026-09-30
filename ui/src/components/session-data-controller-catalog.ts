@@ -102,6 +102,8 @@ export function areSessionCatalogsSettled(
             catalog.hosts.every((entry) => !entry.pending && !entry.error && !entry.nextCursor),
         )))
   );
+}
+
 function sessionCatalogSurfaceIsVisible(owner: SessionCatalogDataOwner): boolean {
   return owner.sessionCatalogSurfaceVisible && document.visibilityState !== "hidden";
 }

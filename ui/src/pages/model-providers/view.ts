@@ -32,11 +32,7 @@ import type {
   ProviderOption,
 } from "./data.ts";
 import { renderDefaultModels, type DefaultModelsViewProps } from "./default-models-view.ts";
-import {
-  apiKeySource,
-  renderProviderProfiles,
-  type ProviderProfilesViewProps,
-} from "./profiles-view.ts";
+import { renderProviderProfiles, type ProviderProfilesViewProps } from "./profiles-view.ts";
 import {
   hasVerifiedProvider,
   hasProviderCredentials,
