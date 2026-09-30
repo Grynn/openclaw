@@ -75,6 +75,13 @@ export function controlUiStableChunkName(id: string): string | undefined {
     case "ui/src/pages/chat/session-snapshot-database.ts":
       // Warm boot reads while the Gateway connects; the chat boot group made it wait for the whole route.
       return "session-snapshot-database";
+    case "ui/src/components/markdown.ts":
+    case "ui/src/components/markdown-parser.ts":
+    case "ui/src/components/markdown-streaming.ts":
+    case "ui/src/components/markdown-code-blocks.ts":
+      // Keep hot first-party Markdown helpers with their existing vendor runtime
+      // instead of enlarging the measured shared boot shards.
+      return "markdown-runtime";
   }
 
   if (normalized.startsWith(resolvedLocaleConfigHintsModulePrefix)) {

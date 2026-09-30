@@ -7,7 +7,7 @@ const runtime = vi.hoisted(() => ({
 
 vi.mock("./worker-deploy-runtime.js", () => ({}));
 // Stands in for the sealed bootstrap that ./worker-deploy-runtime.js performs.
-vi.mock("../infra/fs-safe-defaults.js", () => ({
+vi.mock("@openclaw/fs-safe/config", () => ({
   getFsSafeNativeConfig: () => ({ mode: "off" }),
 }));
 vi.mock("../process/output-drain.js", () => ({ drainProcessOutput: vi.fn() }));
