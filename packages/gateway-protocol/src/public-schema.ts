@@ -163,6 +163,7 @@ export {
   SessionsCatalogArchiveResultSchema,
   SessionsCatalogStartTerminalParamsSchema,
   SessionsCatalogStartTerminalResultSchema,
+  SessionsSearchBatchResultSchema,
   SessionsSearchHitSchema,
   SessionsSearchParamsSchema,
   SessionsSearchResultSchema,

@@ -42,7 +42,13 @@ export const SessionsSearchParamsSchema = Object.assign(
         ]).properties,
       ),
     ),
-    query: Type.String({ minLength: 1, maxLength: 4096 }),
+    query: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+    queries: Type.Optional(
+      Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), {
+        minItems: 1,
+        maxItems: 8,
+      }),
+    ),
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 25 })),
   }),
   {
@@ -50,6 +56,10 @@ export const SessionsSearchParamsSchema = Object.assign(
       required: ["scope"],
       anyOf: [{ required: ["agentId"] }, { required: ["sessionKeys"] }],
     },
+    oneOf: [
+      { required: ["query"], not: { required: ["queries"] } },
+      { required: ["queries"], not: { anyOf: [{ required: ["query"] }, { required: ["scope"] }] } },
+    ],
   },
 );
 
@@ -74,6 +84,19 @@ export const SessionsSearchResultSchema = closedObject({
   truncated: Type.Optional(Type.Boolean()),
 });
 
+export const SessionsSearchQueryStateSchema = closedObject({
+  results: Type.Array(SessionsSearchHitSchema),
+  indexing: Type.Optional(Type.Boolean()),
+  archivedTranscriptsExcluded: Type.Optional(Type.Integer({ minimum: 0 })),
+  truncated: Type.Optional(Type.Boolean()),
+});
+
+export const SessionsSearchBatchResultSchema = closedObject({
+  states: Type.Array(SessionsSearchQueryStateSchema, { minItems: 1, maxItems: 8 }),
+});
+
 export type SessionsSearchParams = Static<typeof SessionsSearchParamsSchema>;
 export type SessionsSearchHit = Static<typeof SessionsSearchHitSchema>;
 export type SessionsSearchResult = Static<typeof SessionsSearchResultSchema>;
+export type SessionsSearchQueryState = Static<typeof SessionsSearchQueryStateSchema>;
+export type SessionsSearchBatchResult = Static<typeof SessionsSearchBatchResultSchema>;

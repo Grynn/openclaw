@@ -13,10 +13,16 @@ import {
   readPositiveIntegerParam,
   readToolStringParam,
 } from "./common.js";
+import { readSearchQueries } from "./sessions-search-batch.js";
 
 type EmbeddedCallGateway = <T = Record<string, unknown>>(opts: CallGatewayOptions) => Promise<T>;
 
-const SESSIONS_SEARCH_MAX_QUERY_CHARS = 4096;
+type EmbeddedTranscriptSearchResult = {
+  hits: unknown[];
+  indexing: boolean;
+  truncated: boolean;
+  archivedTranscriptsExcluded?: number;
+};
 
 const getRuntime = createLazyPromise(() => import("./embedded-gateway-stub.runtime.js"));
 let sessionProjection: Promise<SessionRowProjection> | undefined;
@@ -83,16 +89,29 @@ async function handleSessionsResolve(params: Record<string, unknown>) {
   );
 }
 
+function readEmbeddedSearchQueries(params: Record<string, unknown>): {
+  isBatch: boolean;
+  queries: string[];
+} {
+  const { batch, queries } = readSearchQueries(params);
+  return { isBatch: batch, queries };
+}
+
+function serializeEmbeddedSearchResult(result: EmbeddedTranscriptSearchResult) {
+  return {
+    results: result.hits,
+    ...(result.archivedTranscriptsExcluded
+      ? { archivedTranscriptsExcluded: result.archivedTranscriptsExcluded }
+      : {}),
+    ...(result.indexing ? { indexing: true } : {}),
+    ...(result.truncated ? { truncated: true } : {}),
+  };
+}
+
 async function handleSessionsSearch(params: Record<string, unknown>) {
   const rt = await getRuntime();
   const cfg = rt.getRuntimeConfig();
-  const query = typeof params.query === "string" ? params.query.trim() : "";
-  if (!query) {
-    throw new Error("query must not be empty");
-  }
-  if (query.length > SESSIONS_SEARCH_MAX_QUERY_CHARS) {
-    throw new Error(`query must not exceed ${SESSIONS_SEARCH_MAX_QUERY_CHARS} characters`);
-  }
+  const { isBatch, queries } = readEmbeddedSearchQueries(params);
   if (params.agentId !== undefined && params.sessionKeys === undefined) {
     throw new Error("agentId requires sessionKeys");
   }
@@ -132,21 +151,24 @@ async function handleSessionsSearch(params: Record<string, unknown>) {
     requestedAgentId ??
     agentIds.values().next().value ??
     rt.resolveSessionAgentId({ sessionKey: "main", config: cfg });
-  const result = await rt.searchSessionTranscripts({
+  const searchScope = {
     agentId,
     storePath: rt.resolveSessionStorePathCore(cfg.session?.store, { agentId }),
-    query,
     limit: readPositiveIntegerParam(params, "limit"),
-    sessionKeys,
-  });
-  return {
-    results: result.hits,
-    ...(result.archivedTranscriptsExcluded
-      ? { archivedTranscriptsExcluded: result.archivedTranscriptsExcluded }
-      : {}),
-    ...(result.indexing ? { indexing: true } : {}),
-    ...(result.truncated ? { truncated: true } : {}),
+    ...(sessionKeys ? { sessionKeys } : {}),
   };
+  if (isBatch) {
+    const states = (await rt.searchSessionTranscriptsBatch({ ...searchScope, queries })).map(
+      serializeEmbeddedSearchResult,
+    );
+    return { states };
+  }
+  const query = queries[0];
+  if (!query) {
+    throw new Error("query must not be empty");
+  }
+  const result = await rt.searchSessionTranscripts({ ...searchScope, query });
+  return serializeEmbeddedSearchResult(result);
 }
 
 async function handleChatHistory(params: Record<string, unknown>) {

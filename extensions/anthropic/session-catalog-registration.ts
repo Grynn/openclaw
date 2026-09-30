@@ -67,6 +67,9 @@ function registerClaudeSessionCatalog(api: OpenClawPluginApi): void {
     id: "claude",
     label: "Claude Code",
     supportsProcessHomeIsolation: true,
+    prewarm: async () => {
+      await loadCatalogRuntime();
+    },
     resolveCreateSession: ({ agentId }) =>
       api.runtime.agent.resolveSessionCatalogCreateTarget({
         config: currentConfig(api),

@@ -42,6 +42,11 @@ vi.mock("../status/summary.runtime.js", () => ({
       model: "gpt-5.5",
     })),
     resolveSessionRuntime: vi.fn(() => ({ id: "openclaw", label: "OpenClaw Default" })),
+    resolveStatusPluginMetadataSnapshot: vi.fn(() => undefined),
+    prepareSessionRuntimeFacts: vi.fn(() => ({
+      acpSessionMetaByEntry: new Map(),
+      classifyCliProvider: vi.fn(() => false),
+    })),
     resolveStatusModelLookupRef: vi.fn(({ provider, model }) =>
       typeof model === "string" && model.length > 0
         ? {
@@ -451,6 +456,49 @@ describe("getStatusSummary", () => {
       modelContextWindow: 1_048_576,
       allowAsyncLoad: false,
     });
+  });
+
+  it("passes agent scope when listing configured agent session stores", async () => {
+    vi.mocked(listGatewayAgentsBasic).mockReturnValue({
+      defaultId: "main",
+      ownership: "sole",
+      selectionRequired: false,
+      mainKey: "main",
+      scope: "per-sender",
+      agents: [{ id: "main" }, { id: "ops" }],
+    });
+    vi.mocked(resolveSessionStorePathCore).mockImplementation((_store, opts) => {
+      return `/tmp/${opts?.agentId ?? "main"}/sessions.json`;
+    });
+    statusSummaryMocks.listSessionEntriesCore.mockImplementation((scope) =>
+      scope?.agentId === "ops"
+        ? toSessionEntrySummaries({
+            "agent:ops:main": { sessionId: "ops-session", updatedAt: 2 },
+          })
+        : toSessionEntrySummaries({
+            "agent:main:main": { sessionId: "main-session", updatedAt: 1 },
+          }),
+    );
+
+    const summary = await getStatusSummary({ includeChannelSummary: false });
+
+    expect(statusSummaryMocks.listSessionEntriesCore).toHaveBeenCalledWith({
+      agentId: "main",
+      clone: false,
+      projection: "list",
+      storePath: "/tmp/main/sessions.json",
+    });
+    expect(statusSummaryMocks.listSessionEntriesCore).toHaveBeenCalledWith({
+      agentId: "ops",
+      clone: false,
+      projection: "list",
+      storePath: "/tmp/ops/sessions.json",
+    });
+    expect(summary.sessions.count).toBe(2);
+    expect(summary.sessions.byAgent.map((agent) => [agent.agentId, agent.count])).toEqual([
+      ["main", 1],
+      ["ops", 1],
+    ]);
   });
 
   it.each([

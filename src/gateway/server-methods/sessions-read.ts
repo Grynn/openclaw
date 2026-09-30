@@ -50,17 +50,23 @@ import { gatewayClientSessionCreator } from "./gateway-client-identity.js";
 import { withSessionListDiagnostics } from "./sessions-list-diagnostics.js";
 import { sessionMaintenanceHandlers } from "./sessions-maintenance.js";
 import { sessionByKeyReadHandlers } from "./sessions-read-by-key.js";
+import { handleSessionsSearch } from "./sessions-search-handler.js";
 import { searchProjectedSessionTranscripts } from "./sessions-search-projected.js";
 import { resolveSessionSearchScope } from "./sessions-search-scope.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 export const sessionReadHandlers: GatewayRequestHandlers = {
-  "sessions.search": async ({ params, respond, context, client, sessionMutationAuthorization }) => {
+  "sessions.search": async (args) => {
+    const { params, respond, context, client, sessionMutationAuthorization } = args;
     if (!assertValidParams(params, validateSessionsSearchParams, "sessions.search", respond)) {
       return;
     }
-    const query = params.query.trim();
+    if (params.queries) {
+      await handleSessionsSearch(args);
+      return;
+    }
+    const query = params.query?.trim() ?? "";
     if (!query) {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "query must not be empty"));
       return;

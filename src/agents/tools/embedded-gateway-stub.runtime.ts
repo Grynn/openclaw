@@ -9,7 +9,10 @@ export { resolveSessionModelRef } from "../session-model-ref.js";
 export { getRuntimeConfig } from "../../config/config.js";
 export { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 export { resolveTranscriptSessionKeyBySessionId } from "../../config/sessions/session-accessor.js";
-export { searchSessionTranscripts } from "../../config/sessions/session-transcript-search.js";
+export {
+  searchSessionTranscripts,
+  searchSessionTranscriptsBatch,
+} from "../../config/sessions/session-transcript-search.js";
 export {
   resolveSessionStoreKey,
   resolveStoredSessionKeyForAgentStore,
