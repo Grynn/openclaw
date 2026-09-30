@@ -76,6 +76,35 @@ export function createParams(sessionFile: string, workspaceDir: string): Embedde
   } as EmbeddedRunAttemptParams;
 }
 
+export function createCodexSkillCatalogSnapshot(): NonNullable<
+  EmbeddedRunAttemptParams["skillsSnapshot"]
+> {
+  return {
+    prompt: "bounded",
+    promptFormatVersion: 6,
+    skills: [{ name: "demo", skillKey: "demo" }],
+    modelInvocableSkills: [{ name: "demo", skillKey: "demo" }],
+    resolvedSkills: [
+      {
+        name: "demo",
+        skillKey: "demo",
+        description: "Demo instructions",
+        filePath: "/skills/demo/SKILL.md",
+        baseDir: "/skills/demo",
+        source: "openclaw-workspace",
+        sourceInfo: {
+          path: "/skills/demo/SKILL.md",
+          source: "openclaw-workspace",
+          scope: "project",
+          origin: "top-level",
+        },
+        disableModelInvocation: false,
+        readContent: "# Demo\n",
+      },
+    ],
+  };
+}
+
 export function createCodexRuntimePlanFixture(): NonNullable<
   EmbeddedRunAttemptParams["runtimePlan"]
 > {

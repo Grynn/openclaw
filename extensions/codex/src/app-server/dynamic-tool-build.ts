@@ -1,3 +1,4 @@
+import { shouldIncludeAgentHarnessRuntimeContext } from "openclaw/plugin-sdk/agent-harness-attempt-runtime";
 import {
   applyEmbeddedAttemptToolsAllow,
   buildAgentHookContextChannelFields,
@@ -21,12 +22,9 @@ import {
   runWithCronCreatorAuthorityCapabilityResolver,
 } from "openclaw/plugin-sdk/codex-mcp-projection";
 import { isToolAllowed } from "openclaw/plugin-sdk/sandbox";
-import {
-  createStageTimingTracker,
-  formatStageTimings,
-  type StageTimingSummary,
-} from "openclaw/plugin-sdk/time-runtime";
+import { createStageTimingTracker, formatStageTimings } from "openclaw/plugin-sdk/time-runtime";
 import { CODEX_NATIVE_TOOL_REQUIREMENTS } from "../../native-tool-policy.js";
+import { shouldWarnCodexDynamicToolBuildStageSummary } from "./attempt-preparation-timing.js";
 import {
   isCodexRemoteExecPlacementSandbox,
   readCodexPluginConfig,
@@ -184,19 +182,6 @@ export function resolveCodexAppServerHookChannelId(
     messageTo: params.messageTo,
   }).channelId;
 }
-const CODEX_DYNAMIC_TOOL_BUILD_WARN_TOTAL_MS = 1_000;
-const CODEX_DYNAMIC_TOOL_BUILD_WARN_STAGE_MS = 500;
-export function shouldWarnCodexDynamicToolBuildStageSummary(
-  summary: StageTimingSummary,
-  profilerEnabled = false,
-): boolean {
-  const totalWarnMs = profilerEnabled ? CODEX_DYNAMIC_TOOL_BUILD_WARN_TOTAL_MS : 10_000;
-  const stageWarnMs = profilerEnabled ? CODEX_DYNAMIC_TOOL_BUILD_WARN_STAGE_MS : 5_000;
-  return (
-    summary.totalMs >= totalWarnMs ||
-    summary.stages.some((stage) => stage.durationMs >= stageWarnMs)
-  );
-}
 export async function buildDynamicTools(
   input: DynamicToolBuildParams,
 ): Promise<OpenClawDynamicTool[]> {
@@ -233,6 +218,8 @@ export async function buildDynamicTools(
   });
   const messageToolProvider = resolveCodexMessageToolProvider(params);
   const webFetchHostnameAllowlistRef: { value?: string[] } = {};
+  const enableSkillCatalogTool =
+    input.sandbox?.enabled !== true && shouldIncludeAgentHarnessRuntimeContext(params);
   const toolConstructionPlan = resolveCodexNodePlacementToolConstructionPlan(
     input.sandbox,
     input.nativeToolSurfaceEnabled,
@@ -285,7 +272,7 @@ export async function buildDynamicTools(
             resolvedWorkspace: input.resolvedWorkspace,
           }),
     config: params.config,
-    skillsSnapshot: params.skillsSnapshot,
+    ...(enableSkillCatalogTool ? { skillsSnapshot: params.skillsSnapshot } : {}),
     ...(params.skillLibraryAuthoring
       ? { skillWorkshop: { libraryAuthoring: params.skillLibraryAuthoring } }
       : {}),
@@ -336,6 +323,7 @@ export async function buildDynamicTools(
     onToolOutcome: params.onToolOutcome,
     isTurnTainted: params.isTurnTainted,
     allocateToolOutcomeOrdinal: params.allocateToolOutcomeOrdinal,
+    enableSkillCatalogTool,
     cronCreatorToolAllowlistRef: input.cronCreatorToolAllowlistRef,
     cronCreatorToolAllowlistCaptureRef: input.cronCreatorToolAllowlistCaptureRef,
     cronCreatorAuthorityUnavailableReason: input.cronCreatorAuthorityUnavailableReason,

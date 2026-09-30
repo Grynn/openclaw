@@ -14,12 +14,9 @@ import {
   materializeStaticMcpToolsForHarnessRun,
 } from "openclaw/plugin-sdk/codex-mcp-projection";
 import { formatStageTimings } from "openclaw/plugin-sdk/time-runtime";
+import { shouldWarnCodexDynamicToolBuildStageSummary } from "./attempt-preparation-timing.js";
 import { resolveCodexPluginsPolicy, shouldAutoApproveCodexAppServerApprovals } from "./config.js";
-import {
-  buildDynamicTools,
-  resolveCodexMessageToolProvider,
-  shouldWarnCodexDynamicToolBuildStageSummary,
-} from "./dynamic-tool-build.js";
+import { buildDynamicTools, resolveCodexMessageToolProvider } from "./dynamic-tool-build.js";
 import {
   filterCodexDynamicTools,
   resolveCodexDynamicToolsLoadingForRuntime,
