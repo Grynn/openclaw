@@ -76,6 +76,7 @@ vi.mock("../../logging/subsystem.js", async () => {
 
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { createGatewaySession } from "../session-create-service.js";
+import { withAgentSessionModelPatchOrigin } from "../session-model-patch-origin.js";
 import { TerminalSessionManager } from "../terminal/session-manager.js";
 import { flushPendingSessionsChangedEvents } from "./session-change-event.js";
 import { sessionMutationHandlers } from "./sessions-mutations.js";
@@ -419,6 +420,40 @@ describe("sessions.patch sticky model persistence", () => {
       expect(effects.mutateConfigFileWithRetry).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    { name: "agent-origin", key: "agent:main:dm:agent-model", origin: true, metadata: {} },
+    { name: "subagent key", key: "agent:main:subagent:child-model", metadata: {} },
+    { name: "ACP key", key: "agent:main:acp:child-model", metadata: {} },
+    { name: "spawn depth", key: "agent:main:dm:spawn-depth", metadata: { spawnDepth: 1 } },
+    {
+      name: "spawned-by metadata",
+      key: "agent:main:dm:spawned-by",
+      metadata: { spawnedBy: "agent:main:main" },
+    },
+    {
+      name: "parent metadata",
+      key: "agent:main:dm:parent-model",
+      metadata: { parentSessionKey: "agent:main:main" },
+    },
+  ] as const)("keeps $name model patches in their session under global scope", async (scenario) => {
+    cfg.agents!.defaults!.modelSelectionScope = "global";
+    await upsertSessionEntryCore(
+      { agentId: "main", sessionKey: scenario.key },
+      { sessionId: `session-${scenario.name}`, updatedAt: 1, ...scenario.metadata },
+    );
+
+    const patch = () => patchSession({ key: scenario.key, model: "openai/gpt-5.6-sol" });
+    const response =
+      "origin" in scenario ? await withAgentSessionModelPatchOrigin(patch) : await patch();
+
+    expect(response[0]).toBe(true);
+    expect(loadSessionEntry({ agentId: "main", sessionKey: scenario.key })).toMatchObject({
+      providerOverride: "openai",
+      modelOverride: "gpt-5.6-sol",
+    });
+    expect(effects.mutateConfigFileWithRetry).not.toHaveBeenCalled();
+  });
 
   it("returns session success and warns when the sticky config write fails", async () => {
     cfg.agents!.defaults!.modelSelectionScope = "global";

@@ -32,7 +32,11 @@ import type { SessionEntry } from "../../config/sessions.js";
 import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth-profile-override-provenance.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { isSessionStatusModelPatchOrigin } from "../session-model-patch-origin.js";
+import { isAcpSessionKey, isSubagentSessionKey } from "../../routing/session-key.js";
+import {
+  isAgentSessionModelPatchOrigin,
+  isSessionStatusModelPatchOrigin,
+} from "../session-model-patch-origin.js";
 import { SessionMutationAuthorizationChangedError } from "../session-sharing.js";
 import type { SessionWorkerPlacementContext } from "../worker-environments/session-placement-lifecycle.js";
 import { resolveGatewayModelSelectionPolicy } from "./session-model-selection-policy.js";
@@ -53,7 +57,13 @@ export function persistSessionPatchModelSelection(params: {
     typeof params.patch.model !== "string" ||
     params.patch.sandboxMode !== undefined ||
     params.patch.nativeRuntimeConsent !== undefined ||
-    params.entry.nativeRuntimeConsent !== undefined
+    params.entry.nativeRuntimeConsent !== undefined ||
+    isAgentSessionModelPatchOrigin() ||
+    isSubagentSessionKey(params.sessionKey) ||
+    isAcpSessionKey(params.sessionKey) ||
+    (params.entry.spawnDepth ?? 0) > 0 ||
+    Boolean(params.entry.spawnedBy?.trim()) ||
+    Boolean(params.entry.parentSessionKey?.trim())
   ) {
     return;
   }
