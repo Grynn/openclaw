@@ -17,7 +17,7 @@ const startups = resolveGlobalSingleton(
   () => new Map<string, StartupState>(),
 );
 
-export class McpStartupBackoffError extends Error {
+class McpStartupBackoffError extends Error {
   readonly serviceUnavailable: boolean;
   constructor(
     state: StartupState,
