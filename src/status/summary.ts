@@ -65,10 +65,7 @@ const linkChannelModuleLoader = createLazyImportLoader(() => import("./link-chan
 const staticModelCatalogResolverLoader = createLazyImportLoader(async () => {
   const modelCatalog = await import("../agents/embedded-agent-runner/model.static-catalog.js");
   return {
-    resolveManifestModel: modelCatalog.createBundledStaticCatalogModelResolver({
-      // Runtime-discovery manifest rows still provide a cold-cache fallback.
-      includeRuntimeDiscovery: true,
-    }),
+    createManifestModelResolver: modelCatalog.createBundledStaticCatalogModelResolver,
     createProviderContextResolver: modelCatalog.createBundledProviderStaticCatalogContextResolver,
   };
 });
@@ -124,7 +121,11 @@ function compareSessionCandidatesByUpdatedAt(
   return (right.entry.updatedAt ?? 0) - (left.entry.updatedAt ?? 0);
 }
 
-async function prepareSessionStatusDetails(cfg: OpenClawConfig, now: number) {
+async function prepareSessionStatusDetails(
+  cfg: OpenClawConfig,
+  now: number,
+  projectedCandidates: readonly SessionEntrySummary[],
+) {
   const {
     classifySessionKey,
     resolveConfiguredStatusModelRef,
@@ -134,12 +135,24 @@ async function prepareSessionStatusDetails(cfg: OpenClawConfig, now: number) {
     resolveSessionModelRef,
     resolveStatusModelComparisonLabel,
     resolveStatusModelLookupRef,
+    resolveStatusPluginMetadataSnapshot,
+    prepareSessionRuntimeFacts,
     waitForContextWindowCacheLoad,
   } = await loadStatusSummaryRuntimeModule();
   await waitForContextWindowCacheLoad();
-  const { resolveManifestModel, createProviderContextResolver } =
+  const metadataSnapshot = resolveStatusPluginMetadataSnapshot(cfg);
+  const { createManifestModelResolver, createProviderContextResolver } =
     await staticModelCatalogResolverLoader.load();
-  const resolveProviderContext = createProviderContextResolver({ cfg });
+  const catalogResolverParams = {
+    cfg,
+    ...(metadataSnapshot ? { metadataSnapshot } : {}),
+  };
+  const resolveManifestModel = createManifestModelResolver({
+    ...catalogResolverParams,
+    // Runtime-discovery manifest rows still provide a cold-cache fallback.
+    includeRuntimeDiscovery: true,
+  });
+  const resolveProviderContext = createProviderContextResolver(catalogResolverParams);
   const modelContextCache = new Map<
     string,
     Promise<{ modelContextWindow?: number; modelContextTokens?: number }>
@@ -195,6 +208,18 @@ async function prepareSessionStatusDetails(cfg: OpenClawConfig, now: number) {
       allowAsyncLoad: false,
     }) ?? DEFAULT_CONTEXT_TOKENS;
 
+  // One batched read for every row this summary can project; resolveSessionRuntime would
+  // otherwise open the ACP metadata store once per row.
+  const sessionRuntimeFacts = prepareSessionRuntimeFacts({
+    cfg,
+    entries: projectedCandidates.map(({ sessionKey, entry }) => ({
+      sessionKey,
+      entry,
+      ...(parseAgentSessionKey(sessionKey)?.agentId
+        ? { agentId: parseAgentSessionKey(sessionKey)!.agentId }
+        : {}),
+    })),
+  });
   // Aggregate rows reuse this request's completed agent projection, with independent DTOs.
   const sessionRows = new Map<SessionEntrySummary, SessionStatus>();
   const buildSessionRows = async (candidates: SessionEntrySummary[]) =>
@@ -269,7 +294,9 @@ async function prepareSessionStatusDetails(cfg: OpenClawConfig, now: number) {
           allowAsyncLoad: false,
         });
         const runtime = resolveSessionRuntime({
+          acpMeta: sessionRuntimeFacts.acpSessionMetaByEntry.get(entry),
           cfg,
+          classifyCliProvider: sessionRuntimeFacts.classifyCliProvider,
           entry,
           provider: lookupModel.provider,
           model: lookupModelId ?? "",
@@ -467,8 +494,9 @@ export async function getStatusSummary(
   );
   const now = Date.now();
 
-  const sessionDetails = includeSensitive ? await prepareSessionStatusDetails(cfg, now) : undefined;
-
+  // Stores resolve first, bounded to the recent-session limit, so the projected row set is
+  // known before preparing per-summary facts; the batched ACP read needs every candidate it
+  // will be asked for.
   const sessionStores =
     options.sessionStores ??
     (await readStatusSessionStores(
@@ -477,6 +505,15 @@ export async function getStatusSummary(
       includeSensitive ? STATUS_RECENT_SESSION_LIMIT : 0,
       options.sessionRowProjection,
     ));
+  const sessionDetails = includeSensitive
+    ? await prepareSessionStatusDetails(cfg, now, [
+        ...new Set([
+          ...sessionStores.byAgent.flatMap((store) => store.recent),
+          ...sessionStores.recent,
+        ]),
+      ])
+    : undefined;
+
   const byAgent = await Promise.all(
     sessionStores.byAgent.map(async ({ agent, path, count, recent }) => ({
       agentId: agent.id,

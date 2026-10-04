@@ -7,7 +7,10 @@ import {
   normalizeOptionalLowercaseString,
 } from "@openclaw/normalization-core/string-coerce";
 import { readAcpSessionMetaForEntry } from "../acp/runtime/session-meta-readonly.js";
-import { resolveSessionStorePathForAcp } from "../acp/runtime/session-meta.js";
+import {
+  readAcpSessionMetaBatch,
+  resolveSessionStorePathForAcp,
+} from "../acp/runtime/session-meta.js";
 import { resolveCurrentSessionAgentRuntimeMetadata } from "../agents/agent-runtime-metadata.js";
 import { resolveAgentConfig } from "../agents/agent-scope-config.js";
 import {
@@ -20,11 +23,17 @@ import {
   buildModelAliasIndex,
   resolveConfiguredPrimaryProviderFallback,
 } from "../agents/model-selection-shared.js";
-import { parseModelRef, resolvePersistedSelectedModelRef } from "../agents/model-selection.js";
+import {
+  parseModelRef,
+  prepareCliProviderClassifier,
+  resolvePersistedSelectedModelRef,
+  type CliProviderClassifier,
+} from "../agents/model-selection.js";
 import { resolveAgentModelPrimaryValue } from "../config/model-input.js";
-import type { SessionEntry } from "../config/sessions/types.js";
+import type { SessionAcpMeta, SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { resolveStoredSessionKeyForAgentStore } from "../gateway/session-store-key.js";
+import { resolvePluginMetadataSnapshotRuntime } from "../plugins/plugin-metadata-snapshot.runtime.js";
 import { classifySessionKind } from "../sessions/classify-session-kind.js";
 import { resolveAgentRuntimeLabel } from "./agent-runtime-label.js";
 
@@ -188,6 +197,8 @@ function resolveSessionModelRef(
 }
 
 function resolveSessionRuntime(params: {
+  acpMeta?: SessionAcpMeta | null;
+  classifyCliProvider?: CliProviderClassifier;
   cfg: OpenClawConfig;
   entry?: SessionEntry;
   provider: string;
@@ -208,12 +219,15 @@ function resolveSessionRuntime(params: {
   });
   // The summary already captured the session generation. Rereading its store
   // could pair runtime metadata with a replacement row and reopen cold history.
-  const acpMeta = readAcpSessionMetaForEntry({
-    cfg: params.cfg,
-    sessionKey: acpSessionKey,
-    agentId: acpAgentId,
-    entry: params.entry,
-  });
+  const acpMeta =
+    "acpMeta" in params
+      ? params.acpMeta
+      : readAcpSessionMetaForEntry({
+          cfg: params.cfg,
+          sessionKey: acpSessionKey,
+          agentId: acpAgentId,
+          entry: params.entry,
+        });
   const runtime = resolveCurrentSessionAgentRuntimeMetadata({
     cfg: params.cfg,
     agentId: params.agentId ?? acpAgentId,
@@ -234,8 +248,23 @@ function resolveSessionRuntime(params: {
       sessionEntry: params.entry,
       resolvedHarness,
       fallbackProvider: params.provider,
+      classifyCliProvider: params.classifyCliProvider,
     }),
   };
+}
+
+function prepareSessionRuntimeFacts(params: {
+  cfg: OpenClawConfig;
+  entries: readonly { sessionKey: string; agentId?: string; entry: SessionEntry }[];
+}) {
+  return {
+    acpSessionMetaByEntry: readAcpSessionMetaBatch(params),
+    classifyCliProvider: prepareCliProviderClassifier(params.cfg),
+  };
+}
+
+function resolveStatusPluginMetadataSnapshot(cfg: OpenClawConfig) {
+  return resolvePluginMetadataSnapshotRuntime({ config: cfg });
 }
 
 export const statusSummaryRuntime = {
@@ -248,4 +277,6 @@ export const statusSummaryRuntime = {
   resolveConfiguredStatusModelRef,
   resolveStatusModelLookupRef,
   resolveStatusModelComparisonLabel,
+  prepareSessionRuntimeFacts,
+  resolveStatusPluginMetadataSnapshot,
 };

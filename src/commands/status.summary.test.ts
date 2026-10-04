@@ -1,4 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
+import { captureSessionTranscriptStorageEnvironment } from "../config/sessions/transcript-target-binding.js";
 import { SESSION_TOTAL_TOKENS_VERSION } from "../config/sessions/types.js";
 import { setActiveDegradedPlugins } from "../plugins/runtime-degraded-state.js";
 import {
@@ -43,6 +45,11 @@ vi.mock("../status/summary.runtime.js", () => ({
       model: "gpt-5.5",
     })),
     resolveSessionRuntime: vi.fn(() => ({ id: "openclaw", label: "OpenClaw Default" })),
+    resolveStatusPluginMetadataSnapshot: vi.fn(() => undefined),
+    prepareSessionRuntimeFacts: vi.fn(() => ({
+      acpSessionMetaByEntry: new Map(),
+      classifyCliProvider: vi.fn(() => false),
+    })),
     resolveStatusModelLookupRef: vi.fn(({ provider, model }) =>
       typeof model === "string" && model.length > 0
         ? {
@@ -200,6 +207,7 @@ describe("getStatusSummary", () => {
     statusSummaryMocks.hasConfiguredChannelsForReadOnlyScope.mockReturnValue(true);
     statusSummaryMocks.resolveProviderStaticModel.mockReset();
     statusSummaryMocks.listSessionEntriesCore.mockReturnValue([]);
+    vi.mocked(resolveSessionStorePathCore).mockReturnValue("/tmp/sessions.json");
     vi.mocked(peekSystemEvents).mockReset().mockReturnValue([]);
     statusSummaryMocks.loadExactSessionEntryReadOnly.mockImplementation(({ sessionKey }) => {
       const entry = statusSummaryMocks
@@ -452,6 +460,48 @@ describe("getStatusSummary", () => {
       modelContextWindow: 1_048_576,
       allowAsyncLoad: false,
     });
+  });
+
+  it("passes agent scope when listing configured agent session stores", async () => {
+    vi.mocked(listGatewayAgentsBasic).mockReturnValue({
+      defaultId: "main",
+      ownership: "sole",
+      selectionRequired: false,
+      mainKey: "main",
+      scope: "per-sender",
+      agents: [{ id: "main" }, { id: "ops" }],
+    });
+    vi.mocked(resolveSessionStorePathCore).mockImplementation((_store, opts) => {
+      return `/tmp/${opts?.agentId ?? "main"}/sessions.json`;
+    });
+    statusSummaryMocks.listSessionEntriesCore.mockImplementation((scope) =>
+      scope?.agentId === "ops"
+        ? toSessionEntrySummaries({
+            "agent:ops:main": { sessionId: "ops-session", updatedAt: 2 },
+          })
+        : toSessionEntrySummaries({
+            "agent:main:main": { sessionId: "main-session", updatedAt: 1 },
+          }),
+    );
+
+    const expectedStorageEnv = captureSessionTranscriptStorageEnvironment(process.env);
+    const summary = await getStatusSummary({ includeChannelSummary: false });
+
+    expect(statusSummaryMocks.listSessionEntriesCore).toHaveBeenCalledWith({
+      agentId: "main",
+      env: expectedStorageEnv,
+      storePath: "/tmp/main/sessions.json",
+    });
+    expect(statusSummaryMocks.listSessionEntriesCore).toHaveBeenCalledWith({
+      agentId: "ops",
+      env: expectedStorageEnv,
+      storePath: "/tmp/ops/sessions.json",
+    });
+    expect(summary.sessions.count).toBe(2);
+    expect(summary.sessions.byAgent.map((agent) => [agent.agentId, agent.count])).toEqual([
+      ["main", 1],
+      ["ops", 1],
+    ]);
   });
 
   it.each([
