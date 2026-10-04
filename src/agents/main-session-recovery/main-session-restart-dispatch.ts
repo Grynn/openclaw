@@ -67,6 +67,15 @@ const RESTART_RECOVERY_RESUME_MESSAGE = formatSystemTurnPrompt(
     `repeating an action. ${TOOL_FAILURE_INSTRUCTION}`,
 );
 
+const TURN_FAILURE_RECOVERY_RESUME_MESSAGE = formatSystemTurnPrompt(
+  "Your previous turn ended before it could finish while OpenClaw was waiting on " +
+    "tool/model work. The gateway did not restart and the user's task was not cancelled. " +
+    "Continue from the existing transcript: check the current state, recover interrupted work, " +
+    "and finish the task without asking the user to repeat the request. Treat a tool result " +
+    "marked interrupted or missing as having an unknown outcome; verify what happened before " +
+    `repeating an action. ${TOOL_FAILURE_INSTRUCTION}`,
+);
+
 const RESTART_SAFE_TOOLS_NOTICE =
   "For this turn only, the tool surface has been narrowed to replay-safe tools as a " +
   "recovery precaution. Use the tools that are available to report status or continue " +
@@ -92,11 +101,16 @@ function buildResumeMessage(
   pendingFinalDeliveryText: string,
   forceRestartSafeTools?: boolean,
   childRecoveryRoster?: string,
+  deferralCause?: SessionEntry["restartRecoveryDeferralCause"],
 ): string {
   const sanitizedPendingText = sanitizePendingFinalDeliveryText(pendingFinalDeliveryText);
+  const resumeMessage =
+    deferralCause === "turn-failure"
+      ? TURN_FAILURE_RECOVERY_RESUME_MESSAGE
+      : RESTART_RECOVERY_RESUME_MESSAGE;
   const instructions = forceRestartSafeTools
-    ? `${RESTART_RECOVERY_RESUME_MESSAGE}\n\n${RESTART_SAFE_TOOLS_NOTICE}`
-    : RESTART_RECOVERY_RESUME_MESSAGE;
+    ? `${resumeMessage}\n\n${RESTART_SAFE_TOOLS_NOTICE}`
+    : resumeMessage;
   const base = childRecoveryRoster ? `${instructions}\n\n${childRecoveryRoster}` : instructions;
   return sanitizedPendingText
     ? `${base}\n\nNote: The interrupted final reply was captured: "${sanitizedPendingText}"`
@@ -425,6 +439,7 @@ async function resumeMainSessionWithinAdmission(
             requesterStorePath,
           }),
         ),
+        params.entry.restartRecoveryDeferralCause,
       ),
       sessionKey: dispatchSessionKey,
       expectedExistingSessionId: params.entry.sessionId,

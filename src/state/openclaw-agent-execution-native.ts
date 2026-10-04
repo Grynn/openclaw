@@ -30,11 +30,11 @@ import {
 } from "../infra/sqlite-worker-store.js";
 import { captureAgentDatabasePreparationJournal } from "./agent-database-admission.js";
 import { getAgentDeletionDatabaseCleanup } from "./agent-deletion-cleanup.js";
-import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.js";
-import {
-  hasAgentDatabaseMaintenanceAuthority,
-  type OpenClawAgentDatabaseWorkerLeaseReceipt,
-} from "./openclaw-agent-db-lease.js";
+import type {
+  OpenClawAgentDatabaseOptions,
+  OpenClawAgentDatabaseWorkerLeaseReceipt,
+} from "./openclaw-agent-db-contract.js";
+import { hasAgentDatabaseMaintenanceAuthority } from "./openclaw-agent-db-lease.js";
 import { captureOpenClawAgentDatabaseRegistration } from "./openclaw-agent-db-registry-listing.js";
 import {
   captureOpenClawAgentDatabaseValidationTransfer,
@@ -305,7 +305,9 @@ export function createAgentDatabaseNativeGeneration(
               received.ownerPid !== process.pid ||
               (received.ownerStartTime !== null && typeof received.ownerStartTime !== "number") ||
               received.sharedStatePath !== context.admission.databasePath ||
-              received.sharedStateIdentity !== context.admission.identity.key
+              received.sharedStateIdentity !== context.admission.identity.key ||
+              received.externallySupervised !==
+                (context.environment.OPENCLAW_SUPERVISOR_MODE === "external")
             ) {
               throw new Error("Agent worker lease differs from its captured native owner");
             }
@@ -317,6 +319,7 @@ export function createAgentDatabaseNativeGeneration(
               ownerStartTime: received.ownerStartTime,
               sharedStatePath: context.admission.databasePath,
               sharedStateIdentity: context.admission.identity.key,
+              externallySupervised: received.externallySupervised,
             };
             receiveValidation = captureOpenClawAgentDatabaseValidationTransfer({
               agentId,

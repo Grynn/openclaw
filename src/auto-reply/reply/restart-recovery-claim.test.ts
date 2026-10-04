@@ -31,29 +31,12 @@ import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { useStateDatabaseTempDirs } from "../../test-utils/state-database-temp-dirs.js";
 import { createReplyOperation } from "./reply-run-registry.js";
 import { createReplyRestartRecoveryClaimController } from "./restart-recovery-claim.js";
+import {
+  createTestAdmission,
+  registerRestartRecoveryDeferralTests,
+} from "./restart-recovery-claim.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-
-function createTestAdmission(params: {
-  entryId: string;
-  sessionId: string;
-  sessionKey: string;
-  storePath: string;
-}) {
-  return {
-    agentId: "main",
-    sessionId: params.sessionId,
-    sessionKey: params.sessionKey,
-    storePath: params.storePath,
-    generation: "test-generation",
-    entryId: params.entryId,
-    rawSeq: 1,
-    effectiveParentId: null,
-    activeMessagePosition: 0,
-    logicalTurnId: `${params.entryId}:turn`,
-    role: "user" as const,
-  };
-}
 
 describe("createReplyRestartRecoveryClaimController", () => {
   describe("placement observations", () => {
@@ -579,6 +562,8 @@ describe("createReplyRestartRecoveryClaimController", () => {
       }
     },
   );
+
+  registerRestartRecoveryDeferralTests(tempDirs);
 
   it("retires the source claim after an ordinary user abort", async () => {
     const root = tempDirs.make("openclaw-reply-claim-user-abort-");

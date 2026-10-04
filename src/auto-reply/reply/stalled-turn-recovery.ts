@@ -31,6 +31,9 @@ export function buildStalledTurnRecoveryRun(base: FollowupRun): FollowupRun {
   const source = base.queuedFollowupReplyDisposition;
   return {
     ...base,
+    // This transcript-only continuation is not a redelivery of the parent's consumed input.
+    sourceTurnId: undefined,
+    constituentSourceTurnIds: undefined,
     prompt: formatSystemTurnPrompt(STALLED_TURN_GUIDANCE),
     summaryLine: "stalled-turn-recovery",
     stalledTurnRecovery: true,

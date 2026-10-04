@@ -1,4 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
+import {
+  mergeRestartRecoveryTerminalSourceTurnIdGroupDelta,
+  sameRestartRecoveryTerminalSourceTurnIdGroups,
+} from "./restart-recovery-state.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 type SessionEntryRecord = Partial<Record<keyof SessionEntry, unknown>>;
@@ -249,6 +253,25 @@ export function projectSessionSnapshotChanges(
     }
     if (field === "updatedAt") {
       patch.updatedAt = Math.max(params.current.updatedAt, params.next.updatedAt);
+      continue;
+    }
+    if (field === "restartRecoveryTerminalSourceTurnIdGroups") {
+      if (
+        sameRestartRecoveryTerminalSourceTurnIdGroups(
+          params.initial.restartRecoveryTerminalSourceTurnIdGroups,
+          params.current.restartRecoveryTerminalSourceTurnIdGroups,
+        )
+      ) {
+        patch.restartRecoveryTerminalSourceTurnIdGroups =
+          params.next.restartRecoveryTerminalSourceTurnIdGroups;
+      } else {
+        patch.restartRecoveryTerminalSourceTurnIdGroups =
+          mergeRestartRecoveryTerminalSourceTurnIdGroupDelta({
+            current: params.current.restartRecoveryTerminalSourceTurnIdGroups,
+            initial: params.initial.restartRecoveryTerminalSourceTurnIdGroups,
+            next: params.next.restartRecoveryTerminalSourceTurnIdGroups,
+          });
+      }
       continue;
     }
     if (

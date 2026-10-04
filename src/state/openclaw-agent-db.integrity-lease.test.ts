@@ -12,10 +12,11 @@ import type { SqliteIntegrityDiagnostics } from "../infra/sqlite-integrity.js";
 import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
 import { discoverAgentDatabaseMigrationTargets } from "../infra/state-migrations.media-persistence-targets.js";
 import { createLegacyDatabaseFixture } from "../infra/state-migrations.media-persistence.test-support.js";
+import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "./openclaw-agent-db-contract.js";
 import {
   claimOpenClawAgentDatabaseLease,
+  prepareOpenClawAgentDatabaseWorkerLease,
   releaseOpenClawAgentDatabaseLease,
-  type OpenClawAgentDatabaseWorkerLeaseReceipt,
 } from "./openclaw-agent-db-lease.js";
 import { openOpenClawAgentDatabaseReadOnly } from "./openclaw-agent-db-readonly.js";
 import {
@@ -112,6 +113,24 @@ function openOwner() {
   };
 }
 
+it.each([false, true])(
+  "captures external supervisor mode in a %s worker lease receipt",
+  (external) => {
+    const stateDir = tempDirs.make("openclaw-lease-supervisor-mode-");
+    const env = {
+      OPENCLAW_STATE_DIR: stateDir,
+      ...(external ? { OPENCLAW_SUPERVISOR_MODE: "external" } : {}),
+    };
+    const shared = openOpenClawStateDatabase({ env });
+    const lease = prepareOpenClawAgentDatabaseWorkerLease(
+      { agentId: "main", path: resolveOpenClawAgentSqlitePath({ agentId: "main", env }), env },
+      shared,
+      "lease-supervisor-capture",
+    );
+    expect(lease.receipt.externallySupervised).toBe(external);
+  },
+);
+
 it("independent schema registration lets an agent writer commit shared state before admission", async () => {
   const owner = openOwner();
   const shared = openOpenClawStateDatabase({ env: owner.env });
@@ -205,6 +224,7 @@ it.each(["forced cleanup", "stale admission"])(
       ownerStartTime: row.owner_start_time,
       sharedStatePath: state.path,
       sharedStateIdentity: readDatabasePathIdentitySync(state.path).key,
+      externallySupervised: false,
     };
     const writing = once(child, "message");
     child.send("begin-write");

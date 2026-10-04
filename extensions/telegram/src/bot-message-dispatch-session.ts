@@ -126,15 +126,20 @@ export function createTelegramTranscriptMirror(turn: Turn, sequenceOwner: Turn =
   const sessionKey = turn.context.ctxPayload.SessionKey;
   return sessionKey
     ? async (payload: TelegramTranscriptMirrorPayload) => {
-        const idempotencyKey = `telegram-final:${sessionKey}:${turn.transcriptMirrorTurnId}:${sequenceOwner.transcriptMirrorSequence++}`;
-        await mirrorTelegramAssistantReplyToTranscript({
-          cfg: turn.cfg,
-          idempotencyKey,
-          loadFreshSessionEntry: turn.loadFreshSessionEntry,
-          route: turn.context.route,
-          sessionKey,
-          payload,
-        });
+        // A transcript projection cannot undo a visible Telegram send.
+        try {
+          const idempotencyKey = `telegram-final:${sessionKey}:${turn.transcriptMirrorTurnId}:${sequenceOwner.transcriptMirrorSequence++}`;
+          await mirrorTelegramAssistantReplyToTranscript({
+            cfg: turn.cfg,
+            idempotencyKey,
+            loadFreshSessionEntry: turn.loadFreshSessionEntry,
+            route: turn.context.route,
+            sessionKey,
+            payload,
+          });
+        } catch (err: unknown) {
+          logVerbose(`telegram transcriptMirror failed: ${formatErrorMessage(err)}`);
+        }
       }
     : undefined;
 }

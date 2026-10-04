@@ -45,6 +45,18 @@ export type OpenClawAgentDatabaseOptions = OpenClawStateDatabaseOptions & {
   agentId: string;
 };
 
+/** Captured claim identity transferred between the native Worker and its cleanup owner. */
+export type OpenClawAgentDatabaseWorkerLeaseReceipt = {
+  leaseId: string;
+  agentId: string;
+  path: string;
+  ownerPid: number;
+  ownerStartTime: number | null;
+  sharedStatePath: string;
+  sharedStateIdentity: string;
+  externallySupervised: boolean;
+};
+
 /** Internal Doctor custody; never part of the plugin-facing database options. */
 export type OpenClawAgentDatabaseRepairAdmission = {
   /** Bind repair admission to the physical database inspected and backed up by its owner. */

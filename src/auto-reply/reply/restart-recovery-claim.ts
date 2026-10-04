@@ -26,6 +26,7 @@ import {
   createAgentRunStaleLifecycleError,
   isAgentRunStaleLifecycleError,
 } from "../../infra/agent-lifecycle-error.js";
+import { isSessionWorkRestartInterruptReason } from "../../sessions/session-work-admission-interruption.js";
 import type {
   UserTurnTranscriptRecorder,
   UserTurnTranscriptTarget,
@@ -36,7 +37,7 @@ import type { SourceReplyDeliveryMode } from "../get-reply-options.types.js";
 type ReplyRestartRecoveryClaimController = {
   admitUserTurn: (
     recorder?: UserTurnTranscriptRecorder,
-  ) => Promise<"admitted" | "duplicate-source">;
+  ) => Promise<"admitted" | "duplicate-source" | "source-overlap">;
   beginBeforeAgentReply: () => Promise<boolean>;
   checkpointBeforeAgentReply: (params: {
     state?: RestartRecoveryBeforeAgentReplyState;
@@ -48,7 +49,9 @@ type ReplyRestartRecoveryClaimController = {
     };
   }) => Promise<void>;
   clear: () => Promise<void>;
+  deferToRecovery: (cause?: unknown) => Promise<boolean>;
   isArmed: () => Promise<boolean>;
+  isTracked: () => boolean;
 };
 
 /** Provider redelivery guard shared by ingress and the agent admission boundary. */
@@ -105,6 +108,7 @@ export function createReplyRestartRecoveryClaimController(params: {
   getEntry: () => SessionEntry | undefined;
   getSessionId: () => string;
   isRestartAbort: () => boolean;
+  assertRecoveryDeferralCurrent?: () => void;
   resolveDeliveryContext: (entry: SessionEntry | undefined) => DeliveryContext | undefined;
   requesterAccountId?: unknown;
   requesterSenderId?: unknown;
@@ -118,6 +122,7 @@ export function createReplyRestartRecoveryClaimController(params: {
   setEntry: (entry: SessionEntry) => void;
   sameChannelThreadRequired?: boolean;
   sourceTurnId?: unknown;
+  constituentSourceTurnIds?: readonly unknown[];
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
   storePath?: string;
 }): ReplyRestartRecoveryClaimController {
@@ -255,26 +260,69 @@ export function createReplyRestartRecoveryClaimController(params: {
     }
     const admissionRunId = normalizeOptionalString(params.admissionRunId);
     const sourceTurnId = normalizeOptionalString(params.sourceTurnId);
-    const activeClaimRunId = normalizeOptionalString(entry.restartRecoveryDeliveryRunId);
+    let activeClaimRunId = normalizeOptionalString(entry.restartRecoveryDeliveryRunId);
     const isExactRecoveryClaim = admissionRunId && activeClaimRunId === admissionRunId;
+    const constituentSourceTurnIds = Array.from(
+      new Set(
+        (params.constituentSourceTurnIds ?? []).flatMap((candidate) => {
+          const normalized = normalizeOptionalString(candidate);
+          return normalized && normalized !== sourceTurnId ? [normalized] : [];
+        }),
+      ),
+    );
     if (sourceTurnId) {
-      if (hasRestartRecoveryTerminalRun(entry, sourceTurnId)) {
-        return "duplicate-source";
-      }
-      if (!isExactRecoveryClaim && hasRestartRecoverySourceClaim(entry, sourceTurnId)) {
+      const claimedSourceTurnIds = [sourceTurnId, ...constituentSourceTurnIds];
+      const activeSourceTurnId = isExactRecoveryClaim
+        ? undefined
+        : claimedSourceTurnIds.find((id) => hasRestartRecoverySourceClaim(entry, id));
+      if (activeSourceTurnId) {
         if (entry.status !== "running") {
           const retired = await retireTerminalRestartRecoverySourceClaim({
             agentId: params.agentId,
             sessionId,
             sessionKey: params.sessionKey,
-            sourceTurnId,
+            sourceTurnId: activeSourceTurnId,
             storePath: params.storePath,
           });
           if (retired) {
             params.setEntry(retired);
           }
+          const refreshed =
+            retired ??
+            (await readSessionEntryInWorker(
+              {
+                agentId: params.agentId,
+                storePath: params.storePath,
+                sessionKey: params.sessionKey,
+              },
+              assertReadCurrent,
+            ));
+          assertReadCurrent();
+          if (!refreshed || refreshed.sessionId !== sessionId) {
+            throw new Error("session changed before durable user-turn admission");
+          }
+          entry = refreshed;
+          activeClaimRunId = normalizeOptionalString(entry.restartRecoveryDeliveryRunId);
         }
+      }
+      const primaryConsumed =
+        hasRestartRecoveryTerminalRun(entry, sourceTurnId) ||
+        (!isExactRecoveryClaim && hasRestartRecoverySourceClaim(entry, sourceTurnId));
+      const overlappingConstituents = isExactRecoveryClaim
+        ? []
+        : constituentSourceTurnIds.filter(
+            (id) =>
+              hasRestartRecoveryTerminalRun(entry, id) || hasRestartRecoverySourceClaim(entry, id),
+          );
+      if (
+        primaryConsumed ||
+        (constituentSourceTurnIds.length > 0 &&
+          overlappingConstituents.length === constituentSourceTurnIds.length)
+      ) {
         return "duplicate-source";
+      }
+      if (overlappingConstituents.length > 0) {
+        return "source-overlap";
       }
     }
     if (stagedWorkerInput) {
@@ -360,6 +408,8 @@ export function createReplyRestartRecoveryClaimController(params: {
           restartRecoveryDeliveryRequestFingerprint: undefined,
           restartRecoveryDeliveryRunId: recoveryRunId,
           restartRecoveryDeliverySourceRunId: sourceTurnId,
+          restartRecoveryDeliveryConstituentSourceTurnIds:
+            constituentSourceTurnIds.length > 0 ? constituentSourceTurnIds : undefined,
           restartRecoveryRequesterAccountId: normalizeOptionalString(params.requesterAccountId),
           restartRecoveryRequesterSenderId: normalizeOptionalString(params.requesterSenderId),
           restartRecoverySameChannelThreadRequired:
@@ -520,6 +570,57 @@ export function createReplyRestartRecoveryClaimController(params: {
     }
   };
 
+  const deferToRecovery = async (cause?: unknown): Promise<boolean> => {
+    const lifecycleGeneration = params.lifecycleGeneration;
+    if (
+      !tracked ||
+      !params.sessionKey ||
+      !params.storePath ||
+      !lifecycleGeneration ||
+      params.isRestartAbort()
+    ) {
+      return false;
+    }
+    const deferralCause = isSessionWorkRestartInterruptReason(cause)
+      ? "gateway-restart"
+      : "turn-failure";
+    const persisted = await patchSessionEntryCore(
+      { agentId: params.agentId, storePath: params.storePath, sessionKey: params.sessionKey },
+      (current) =>
+        current.sessionId === params.getSessionId() &&
+        current.restartRecoveryDeliveryRunId === recoveryRunId &&
+        current.restartRecoveryDeliverySourceRunId === recoverySourceRunId
+          ? {
+              abortedLastRun: true,
+              endedAt: undefined,
+              restartRecoveryDeferralCause: deferralCause,
+              status: "running" as const,
+              updatedAt: Date.now(),
+            }
+          : null,
+      {
+        skipMaintenance: true,
+        takeCacheOwnership: true,
+        workerGuard: {
+          assertCurrent: () => {
+            // Recovery may reuse the claim's run/source IDs. Revalidate at commit,
+            // not just before asynchronous patch preparation, as clear() does.
+            assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
+            if (params.isRestartAbort()) {
+              throw createAgentRunStaleLifecycleError();
+            }
+            params.assertRecoveryDeferralCurrent?.();
+          },
+        },
+      },
+    );
+    if (!persisted) {
+      return false;
+    }
+    params.setEntry(persisted);
+    return true;
+  };
+
   const isArmed = async (): Promise<boolean> => {
     if (!tracked || !params.sessionKey || !params.storePath) {
       return false;
@@ -571,6 +672,8 @@ export function createReplyRestartRecoveryClaimController(params: {
     },
     checkpointBeforeAgentReply: (checkpoint) => updateBeforeAgentReply("pending", checkpoint),
     clear,
+    deferToRecovery,
     isArmed,
+    isTracked: () => tracked,
   };
 }

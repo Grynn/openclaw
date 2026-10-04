@@ -19,6 +19,7 @@ import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { resolveSendPolicy } from "../sessions/send-policy.js";
 import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
 import { classifySessionStateActor } from "../sessions/session-state-events.js";
+import { resolveInterruptAbortReason } from "../sessions/session-work-admission-interruption.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import { sessionDeliveryChannel, type DeliveryContext } from "../utils/delivery-context.read.js";
 import {
@@ -66,7 +67,6 @@ import type {
 import { createInternalSessionEffectsCleanup } from "./internal-session-effects.js";
 import { AGENT_LANE_SUBAGENT } from "./lanes.js";
 import type { MainSessionRecoveryPendingTarget } from "./main-session-recovery/main-session-recovery-store.js";
-import { createAgentRunRestartAbortError, isAgentRunDirectAbortReason } from "./run-termination.js";
 import { withAgentPluginRegistry } from "./runtime-plugins.js";
 import { beginForegroundSessionMaintenance } from "./session-maintenance/coordinator.js";
 import {
@@ -202,10 +202,7 @@ async function agentCommandInternal(
       scope: storePath ?? `agent:${sessionAgentId}`,
       identities: [sessionKey, sessionId],
       signal: opts.abortSignal,
-      onInterrupt: (reason) =>
-        lifecycleAbortController.abort(
-          isAgentRunDirectAbortReason(reason) ? reason : createAgentRunRestartAbortError(),
-        ),
+      onInterrupt: (reason) => lifecycleAbortController.abort(resolveInterruptAbortReason(reason)),
       assertAllowed: () => {
         const currentEntry =
           sessionStoreRuntime && storePath && sessionKey

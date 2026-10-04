@@ -1,13 +1,9 @@
 import { createHash } from "node:crypto";
-import type { HumanMention } from "@openclaw/gateway-protocol";
 import { expectDefined } from "@openclaw/normalization-core";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { MediaImageLayout } from "../../../agents/embedded-agent-runner/run/prompt-image-metadata.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "../../../agents/harness/hook-helpers.js";
 import { runOutsidePreparedModelRuntimePluginGenerationScope } from "../../../agents/prepared-model-runtime-generation-scope.js";
 import { normalizeChatType } from "../../../channels/chat-type.js";
-import { resolveSessionStorePathCore } from "../../../config/sessions.js";
-import { loadSessionEntryReadOnly } from "../../../config/sessions/session-accessor.js";
 import {
   channelRouteCompactKey,
   channelRouteDedupeKey,
@@ -19,12 +15,7 @@ import {
   waitForGatewayRestartFenceSettlement,
 } from "../../../process/gateway-work-admission.js";
 import { defaultRuntime } from "../../../runtime.js";
-import {
-  buildPersistedUserTurnMediaInputsFromFields,
-  createUserTurnTranscriptRecorder,
-  type PersistedUserTurnMessage,
-} from "../../../sessions/user-turn-transcript.js";
-import { extractTextFromChatContent } from "../../../shared/chat-content.js";
+import { createUserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.js";
 import { resolveGlobalMap } from "../../../shared/global-singleton.js";
 import {
   buildCollectPrompt,
@@ -53,12 +44,24 @@ import {
   retireFollowupRunCancellation,
 } from "./lifecycle.js";
 import {
+  buildAggregateSourceIdentity,
+  dropDurablyConsumedQueuedItems,
+  isDurablyConsumedQueuedSource,
+  partitionDurablyConsumedQueuedSources,
+  resolveFollowupTranscriptTarget,
+} from "./source-custody.js";
+import {
   clearFollowupQueue,
   FOLLOWUP_QUEUES,
   followupQueueSources,
   trimSummaryElisionsToCap,
 } from "./state.js";
 import { consumeQueueSummaryDelivery } from "./summary-consumption.js";
+import {
+  buildCollectTranscriptInput,
+  createCollectUserTurnTranscriptRecorder,
+  renderCollectItem,
+} from "./transcript.js";
 import { FollowupRunDeferredError, isFollowupRunAborted, type FollowupRun } from "./types.js";
 
 type InternalFollowupRun = FollowupRun & {
@@ -274,40 +277,6 @@ function splitCollectItemsByDeliveryContext(items: FollowupRun[]): FollowupRun[]
   return groups;
 }
 
-function renderCollectItem(item: FollowupRun, idx: number): string {
-  return renderCollectItemPrompt(
-    item,
-    idx,
-    resolveCollectedSourceText(
-      item.userTurnTranscriptRecorder?.getPendingInputMessage?.(),
-      item.prompt,
-    ),
-  );
-}
-
-function resolveCollectedSourceText(
-  message: PersistedUserTurnMessage | undefined,
-  fallback: string,
-): string {
-  return message
-    ? (extractTextFromChatContent(message.content, {
-        normalizeText: (text) => text,
-        joinWith: "\n",
-      }) ?? "")
-    : fallback;
-}
-
-function buildCollectItemPrefix(item: FollowupRun, idx: number): string {
-  const senderLabel =
-    item.run.senderName ?? item.run.senderUsername ?? item.run.senderId ?? item.run.senderE164;
-  const senderSuffix = senderLabel ? ` (from ${senderLabel})` : "";
-  return `---\nQueued #${idx + 1}${senderSuffix}\n`;
-}
-
-function renderCollectItemPrompt(item: FollowupRun, idx: number, prompt: string): string {
-  return `${buildCollectItemPrefix(item, idx)}${prompt}`.trim();
-}
-
 function collectQueuedPromptMedia(
   items: FollowupRun[],
 ): Pick<FollowupRun, "images" | "imageOrder" | "media"> &
@@ -358,118 +327,6 @@ function collectQueuedPromptMedia(
     ...(mediaImageLayout ? { mediaImageLayout } : {}),
     ...(media.length > 0 ? { media } : {}),
   };
-}
-
-function buildCollectTranscriptInput(
-  items: FollowupRun[],
-  messages?: (PersistedUserTurnMessage | undefined)[],
-): { text: string; mentions: HumanMention[] } {
-  const title = "[Queued messages while agent was busy]";
-  const mentions: HumanMention[] = [];
-  let offset = title.length;
-  const text = buildCollectPrompt({
-    title,
-    items,
-    renderItem: (item, index) => {
-      const message = messages?.[index] ?? item.userTurnTranscriptRecorder?.message;
-      // Staging may redact or rewrite a source. Collection must never restore
-      // its pre-approval text from the queue's display/runtime projection.
-      const sourceText = resolveCollectedSourceText(message, item.transcriptPrompt ?? item.prompt);
-      const block = renderCollectItemPrompt(item, index, sourceText);
-      const sourceOffset = offset + 2 + buildCollectItemPrefix(item, index).length;
-      const sourceEnd = sourceText.trimEnd().length;
-      for (const mention of message?.["__openclaw"]?.humanMentions ?? []) {
-        if (mention.end <= sourceEnd) {
-          mentions.push({
-            ...mention,
-            start: sourceOffset + mention.start,
-            end: sourceOffset + mention.end,
-          });
-        }
-      }
-      offset += 2 + block.length;
-      return block;
-    },
-  });
-  return { text, mentions };
-}
-
-function resolveFollowupTranscriptTarget(source: FollowupRun) {
-  const sessionKey = normalizeOptionalString(source.run.sessionKey) ?? source.run.sessionId;
-  const storePath = resolveSessionStorePathCore(source.run.config.session?.store, {
-    agentId: source.run.agentId,
-  });
-  const sessionEntry = loadSessionEntryReadOnly({
-    storePath,
-    sessionKey,
-    clone: false,
-  });
-  return {
-    sessionId: sessionEntry?.sessionId ?? source.run.sessionId,
-    sessionKey,
-    sessionEntry,
-    storePath,
-    agentId: source.run.agentId,
-    cwd: source.run.cwd ?? source.run.workspaceDir,
-    config: source.run.config,
-  };
-}
-
-function createCollectUserTurnTranscriptRecorder(items: FollowupRun[]) {
-  const transcriptSources = items.filter((item) => item.userTurnTranscriptRecorder);
-  const source = transcriptSources.at(-1);
-  if (!source) {
-    return undefined;
-  }
-  const buildInput = async () => {
-    const messages = await Promise.all(
-      transcriptSources.map(
-        async (item) => await item.userTurnTranscriptRecorder?.resolveMessage(),
-      ),
-    );
-    const media = messages.flatMap((message) =>
-      buildPersistedUserTurnMediaInputsFromFields(message),
-    );
-    const timestamp = messages.reduce<number | undefined>((latest, message) => {
-      const candidate = message?.timestamp;
-      return typeof candidate === "number" && (latest === undefined || candidate > latest)
-        ? candidate
-        : latest;
-    }, undefined);
-    const transcriptInput = buildCollectTranscriptInput(transcriptSources, messages);
-    const identityHash = createHash("sha256")
-      .update(
-        JSON.stringify(
-          transcriptSources.map((item) => [
-            item.messageId ?? "",
-            item.enqueuedAt,
-            item.transcriptPrompt,
-          ]),
-        ),
-      )
-      .digest("hex");
-    return {
-      ...transcriptInput,
-      senderIsOwner: source.run.senderIsOwner,
-      provenance: source.run.inputProvenance,
-      idempotencyKey: `followup-collect:${source.run.sessionId}:${identityHash}`,
-      ...(timestamp === undefined ? {} : { timestamp }),
-      ...(media.length === 0 ? {} : { media }),
-    };
-  };
-  const initialTranscriptInput = buildCollectTranscriptInput(transcriptSources);
-  return createUserTurnTranscriptRecorder({
-    input: {
-      ...initialTranscriptInput,
-      senderIsOwner: source.run.senderIsOwner,
-      provenance: source.run.inputProvenance,
-    },
-    resolveInput: buildInput,
-    pendingInputSources: transcriptSources.flatMap((item) => item.userTurnTranscriptRecorder ?? []),
-    target: () => resolveFollowupTranscriptTarget(source),
-    errorContext: "collected followup user turn transcript",
-    beforeMessageWrite: runAgentHarnessBeforeMessageWriteHook,
-  });
 }
 
 function resolveAggregateOwner(items: readonly FollowupRun[]): FollowupRun | undefined {
@@ -832,10 +689,17 @@ async function runSyntheticOverflowSummary(params: {
       ]),
     )
     .digest("hex");
+  const sourceIdentity = buildAggregateSourceIdentity({
+    items: params.sources,
+    prefix: "followup-overflow",
+    scope: [routeHash, promptHash],
+  });
   const userTurnTranscriptRecorder = createUserTurnTranscriptRecorder({
     input: {
       text: params.prompt,
-      idempotencyKey: `followup-overflow:${params.source.run.sessionId}:${routeHash}:${params.source.messageId ?? params.source.enqueuedAt}:${promptHash}`,
+      idempotencyKey:
+        sourceIdentity?.sourceTurnId ??
+        `followup-overflow:${params.source.run.sessionId}:${routeHash}:${params.source.messageId ?? params.source.enqueuedAt}:${promptHash}`,
       senderIsOwner: params.source.run.senderIsOwner,
       provenance: params.source.run.inputProvenance,
     },
@@ -851,7 +715,9 @@ async function runSyntheticOverflowSummary(params: {
   let admitted = false;
   await params.runFollowup({
     prompt: params.prompt,
-    sourceTurnId: runtimeMetadata.sourceTurnId,
+    sourceTurnId: sourceIdentity?.sourceTurnId ?? runtimeMetadata.sourceTurnId,
+    constituentSourceTurnIds:
+      sourceIdentity?.constituentSourceTurnIds ?? runtimeMetadata.constituentSourceTurnIds,
     queueAbortSignal: params.source.queueAbortSignal,
     transcriptPrompt: params.prompt,
     messageId: params.source.messageId,
@@ -909,6 +775,20 @@ async function drainOverflowSummarySources(
           (source) => resolveFollowupDeliveryContextKey(source) === entry.contextKey,
         )
       : [];
+  const previouslyConsumedSources = [...(entry?.sources ?? []), ...retainedSources].filter(
+    (candidate) =>
+      isDurablyConsumedQueuedSource(
+        candidate,
+        resolveFollowupTranscriptTarget(candidate).sessionEntry,
+      ),
+  );
+  if (previouslyConsumedSources.length > 0) {
+    consumeQueueSummaryDelivery(params.queue, {
+      droppedCount: previouslyConsumedSources.length,
+      sources: previouslyConsumedSources,
+    });
+    return true;
+  }
   const source = retainedSources.at(-1) ?? entry?.sources.at(-1);
   if (!source) {
     return false;
@@ -1025,6 +905,7 @@ export function scheduleFollowupDrain(
       const collectState = { forceIndividualCollect: false };
       while (queue.items.length > 0 || queue.droppedCount > 0) {
         await dropAbortedFollowups(queue, effectiveRunFollowup);
+        dropDurablyConsumedQueuedItems(queue);
         if (queue.items.length === 0 && queue.droppedCount === 0) {
           break;
         }
@@ -1034,6 +915,7 @@ export function scheduleFollowupDrain(
         }
         await waitForQueueDebounce(queue, queue.abortController.signal);
         await dropAbortedFollowups(queue, effectiveRunFollowup);
+        dropDurablyConsumedQueuedItems(queue);
         if (queue.items.length === 0 && queue.droppedCount === 0) {
           break;
         }
@@ -1087,16 +969,17 @@ export function scheduleFollowupDrain(
             // Earlier groups await model work. Recheck membership so overflow
             // eviction cannot leave a stale snapshot eligible for delivery.
             const currentGroupItems = groupItems.filter((item) => queue.items.includes(item));
-            const abortedGroupItems = currentGroupItems.filter(isFollowupRunAborted);
-            if (abortedGroupItems.length > 0) {
-              removeQueuedItemsByRef(queue.items, abortedGroupItems);
-              for (const item of abortedGroupItems) {
+            const { consumed, pending } = partitionDurablyConsumedQueuedSources(currentGroupItems);
+            const abandonedGroupItems = currentGroupItems.filter(
+              (item) => isFollowupRunAborted(item) || consumed.includes(item),
+            );
+            if (abandonedGroupItems.length > 0) {
+              removeQueuedItemsByRef(queue.items, abandonedGroupItems);
+              for (const item of abandonedGroupItems) {
                 completeFollowupRunLifecycle(item);
               }
             }
-            const activeGroupItems = currentGroupItems.filter(
-              (item) => !isFollowupRunAborted(item),
-            );
+            const activeGroupItems = pending.filter((item) => !isFollowupRunAborted(item));
             if (activeGroupItems.length === 0) {
               continue;
             }
@@ -1111,8 +994,14 @@ export function scheduleFollowupDrain(
               renderItem: renderCollectItem,
             });
             const transcriptPrompt = buildCollectTranscriptInput(activeGroupItems).text;
-            const userTurnTranscriptRecorder =
-              createCollectUserTurnTranscriptRecorder(activeGroupItems);
+            const sourceIdentity = buildAggregateSourceIdentity({
+              items: activeGroupItems,
+              prefix: "followup-collect",
+            });
+            const userTurnTranscriptRecorder = createCollectUserTurnTranscriptRecorder(
+              activeGroupItems,
+              sourceIdentity,
+            );
             const aggregateOwner = resolveAggregateOwner(activeGroupItems);
             const cancellation = createAggregateCancellation(activeGroupItems);
             let admitted = false;
@@ -1154,6 +1043,7 @@ export function scheduleFollowupDrain(
                 enqueuedAt: Date.now(),
                 ...routing,
                 ...collectRuntimeMetadata(activeGroupItems, cancellation.signal),
+                ...sourceIdentity,
                 ...(needsGroupAdmission
                   ? {
                       turnAdoptionLifecycle: {

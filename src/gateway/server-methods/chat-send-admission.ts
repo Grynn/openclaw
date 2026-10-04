@@ -3,10 +3,7 @@ import { isFutureDateTimestampMs } from "@openclaw/normalization-core/number-coe
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { readAcpSessionMetaForEntries } from "../../acp/runtime/session-meta-readonly.js";
-import {
-  createAgentRunRestartAbortError,
-  isAgentRunDirectAbortReason,
-} from "../../agents/run-termination.js";
+import { createAgentRunRestartAbortError } from "../../agents/run-termination.js";
 import {
   isReplyRunAbortableForSignal,
   replyRunRegistry,
@@ -25,6 +22,7 @@ import {
   progressCardRefreshRunProjection,
 } from "../../sessions/input-provenance.js";
 import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { isSessionWorkRestartInterruptReason } from "../../sessions/session-work-admission-interruption.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
 import type { DedupeEntry } from "../server-shared.js";
@@ -421,7 +419,8 @@ export async function admitChatSend(
         return commitChatWorkAdmission(acpMeta ?? null);
       },
       onInterrupt: (reason) => {
-        const stopReason = isAgentRunDirectAbortReason(reason) ? "rpc" : "restart";
+        const restart = isSessionWorkRestartInterruptReason(reason);
+        const stopReason = restart ? "restart" : "rpc";
         if (!admittedRunAbort) {
           if (!context.chatRunState.hasAbortMarker(clientRunId)) {
             abortPendingChatSend(stopReason);
@@ -431,9 +430,7 @@ export async function admitChatSend(
           if (admittedRunAbort.entry) {
             admittedRunAbort.entry.abortStopReason = stopReason;
           }
-          admittedRunAbort.controller.abort(
-            stopReason === "rpc" ? reason : createAgentRunRestartAbortError(),
-          );
+          admittedRunAbort.controller.abort(restart ? createAgentRunRestartAbortError() : reason);
         }
       },
     });

@@ -1,17 +1,11 @@
-import crypto from "node:crypto";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { appendCurrentInboundContext } from "../../agents/embedded-agent-runner/run/runtime-context-prompt.js";
-import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { withBeforeAgentReplyObserver } from "../../plugins/before-agent-reply.js";
 import { getGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
 import { readPendingUserTurnTranscriptAdmission } from "../../sessions/user-turn-transcript-admission.js";
-import { setReplyPayloadMetadata } from "../reply-payload.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { ReplyPayload } from "../types.js";
 import {
-  resolveReplyRunDeliveryContext,
-  resolveSourceReplyPolicy,
   scheduleFollowupDrainAfterReplyOperationClear,
   type RunReplyAgentParams,
 } from "./agent-runner-core.js";
@@ -21,20 +15,15 @@ import { runMemoryFlushIfNeeded, runSessionCompactionIfNeeded } from "./agent-ru
 import { accountAgentTurnCompaction } from "./agent-runner-result-accounting.js";
 import { finalizeReplyAgentRun } from "./agent-runner-result.js";
 import type { FinalizeReplyAgentRunInput } from "./agent-runner-result.types.js";
-import { buildThreadingToolContext } from "./agent-runner-utils.js";
+import { createBeforeAgentReplyRecoveryObserver } from "./before-agent-reply-recovery.js";
 import type { CompactionNoticePhase } from "./compaction-notice.js";
 import { createFollowupRunner } from "./followup-runner.js";
-import {
-  buildRecoverablePendingFinalDeliveryText,
-  normalizePendingFinalDeliveryPayloads,
-} from "./pending-final-delivery.js";
 import { claimNextQueuedFollowupRequestFrom, enqueueFollowupRun } from "./queue.js";
+import { FollowupRunDeferredError } from "./queue/types.js";
 import { isReplyOperationSuperseded } from "./reply-operation-abort.js";
 import { recordReplyOperationAgentTurn } from "./reply-operation-run-state.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
-import { replyRunRegistry } from "./reply-run-registry.js";
 import { createReplyRestartRecoveryClaimController } from "./restart-recovery-claim.js";
-import { resolveReplySourceTurnId } from "./source-turn-id.js";
 import { buildStalledTurnRecoveryRun, STALLED_TURN_GUIDANCE } from "./stalled-turn-recovery.js";
 
 /** Continues a saved stalled request once, retaining its final-feedback obligation. */
@@ -217,81 +206,26 @@ export async function executePreparedReplyAgentRun(
   if (userTurnAdmission === "duplicate-source") {
     return returnWithQueuedFollowupDrain(undefined);
   }
+  if (userTurnAdmission === "source-overlap") {
+    throw new FollowupRunDeferredError("queued aggregate source changed before admission");
+  }
   // Adoption marks run start and must never be spool-replayed (would re-run tools).
   // Suppressed delivery persists only the user transcript; crashed suppressed runs die
   // silently. Deliverable turns atomically persist transcript plus recovery ownership.
   await turnAdoptionLifecycle?.onAdopted();
   const runOutcome = await withBeforeAgentReplyObserver(
-    {
-      beforeDispatch: async () => {
-        const result = await beginBeforeAgentReply();
-        activeSessionEntry = getActiveSessionEntry();
-        return result;
-      },
-      afterDispatch: async (hookResult) => {
-        if (!hookResult?.handled) {
-          await checkpointBeforeAgentReply({ state: undefined });
-          activeSessionEntry = getActiveSessionEntry();
-          return hookResult;
-        }
-        const hookReply = hookResult.reply ?? { text: SILENT_REPLY_TOKEN };
-        const hookFinalDeliveryText = buildRecoverablePendingFinalDeliveryText([hookReply]);
-        const normalizedHookReplies = normalizePendingFinalDeliveryPayloads([hookReply]);
-        let hookCheckpoint: Parameters<typeof checkpointBeforeAgentReply>[0] = {
-          state: normalizedHookReplies.length === 0 ? "handled-silent" : "pending",
-        };
-        if (sessionKey && storePath && normalizedHookReplies.length > 0) {
-          const sourceReplyPolicy = resolveSourceReplyPolicy({
-            cfg,
-            sessionCtx,
-            sessionEntry: activeSessionEntry,
-            sessionKey,
-            runtimePolicySessionKey,
-            opts,
-          });
-          if (!sourceReplyPolicy.suppressDelivery) {
-            const pendingFinalDeliveryIntentId = crypto.randomUUID();
-            const pendingFinalDeliveryDeliveryId = crypto.randomUUID();
-            setReplyPayloadMetadata(hookReply, {
-              pendingFinalDeliveryCompletion: {
-                agentId: followupRun.run.agentId,
-                deliveryId: pendingFinalDeliveryDeliveryId,
-                intentId: pendingFinalDeliveryIntentId,
-                ...(activeSessionEntry?.restartRecoveryDeliveryRunId
-                  ? { recoveryRunId: activeSessionEntry.restartRecoveryDeliveryRunId }
-                  : {}),
-                sessionId: replyOperation.sessionId,
-                sessionKey,
-                storePath,
-              },
-            });
-            hookCheckpoint = {
-              state: "handled-reply",
-              pendingFinalDelivery: {
-                text: hookFinalDeliveryText ?? "",
-                intentId: pendingFinalDeliveryIntentId,
-                deliveries: [{ id: pendingFinalDeliveryDeliveryId, state: "prepared" }],
-                context: resolveReplyRunDeliveryContext({
-                  cfg,
-                  sessionCtx,
-                  sessionEntry: activeSessionEntry,
-                  sessionKey,
-                  runtimePolicySessionKey,
-                  opts,
-                }),
-              },
-            };
-          } else {
-            // dispatch-from-config owns source visibility for every returned payload.
-            // This checkpoint records that recovery owes no delivery; the outer gate drops the reply.
-            hookCheckpoint = { state: "handled-silent" };
-          }
-        }
-        await checkpointBeforeAgentReply(hookCheckpoint);
-        activeSessionEntry = getActiveSessionEntry();
-        return { ...hookResult, reply: hookReply };
-      },
-    },
+    createBeforeAgentReplyRecoveryObserver({
+      agentId: followupRun.run.agentId,
+      cfg,
+      controller: { beginBeforeAgentReply, checkpointBeforeAgentReply },
+      getActiveSessionEntry,
+      opts,
+      replyOperation,
+      runtimePolicySessionKey,
+      sessionCtx,
+      sessionKey,
+      storePath,
+    }),
     () =>
       traceAgentPhase("reply.run_agent_turn", () =>
         executeAgentTurn({
@@ -352,124 +286,4 @@ export async function executePreparedReplyAgentRun(
   return result
     ? markPostCompactionModelFailurePayload(postCompactionModelFailure, result)
     : result;
-}
-
-export function createReplyAgentRestartRecoveryController(
-  context: Pick<
-    RunReplyAgentParams,
-    "followupRun" | "opts" | "runtimePolicySessionKey" | "sessionCtx" | "sessionKey" | "storePath"
-  > & {
-    activeSessionStore: Record<string, SessionEntry> | undefined;
-    cfg: OpenClawConfig;
-    getActiveSessionEntry: () => SessionEntry | undefined;
-    replyOperation: ReplyOperation;
-    restartRecoverySourceTurnId: string | undefined;
-    setActiveSessionEntry: (entry: SessionEntry) => void;
-  },
-) {
-  const {
-    activeSessionStore,
-    cfg,
-    followupRun,
-    getActiveSessionEntry,
-    opts,
-    replyOperation,
-    restartRecoverySourceTurnId,
-    runtimePolicySessionKey,
-    sessionCtx,
-    sessionKey,
-    setActiveSessionEntry,
-    storePath,
-  } = context;
-
-  const restartRecoverySameChannelThreadRequired = restartRecoverySourceTurnId
-    ? buildThreadingToolContext({
-        sessionCtx,
-        config: cfg,
-        hasRepliedRef: undefined,
-      }).sameChannelThreadRequired
-    : undefined;
-  const admissionRunId =
-    normalizeOptionalString(sessionCtx.MessageSid) ??
-    normalizeOptionalString(sessionCtx.MessageSidFull);
-  const recovery = createReplyRestartRecoveryClaimController({
-    agentId: followupRun.run.agentId,
-    lifecycleGeneration: replyOperation.lifecycleGeneration,
-    admissionRunId,
-    getEntry: () =>
-      sessionKey
-        ? (activeSessionStore?.[sessionKey] ?? getActiveSessionEntry())
-        : getActiveSessionEntry(),
-    getSessionId: () => replyOperation.sessionId,
-    isRestartAbort: () =>
-      replyOperation.result?.kind === "aborted" &&
-      replyOperation.result.code === "aborted_for_restart",
-    resolveDeliveryContext: (entry) =>
-      sessionKey
-        ? resolveReplyRunDeliveryContext({
-            cfg,
-            sessionCtx,
-            sessionEntry: entry,
-            sessionKey,
-            runtimePolicySessionKey,
-            opts,
-          })
-        : undefined,
-    requesterAccountId:
-      followupRun.originatingAccountId ?? sessionCtx.AccountId ?? followupRun.run.agentAccountId,
-    requesterSenderId: sessionCtx.SenderId,
-    resolveUserTurnTarget: ({
-      entry,
-      sessionId,
-      sessionKey: targetSessionKey,
-      storePath: targetStorePath,
-    }) => ({
-      sessionId,
-      sessionKey: targetSessionKey,
-      sessionEntry: entry,
-      ...(activeSessionStore ? { sessionStore: activeSessionStore } : {}),
-      storePath: targetStorePath,
-      agentId: followupRun.run.agentId,
-      cwd: followupRun.run.workspaceDir,
-      config: cfg,
-    }),
-    ...(sessionKey ? { sessionKey } : {}),
-    setEntry: (entry) => {
-      setActiveSessionEntry(entry);
-      if (activeSessionStore && sessionKey) {
-        activeSessionStore[sessionKey] = entry;
-      }
-    },
-    sameChannelThreadRequired: restartRecoverySameChannelThreadRequired,
-    sourceTurnId: restartRecoverySourceTurnId,
-    sourceReplyDeliveryMode: sessionKey
-      ? resolveSourceReplyPolicy({
-          cfg,
-          sessionCtx,
-          sessionEntry: getActiveSessionEntry(),
-          sessionKey,
-          runtimePolicySessionKey,
-          opts,
-        }).sourceReplyDeliveryMode
-      : opts?.sourceReplyDeliveryMode,
-    ...(storePath ? { storePath } : {}),
-  });
-  return {
-    ...recovery,
-    admitUserTurn: async (...args: Parameters<typeof recovery.admitUserTurn>) => {
-      const result = await recovery.admitUserTurn(...args);
-      if (result === "admitted") {
-        const sourceTurnId = resolveReplySourceTurnId({
-          sourceTurnId: restartRecoverySourceTurnId,
-          admissionRunId,
-          ingressProvider: sessionCtx.Provider ?? sessionCtx.Surface,
-          entry: getActiveSessionEntry(),
-        });
-        if (sourceTurnId) {
-          replyRunRegistry.bindSourceTurnId(replyOperation, sourceTurnId);
-        }
-      }
-      return result;
-    },
-  };
 }

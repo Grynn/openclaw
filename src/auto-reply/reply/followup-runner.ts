@@ -119,6 +119,8 @@ export function createFollowupRunner(
     let progressContinuation: ProgressContinuationCapability | undefined;
     const admissionNotices: ReplyPayload[] = [];
     let completion: QueuedFollowupReplyBatch["completion"] = { kind: "completed" };
+    let restartRecoveryClaim: AdmittedFollowupTurn["restartRecoveryClaim"];
+    let durableRecoveryDeferred = false;
     let queuedFollowupAdmitted = false;
     const initiallyAborted = isFollowupRunAborted(queued);
     const endDeliveryCorrelations = initiallyAborted
@@ -160,6 +162,7 @@ export function createFollowupRunner(
       }
       const turn: AdmittedFollowupTurn = admission.turn;
       admittedTurn = turn;
+      restartRecoveryClaim = turn.restartRecoveryClaim;
       admittedRunId = turn.runId;
       operation = turn.operation;
       queuedFollowupAdmitted = true;
@@ -257,6 +260,11 @@ export function createFollowupRunner(
         disposition = { kind: "deferred", reason: error.message };
       } else if (
         operation?.result?.kind === "aborted" &&
+        operation.result.code === "aborted_for_restart"
+      ) {
+        disposition = { kind: "consumed" };
+      } else if (
+        operation?.result?.kind === "aborted" &&
         operation.result.code === "aborted_by_user"
       ) {
         disposition = { kind: "consumed" };
@@ -266,6 +274,15 @@ export function createFollowupRunner(
         defaultRuntime.error?.(
           `followup queue: terminal handling failed after execution; refusing replay: ${formatErrorMessage(error)}`,
         );
+        operation?.fail("run_failed", error);
+      } else if (restartRecoveryClaim?.isTracked()) {
+        durableRecoveryDeferred = true;
+        try {
+          await restartRecoveryClaim.deferToRecovery(error);
+        } catch {
+          // Startup recovery still owns the admitted source after a store failure.
+        }
+        disposition = { kind: "consumed" };
         operation?.fail("run_failed", error);
       } else {
         disposition = { kind: "retry", error };
@@ -298,6 +315,15 @@ export function createFollowupRunner(
         }
       } finally {
         progressContinuation?.close();
+      }
+      if (!durableRecoveryDeferred) {
+        try {
+          await restartRecoveryClaim?.clear();
+        } catch (error) {
+          defaultRuntime.error?.(
+            `followup queue: recovery claim cleanup failed: ${formatErrorMessage(error)}`,
+          );
+        }
       }
       for (const end of endDeliveryCorrelations.toReversed()) {
         try {

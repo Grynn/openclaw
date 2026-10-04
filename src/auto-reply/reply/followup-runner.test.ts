@@ -577,6 +577,49 @@ describe("createFollowupRunner", () => {
     );
   });
 
+  it.each(["accounting", "delivery"] as const)(
+    "does not re-arm a durable claim after completed execution and failed %s",
+    async (stage) => {
+      const turn = createTurn();
+      const failure = new Error(`${stage} failed after execution`);
+      const deliver = vi.fn(async () => {});
+      const claim = {
+        admitUserTurn: vi.fn(async () => "admitted" as const),
+        beginBeforeAgentReply: vi.fn(async () => true),
+        checkpointBeforeAgentReply: vi.fn(async () => {}),
+        clear: vi.fn(async () => {}),
+        deferToRecovery: vi.fn(async () => true),
+        isArmed: vi.fn(async () => false),
+        isTracked: () => true,
+      };
+      turn.restartRecoveryClaim = claim;
+      turn.queued.queuedFollowupReplyDisposition = { kind: "deliver", deliver };
+      state.admit.mockResolvedValue({ kind: "admitted", turn });
+      state.execute.mockResolvedValue(createSettledExecution());
+      state.account.mockResolvedValue(undefined);
+      state.resolveDecision.mockReturnValue({ kind: "deliver", payloads: [{ text: "done" }] });
+      if (stage === "accounting") {
+        state.account.mockRejectedValueOnce(failure);
+      } else {
+        state.deliver.mockRejectedValueOnce(failure);
+      }
+
+      await createFollowupRunner({
+        typing: createTypingController(),
+        typingMode: "never",
+        defaultModel: "claude",
+      })(turn.queued);
+
+      expect(state.execute).toHaveBeenCalledOnce();
+      expect(claim.deferToRecovery).not.toHaveBeenCalled();
+      expect(claim.clear).toHaveBeenCalledOnce();
+      expect(turn.operation.fail).toHaveBeenCalledWith("run_failed", failure);
+      expect(deliver).toHaveBeenCalledWith(
+        expect.objectContaining({ completion: { kind: "failed", error: failure.message } }),
+      );
+    },
+  );
+
   it("holds the reply operation through progress drain, accounting, and delivery", async () => {
     const order: string[] = [];
     const typing = createTypingController();

@@ -345,6 +345,7 @@ export function buildCurrentRunRestartRecoveryClaim(params: {
   | "restartRecoveryDisableMessageTool"
   | "restartRecoveryDeliveryRunId"
   | "restartRecoveryDeliverySourceRunId"
+  | "restartRecoveryDeliveryConstituentSourceTurnIds"
   | "restartRecoveryHarnessCompletion"
   | "restartRecoveryForceSafeTools"
   | "restartRecoverySourceIngress"
@@ -370,6 +371,8 @@ export function buildCurrentRunRestartRecoveryClaim(params: {
       restartRecoverySuppressTextDelivery: entry.restartRecoverySuppressTextDelivery,
       restartRecoveryDeliveryRunId: params.runId,
       restartRecoveryDeliverySourceRunId: entry.restartRecoveryDeliverySourceRunId,
+      restartRecoveryDeliveryConstituentSourceTurnIds:
+        entry.restartRecoveryDeliveryConstituentSourceTurnIds,
       restartRecoverySourceIngress: entry.restartRecoverySourceIngress,
       restartRecoverySourceReplyDeliveryMode: entry.restartRecoverySourceReplyDeliveryMode,
       restartRecoveryForceSafeTools: entry.restartRecoveryForceSafeTools,

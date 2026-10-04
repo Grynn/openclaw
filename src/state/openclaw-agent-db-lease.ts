@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { hasErrnoCode } from "../infra/errno.js";
+import { isGatewayExternallySupervised } from "../infra/gateway-supervision.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -20,6 +21,7 @@ import {
   assertAgentDeletionPathFence,
   prepareAgentDeletionPathFence,
 } from "./agent-deletion-journal.js";
+import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "./openclaw-agent-db-contract.js";
 import { withExistingAgentLeaseWrite } from "./openclaw-agent-db-existing-write.js";
 import {
   agentDatabaseLeaseStaleReason,
@@ -459,16 +461,6 @@ export function assertOpenClawAgentDatabaseLease(
   }
 }
 
-export type OpenClawAgentDatabaseWorkerLeaseReceipt = {
-  leaseId: string;
-  agentId: string;
-  path: string;
-  ownerPid: number;
-  ownerStartTime: number | null;
-  sharedStatePath: string;
-  sharedStateIdentity: string;
-};
-
 /** Preparation grants no access; claim repeats admission on the captured shared owner. */
 export function prepareOpenClawAgentDatabaseWorkerLease(
   params: { agentId: string; path: string; env?: NodeJS.ProcessEnv },
@@ -502,6 +494,7 @@ export function prepareOpenClawAgentDatabaseWorkerLease(
     ownerStartTime: getFileLockProcessStartTime(ownerPid),
     sharedStatePath: database.path,
     sharedStateIdentity: identity.key,
+    externallySupervised: isGatewayExternallySupervised(params.env ?? process.env),
   });
   const options = {
     database,
@@ -554,6 +547,7 @@ export function readOpenClawAgentDatabaseWorkerLeaseReceiptFromClaim(
     ownerStartTime: row.owner_start_time,
     sharedStatePath: database.path,
     sharedStateIdentity: readDatabasePathIdentitySync(database.path).key,
+    externallySupervised: isGatewayExternallySupervised(params.env ?? process.env),
   };
 }
 

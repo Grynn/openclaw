@@ -6,6 +6,14 @@ import type { SessionEntry } from "../../config/sessions/types.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
 import { waitForReplyRunSuccessorAdmission } from "./reply-run-registry.js";
 
+export function makeSessionEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {
+  return {
+    sessionId: "session",
+    updatedAt: Date.now(),
+    ...overrides,
+  };
+}
+
 export function createReplyAgentSessionFixture() {
   const sessionKeys = new Set<string>();
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>

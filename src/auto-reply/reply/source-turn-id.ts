@@ -10,12 +10,14 @@ import { isInternalMessageChannel } from "../../utils/message-channel.js";
 const CHANNEL_SOURCE_TURN_ID_PREFIX = "channel-user:v1:";
 // Host and SDK bundles exchange these non-JSON context facts within one process.
 const CHANNEL_SOURCE_TURN_ID = Symbol.for("openclaw.channelSourceTurnId");
+const CHANNEL_CONSTITUENT_SOURCE_TURN_IDS = Symbol.for("openclaw.channelConstituentSourceTurnIds");
 const CHANNEL_SOURCE_TURN_SAME_THREAD_REQUIRED = Symbol.for(
   "openclaw.channelSourceTurnSameThreadRequired",
 );
 
 type ChannelSourceTurnContext = object & {
   [CHANNEL_SOURCE_TURN_ID]?: string;
+  [CHANNEL_CONSTITUENT_SOURCE_TURN_IDS]?: string[];
   [CHANNEL_SOURCE_TURN_SAME_THREAD_REQUIRED]?: true;
 };
 
@@ -87,6 +89,24 @@ export function setChannelSourceTurnId(context: object, sourceTurnId: string | u
 
 export function readChannelSourceTurnId(context: object): string | undefined {
   return (context as ChannelSourceTurnContext)[CHANNEL_SOURCE_TURN_ID];
+}
+
+export function setChannelConstituentSourceTurnIds(
+  context: object,
+  sourceTurnIds: readonly string[] | undefined,
+): void {
+  if (sourceTurnIds?.length) {
+    Reflect.set(context, CHANNEL_CONSTITUENT_SOURCE_TURN_IDS, [...sourceTurnIds]);
+  } else {
+    Reflect.deleteProperty(context, CHANNEL_CONSTITUENT_SOURCE_TURN_IDS);
+  }
+}
+
+export function readChannelConstituentSourceTurnIds(context: object): string[] | undefined {
+  const value: unknown = Reflect.get(context, CHANNEL_CONSTITUENT_SOURCE_TURN_IDS);
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? value
+    : undefined;
 }
 
 /** Carries the original channel adapter's narrowed message-action scope privately. */

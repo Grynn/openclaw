@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import {
+  createRun,
+  createOperation,
+  createDefaults,
+} from "./followup-turn-admission.test-support.js";
 import type { FollowupRun } from "./queue.js";
 
 const state = vi.hoisted(() => ({
@@ -14,6 +20,16 @@ const state = vi.hoisted(() => ({
   resolveSendPolicy: vi.fn(),
   sendPolicy: "allow" as "allow" | "deny",
   shouldNotifyCompaction: false,
+  claim: {
+    admitUserTurn: vi.fn(),
+    clear: vi.fn(),
+    deferToRecovery: vi.fn(),
+    isTracked: vi.fn(),
+  },
+}));
+
+vi.mock("./agent-restart-recovery-controller.js", () => ({
+  createReplyAgentRestartRecoveryController: () => state.claim,
 }));
 
 vi.mock("./agent-runner-auto-fallback.js", () => ({
@@ -65,50 +81,6 @@ vi.mock("./agent-runner-failure-reply.js", () => ({
 
 const { admitFollowupTurn } = await import("./followup-turn-admission.js");
 
-function createRun(overrides: Partial<FollowupRun> = {}): FollowupRun {
-  return {
-    prompt: "queued prompt",
-    enqueuedAt: 1,
-    run: {
-      agentId: "agent",
-      agentDir: "/tmp/agent",
-      sessionId: "queued-session",
-      sessionKey: "main",
-      sessionFile: "/tmp/queued.jsonl",
-      workspaceDir: "/tmp",
-      config: {},
-      provider: "anthropic",
-      model: "claude",
-      timeoutMs: 1_000,
-      blockReplyBreak: "message_end",
-    },
-    ...overrides,
-  };
-}
-
-function createOperation(sessionId = "queued-session") {
-  return {
-    sessionId,
-    abortSignal: new AbortController().signal,
-    setPhase: vi.fn(),
-    abortForRestart: vi.fn(() => true),
-    retainFailureUntilComplete: vi.fn(),
-    fail: vi.fn(),
-    complete: vi.fn(),
-    updateSessionId: vi.fn(),
-  };
-}
-
-function createDefaults(overrides: Record<string, unknown> = {}) {
-  return {
-    typing: {} as never,
-    typingMode: "never" as const,
-    defaultModel: "claude",
-    sessionKey: "main",
-    ...overrides,
-  };
-}
-
 beforeEach(() => {
   vi.clearAllMocks();
   state.sendPolicy = "allow";
@@ -120,9 +92,73 @@ beforeEach(() => {
   state.recheckFallbackProbe.mockImplementation(({ run }) => run);
   state.admitLifecycle.mockResolvedValue(undefined);
   state.refreshGoal.mockImplementation((context) => context);
+  state.claim.admitUserTurn.mockResolvedValue("admitted");
+  state.claim.clear.mockResolvedValue(undefined);
+  state.claim.deferToRecovery.mockResolvedValue(true);
+  state.claim.isTracked.mockReturnValue(false);
 });
 
 describe("admitFollowupTurn", () => {
+  it.each(["failure", "user-abort", "operator-revoked"] as const)(
+    "retains cancellation authority after durable admission: %s",
+    async (cause) => {
+      const operation = createOperation();
+      const entry: SessionEntry = { sessionId: operation.sessionId, updatedAt: 1 };
+      const abort = new AbortController();
+      let revoked = false;
+      const failure = new Error("admission presentation failed");
+      const queued = createRun({
+        sourceTurnId: "durable-source",
+        abortSignal: abort.signal,
+        operatorAuthority: createAdmittedRunOperatorAuthority({
+          profileId: "operator",
+          scopes: ["operator.write"],
+          assertCurrent: () => {
+            if (revoked) {
+              throw new Error("authority revoked");
+            }
+          },
+        }),
+      });
+      state.admitReply.mockResolvedValue({ status: "owned", operation, sessionEntry: entry });
+      state.claim.isTracked.mockReturnValue(true);
+      const onQueuedFollowupSettled = vi.fn(async () => {});
+
+      const result = await admitFollowupTurn({
+        queued,
+        defaults: createDefaults({
+          sessionStore: { main: entry },
+          opts: {
+            onQueuedFollowupAdmitted: async () => {
+              if (cause === "user-abort") {
+                abort.abort();
+              } else if (cause === "operator-revoked") {
+                revoked = true;
+              }
+              throw failure;
+            },
+            onQueuedFollowupSettled,
+          },
+        }),
+      });
+
+      expect(result).toMatchObject({
+        kind: "skipped",
+        reason: cause === "failure" ? "recovery-scheduled" : "aborted",
+      });
+      expect(onQueuedFollowupSettled).toHaveBeenCalledOnce();
+      expect(operation.complete).toHaveBeenCalledOnce();
+      if (cause === "failure") {
+        expect(state.claim.deferToRecovery).toHaveBeenCalledWith(failure);
+        expect(state.claim.clear).not.toHaveBeenCalled();
+      } else {
+        expect(state.claim.clear).toHaveBeenCalledOnce();
+        expect(state.claim.deferToRecovery).not.toHaveBeenCalled();
+        expect(operation.fail).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it("reports each active-run deferral without adopting the queued source", async () => {
     state.admitReply.mockResolvedValue({ status: "skipped", reason: "active-run" });
     const onDeferredHeartbeat = vi.fn();

@@ -11,6 +11,7 @@ import { readPendingUserTurnTranscriptAdmission } from "../../sessions/user-turn
 import { sessionDeliveryChannel } from "../../utils/delivery-context.read.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
+import { createReplyAgentRestartRecoveryController } from "./agent-restart-recovery-controller.js";
 import { resolveRunAfterAutoFallbackPrimaryProbeRecheck } from "./agent-runner-auto-fallback.js";
 import { resolveAdmittedRunSessionFile } from "./agent-runner-core.js";
 import { buildPreflightCompactionFailureText } from "./agent-runner-failure-reply.js";
@@ -25,6 +26,7 @@ import {
   type CompactionNoticePhase,
 } from "./compaction-notice.js";
 import { settleQueuedFollowupPresentation } from "./followup-presentation.js";
+import { buildFollowupTemplateContext } from "./followup-template-context.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import { refreshActiveGoalContext } from "./inbound-meta.js";
 import {
@@ -69,16 +71,17 @@ export type AdmittedFollowupTurn = {
   sessionStore?: Record<string, SessionEntry>;
   sendPolicy: "allow" | "deny";
   preflightCompactionApplied: boolean;
+  restartRecoveryClaim?: ReturnType<typeof createReplyAgentRestartRecoveryController>;
   preflightFailurePayload?: ReplyPayload;
   preflightError?: unknown;
 };
 
 type FollowupAdmissionResult =
   | { kind: "admitted"; turn: AdmittedFollowupTurn }
-  | { kind: "deferred"; reason: "active-run" }
+  | { kind: "deferred"; reason: "active-run" | "source-overlap" }
   | {
       kind: "skipped";
-      reason: "aborted" | "lifecycle-invalidated";
+      reason: "aborted" | "lifecycle-invalidated" | "recovery-scheduled";
       operation?: ReplyOperation;
     };
 
@@ -153,18 +156,26 @@ export async function admitFollowupTurn(params: {
   }
   const operation = admission.operation;
   operation.retainFailureUntilComplete();
+  const requiresDurableSourceAdmission = Boolean(
+    params.queued.userTurnTranscriptRecorder || params.queued.sourceTurnId,
+  );
   let queuedFollowupAdmitted = false;
+  let restartRecoveryClaim:
+    | ReturnType<typeof createReplyAgentRestartRecoveryController>
+    | undefined;
   try {
-    await admitFollowupRunLifecycle(params.queued);
     if (isFollowupRunAborted(params.queued)) {
       return { kind: "skipped", reason: "aborted", operation };
     }
-
-    // Queue drains retain the latest live runner closure per key. Keep local dispatcher
-    // callbacks in that closure so retried non-routable items use the newest transport owner.
-    queuedFollowupAdmitted = true;
-    await params.defaults.opts?.onQueuedFollowupAdmitted?.();
-    assertOperatorCurrent();
+    if (!requiresDurableSourceAdmission) {
+      await admitFollowupRunLifecycle(params.queued);
+      if (isFollowupRunAborted(params.queued)) {
+        return { kind: "skipped", reason: "aborted", operation };
+      }
+      queuedFollowupAdmitted = true;
+      await params.defaults.opts?.onQueuedFollowupAdmitted?.();
+      assertOperatorCurrent();
+    }
     if (operation.sessionId !== run.sessionId) {
       run = {
         ...run,
@@ -279,17 +290,34 @@ export async function admitFollowupTurn(params: {
       params.defaults.opts?.isHeartbeat === true
         ? queued.currentInboundContext
         : refreshActiveGoalContext(queued.currentInboundContext, activeEntry);
+    const admittedQueued = { ...queued, currentInboundContext };
+    restartRecoveryClaim = createReplyAgentRestartRecoveryController({
+      activeSessionStore: sessionStore,
+      cfg: config,
+      followupRun: admittedQueued,
+      getActiveSessionEntry: () => session.current(),
+      opts: params.defaults.opts,
+      replyOperation: operation,
+      restartRecoverySourceTurnId: admittedQueued.sourceTurnId,
+      restartRecoveryConstituentSourceTurnIds: admittedQueued.constituentSourceTurnIds,
+      runtimePolicySessionKey: admittedQueued.run.runtimePolicySessionKey,
+      sessionCtx: buildFollowupTemplateContext({ queued: admittedQueued, session }),
+      sessionKey: replySessionKey,
+      setActiveSessionEntry: (entry) => session.adopt(entry),
+      storePath: params.defaults.storePath,
+    });
     // Preallocate the one lifecycle identity passed as opts.runId; canonical
     // execution owns registration and cleanup under this same id.
     const turn: AdmittedFollowupTurn = {
       runId: crypto.randomUUID(),
-      queued: { ...queued, currentInboundContext },
+      queued: admittedQueued,
       operation,
       config,
       session,
       sessionStore,
       sendPolicy: resolveTurnSendPolicy(activeEntry),
       preflightCompactionApplied: false,
+      restartRecoveryClaim,
     };
     const refreshTurnSessionState = (entry: SessionEntry | undefined) => {
       const refreshedInboundContext =
@@ -467,8 +495,59 @@ export async function admitFollowupTurn(params: {
         turn,
       );
     }
+    if (requiresDurableSourceAdmission) {
+      const userTurnAdmission = await restartRecoveryClaim.admitUserTurn(
+        turn.queued.userTurnTranscriptRecorder,
+      );
+      if (userTurnAdmission === "duplicate-source") {
+        await admitFollowupRunLifecycle(params.queued);
+        return { kind: "skipped", reason: "lifecycle-invalidated", operation };
+      }
+      if (userTurnAdmission === "source-overlap") {
+        operation.complete();
+        return { kind: "deferred", reason: "source-overlap" };
+      }
+      await admitFollowupRunLifecycle(params.queued);
+      if (isFollowupRunAborted(params.queued)) {
+        await restartRecoveryClaim.clear();
+        return { kind: "skipped", reason: "aborted", operation };
+      }
+      queuedFollowupAdmitted = true;
+      await params.defaults.opts?.onQueuedFollowupAdmitted?.();
+      assertOperatorCurrent();
+    }
     return { kind: "admitted", turn };
   } catch (error) {
+    if (restartRecoveryClaim?.isTracked()) {
+      let cancelled = isFollowupRunAborted(params.queued) || operation.abortSignal.aborted;
+      try {
+        assertOperatorCurrent();
+      } catch {
+        cancelled = true;
+      }
+      try {
+        if (cancelled) {
+          await restartRecoveryClaim.clear();
+        } else {
+          await restartRecoveryClaim.deferToRecovery(error);
+        }
+      } catch {
+        // A stale owner must not rewrite the successor's claim. Store failures
+        // retain custody; never turn revoked input into a new recovery attempt.
+      }
+      if (queuedFollowupAdmitted) {
+        await settleQueuedFollowupPresentation(params.defaults.opts?.onQueuedFollowupSettled);
+      }
+      if (!cancelled) {
+        operation.fail("run_failed", error);
+      }
+      operation.complete();
+      return {
+        kind: "skipped",
+        reason: cancelled ? "aborted" : "recovery-scheduled",
+        operation,
+      };
+    }
     if (queuedFollowupAdmitted) {
       await settleQueuedFollowupPresentation(params.defaults.opts?.onQueuedFollowupSettled);
     }

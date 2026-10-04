@@ -51,11 +51,14 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import type { TemplateContext } from "../templating.js";
-import { createReplyAgentRestartRecoveryController } from "./agent-runner-execute.js";
+import { createReplyAgentRestartRecoveryController } from "./agent-restart-recovery-controller.js";
 import { registerReasoningFallbackTests } from "./agent-runner.reasoning-fallback.test-support.js";
 import { registerReplyAdmissionCases } from "./agent-runner.runreplyagent.admission.cases.js";
 import { registerImmediateFailurePolicyCases } from "./agent-runner.runreplyagent.failure-policy.cases.js";
-import { createReplyAgentSessionFixture } from "./agent-runner.runreplyagent.fixture.test-support.js";
+import {
+  createReplyAgentSessionFixture,
+  makeSessionEntry,
+} from "./agent-runner.runreplyagent.fixture.test-support.js";
 import { registerRequiredReplyCompletionCases } from "./agent-runner.runreplyagent.required-reply.cases.js";
 import { registerSteeringReceiptCases } from "./agent-runner.runreplyagent.steering-receipts.cases.js";
 import { registerWaitingStatusCases } from "./agent-runner.runreplyagent.waiting-status.cases.js";
@@ -153,14 +156,6 @@ function requireStoredSessionEntry(storePath: string, sessionKey = "main"): Sess
     throw new Error(`expected stored session entry for ${sessionKey}`);
   }
   return entry;
-}
-
-function makeSessionEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {
-  return {
-    sessionId: "session",
-    updatedAt: Date.now(),
-    ...overrides,
-  };
 }
 
 async function makeSessionFixture<SessionKey extends string = "main">(
@@ -418,12 +413,13 @@ function createMinimalRun(params?: {
     originatingTo: sessionCtx.OriginatingTo,
     originatingChatId: sessionCtx.NativeChannelId ?? sessionCtx.ChatId,
     run: {
+      agentId: "main",
       sessionId: "session",
       sessionKey,
       messageProvider: "whatsapp",
       sessionFile: "/tmp/session.jsonl",
       workspaceDir: "/tmp",
-      config: {},
+      config: params?.storePath ? { session: { store: params.storePath } } : {},
       skillsSnapshot: {},
       provider: "anthropic",
       model: "claude",
@@ -4339,7 +4335,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
     });
   });
 
-  it.each([
+  it.for([
     {
       name: "releases a queued followup after the pending tool delivery idle bound",
       elapsedMs: 30_000,
@@ -4350,7 +4346,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
       elapsedMs: 29_999,
       owned: true,
     },
-  ])("$name", async ({ elapsedMs, owned }) => {
+  ])("$name", async ({ elapsedMs, owned }, { signal }) => {
     vi.useFakeTimers();
     const toolResultStarted = createDeferred();
     const toolResultReleased = createDeferred();
@@ -4378,6 +4374,9 @@ describe("runReplyAgent typing (heartbeat)", () => {
       await toolResultStarted.promise;
 
       await vi.advanceTimersByTimeAsync(elapsedMs);
+      if (!owned) {
+        await withinTest(followup, signal);
+      }
       expect(replyRunRegistry.get("main") !== undefined).toBe(owned);
 
       toolResultReleased.resolve();

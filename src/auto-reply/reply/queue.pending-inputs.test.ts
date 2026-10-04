@@ -1,8 +1,10 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import {
   appendTranscriptMessage,
   listSessionPendingInputs,
+  loadSessionEntry,
   loadTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
@@ -11,6 +13,7 @@ import {
   toDatabaseOptions,
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
 import { useTempSessionsFixture } from "../../config/sessions/test-helpers.js";
+import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import {
   createUserTurnTranscriptRecorder,
   type PersistedUserTurnMessage,
@@ -32,6 +35,9 @@ import {
 import { createQueueTestRun } from "./queue.test-helpers.js";
 import { clearFollowupQueue, getExistingFollowupQueue } from "./queue/state.js";
 import { createReplyOperation } from "./reply-run-registry.js";
+import { createReplyRestartRecoveryClaimController } from "./restart-recovery-claim.js";
+import { buildStalledTurnRecoveryRun } from "./stalled-turn-recovery.js";
+import { resolveStrandedReplyRecovery } from "./stranded-reply-recovery.js";
 import { createTypingController } from "./typing.js";
 
 vi.mock("./agent-runner-execution.js", () => ({ executeAgentTurn: vi.fn() }));
@@ -96,6 +102,106 @@ describe("followup queue durable input consumption", () => {
     }
     return await recorder.withPendingInput(() => recorder.persistApproved());
   };
+
+  it.each(["message-only", "stalled"] as const)(
+    "admits %s recovery while retiring an actual parent redelivery",
+    async (recoveryKind) => {
+      const { run: parent } = await createStagedRun("parent");
+      parent.sourceTurnId = "parent:user";
+      // Admission deduplicates this identity; both inherited carriers must be retired.
+      parent.constituentSourceTurnIds = ["parent:user"];
+      parent.originatingChannel = "telegram";
+      parent.originatingTo = "proof-chat";
+      parent.originatingAccountId = "proof-account";
+      parent.run.messageProvider = "telegram";
+      parent.toolsAllow = ["message", "read"];
+      parent.operatorAuthority = createAdmittedRunOperatorAuthority({
+        profileId: "operator",
+        scopes: ["operator.write"],
+        assertCurrent: () => {},
+      });
+      const makeClaim = (run: FollowupRun) =>
+        createReplyRestartRecoveryClaimController({
+          ...scope(),
+          lifecycleGeneration: getAgentEventLifecycleGeneration(),
+          getEntry: () => loadSessionEntry(scope()) ?? undefined,
+          getSessionId: () => sessionId,
+          isRestartAbort: () => false,
+          resolveDeliveryContext: () => ({
+            channel: "telegram",
+            to: "proof-chat",
+            accountId: "proof-account",
+          }),
+          resolveUserTurnTarget: () => ({ ...scope(), sessionEntry: undefined }),
+          setEntry: () => {},
+          sourceTurnId: run.sourceTurnId,
+          constituentSourceTurnIds: run.constituentSourceTurnIds,
+        });
+      const parentClaim = makeClaim(parent);
+      await expect(parentClaim.admitUserTurn(parent.userTurnTranscriptRecorder)).resolves.toBe(
+        "admitted",
+      );
+      await parentClaim.clear();
+      const before = loadSessionEntry(scope());
+      expect(before?.restartRecoveryTerminalRunIds).toContain("parent:user");
+      const transcriptBefore = await loadTranscriptEvents(scope());
+      const recovery =
+        recoveryKind === "stalled"
+          ? { kind: "retry" as const, run: buildStalledTurnRecoveryRun(parent) }
+          : resolveStrandedReplyRecovery({
+              base: parent,
+              payloads: [],
+              finalText:
+                "The task completed successfully and the result is ready. This substantive answer still needs delivery to the original conversation.",
+              sourceReplyDeliveryMode: "message_tool_only",
+              sendPolicyDenied: false,
+              successfulSourceReplyDelivery: false,
+              isHeartbeat: false,
+              isRoomEvent: false,
+            });
+      expect(recovery.kind).toBe("retry");
+      if (recovery.kind !== "retry") {
+        throw new Error("expected transcript-only recovery");
+      }
+      const retry = recovery.run;
+      expect(retry.operatorAuthority).toBe(parent.operatorAuthority);
+      expect(retry.originatingTo).toBe(parent.originatingTo);
+      expect(retry.originatingAccountId).toBe(parent.originatingAccountId);
+      if (recoveryKind === "stalled") {
+        expect(retry.toolsAllow).toBe(parent.toolsAllow);
+        expect(retry.run.suppressNextUserMessagePersistence).toBe(true);
+      } else {
+        expect(retry.toolsAllow).toEqual(["message"]);
+      }
+      const redeliverySettled = vi.fn();
+      const redelivery = {
+        ...parent,
+        turnAdoptionLifecycle: { onAdopted: async () => {}, onSettled: redeliverySettled },
+      };
+      const settings = { mode: "followup" as const, debounceMs: 0 };
+      expect(enqueueFollowupRun(sessionKey, retry, settings)).toBe(true);
+      expect(enqueueFollowupRun(sessionKey, redelivery, settings, "none")).toBe(true);
+      const admitted: FollowupRun[] = [];
+      const failures: unknown[] = [];
+      scheduleFollowupDrain(sessionKey, async (run) => {
+        try {
+          await admitFollowupRunLifecycle(run);
+          const claim = makeClaim(run);
+          expect(await claim.admitUserTurn(run.userTurnTranscriptRecorder)).toBe("admitted");
+          expect(claim.isTracked()).toBe(false);
+          admitted.push(run);
+        } catch (error) {
+          failures.push(error);
+        }
+      });
+      await vi.waitFor(() => expect(getExistingFollowupQueue(sessionKey)).toBeUndefined());
+      expect(failures).toEqual([]);
+      expect(admitted).toEqual([retry]);
+      expect(redeliverySettled).toHaveBeenCalledOnce();
+      expect(loadSessionEntry(scope())).toEqual(before);
+      expect(await loadTranscriptEvents(scope())).toEqual(transcriptBefore);
+    },
+  );
 
   it("preserves the committed prefix when a native batch falls back after a later source write fails", async () => {
     const first = await createStagedRun("first");

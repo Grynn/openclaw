@@ -21,6 +21,7 @@ import {
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import type { OriginatingChannelType } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
+import { createReplyAgentRestartRecoveryController } from "./agent-restart-recovery-controller.js";
 import {
   BLOCK_REPLY_SEND_TIMEOUT_MS,
   cleanupReplyAgentRun,
@@ -29,11 +30,7 @@ import {
   type RunReplyAgentParams,
   scheduleFollowupDrainAfterReplyOperationClear,
 } from "./agent-runner-core.js";
-import {
-  continueStalledReplyTurn,
-  createReplyAgentRestartRecoveryController,
-  executePreparedReplyAgentRun,
-} from "./agent-runner-execute.js";
+import { continueStalledReplyTurn, executePreparedReplyAgentRun } from "./agent-runner-execute.js";
 import { resolveReplySteeringAuthority } from "./agent-runner-fallback-authority.js";
 import {
   createShouldEmitToolOutput,
@@ -71,7 +68,7 @@ import {
 } from "./restart-recovery-claim.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
 import { resolveSourceReplyExpectation } from "./source-reply-delivery-mode.js";
-import { readChannelSourceTurnId } from "./source-turn-id.js";
+import { readChannelConstituentSourceTurnIds, readChannelSourceTurnId } from "./source-turn-id.js";
 import { createTypingSignaler } from "./typing-mode.js";
 export async function runReplyAgent(
   input: RunReplyAgentParams,
@@ -171,6 +168,7 @@ export async function runReplyAgent(
     followupRun.operatorAuthority?.assertCurrent();
   };
   const restartRecoverySourceTurnId = readChannelSourceTurnId(sessionCtx);
+  const restartRecoveryConstituentSourceTurnIds = readChannelConstituentSourceTurnIds(sessionCtx);
   let restartRecoveryEntry: typeof activeSessionEntry;
   try {
     restartRecoveryEntry =
@@ -616,6 +614,7 @@ export async function runReplyAgent(
     opts,
     replyOperation,
     restartRecoverySourceTurnId,
+    restartRecoveryConstituentSourceTurnIds,
     runtimePolicySessionKey,
     sessionCtx,
     sessionKey,

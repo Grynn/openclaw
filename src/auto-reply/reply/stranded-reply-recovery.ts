@@ -99,6 +99,10 @@ function buildStrandedReplyRetryFollowupRun(
     toolsAllow: isRuntimeToolAllowed("message", base.toolsAllow) ? ["message"] : [],
     transcriptPrompt: undefined,
     userTurnTranscriptRecorder: undefined,
+    // This trusted message-only continuation delivers the parent's answer; it is
+    // not a redelivered user input and must not adopt the parent's terminal claim.
+    sourceTurnId: undefined,
+    constituentSourceTurnIds: undefined,
     currentInboundContext: undefined,
     // Internally generated system turn: the client turn's lifecycle (gateway cancel
     // identity) completes with the parent run. turnAdoptionLifecycle is one-shot

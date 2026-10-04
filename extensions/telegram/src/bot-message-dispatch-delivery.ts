@@ -281,6 +281,16 @@ export async function sendPayload(
     }
     if (durable.status === "handled_visible") {
       turn.deliveryState.markDelivered();
+      if (effectivePayload.isError === true && options?.mirrorTranscript !== false) {
+        await createTelegramTranscriptMirror(turn)?.({
+          text: durable.delivery.content ?? effectivePayload.text,
+          mediaUrls: effectivePayload.mediaUrls?.length
+            ? effectivePayload.mediaUrls
+            : effectivePayload.mediaUrl
+              ? [effectivePayload.mediaUrl]
+              : undefined,
+        });
+      }
       return { ...durable.delivery, visibleReplySent: true };
     }
     if (durable.status === "handled_no_send") {

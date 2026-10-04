@@ -22,6 +22,8 @@ describe("buildStrandedReplyRetryFollowupRun lifecycle ownership", () => {
         onDeferred: onEnqueued,
       },
       admissionSessionId: "sess-rotated",
+      sourceTurnId: "parent-aggregate",
+      constituentSourceTurnIds: ["parent-source-1", "parent-source-2"],
       replyOperationRunStates: receipts,
     });
 
@@ -44,6 +46,10 @@ describe("buildStrandedReplyRetryFollowupRun lifecycle ownership", () => {
 
     expect(retry.turnAdoptionLifecycle).toBeUndefined();
     expect(retry.replyOperationRunStates).toBeUndefined();
+    expect(retry.sourceTurnId).toBeUndefined();
+    expect(retry.constituentSourceTurnIds).toBeUndefined();
+    expect(parent.sourceTurnId).toBe("parent-aggregate");
+    expect(parent.constituentSourceTurnIds).toEqual(["parent-source-1", "parent-source-2"]);
     expect(parent.replyOperationRunStates).toBe(receipts);
     expect(retry.strandedReplyRetry).toBe(true);
     expect(retry.summaryLine).toBe(STRANDED_REPLY_RETRY_MARKER);
