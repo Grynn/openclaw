@@ -36,6 +36,7 @@ import {
   makePrivateTextContext,
   telegramBotInfoForTest,
 } from "./bot.create-telegram-bot.test-support.js";
+import { registerTelegramSpoolRetryTests } from "./bot.spool-retry.test-support.js";
 import {
   createTelegramCallbackContext,
   runTelegramTestMiddlewareChain,
@@ -2454,28 +2455,10 @@ describe("createTelegramBot", () => {
     expect(onUpdateId.mock.calls.map((call) => call[0])).toEqual([501, 502]);
   });
 
-  it("rejects recorded dispatch failures during isolated spool replay", async () => {
-    const { onUpdateId, run: runMiddlewareChain } = await setupUpdateOffsetTracker({
-      lastUpdateId: 600,
-    });
-
-    const update = { update_id: 601 };
-    const dispatchError = new Error("dispatch exploded");
-    await expect(
-      withTelegramSpooledReplayUpdate(update, async () => {
-        await runMiddlewareChain({ update }, async () => {
-          recordTelegramMessageProcessingResult({
-            kind: "failed-retryable",
-            error: dispatchError,
-          });
-        });
-      }),
-    ).rejects.toMatchObject({
-      name: TelegramSpooledReplayProcessingError.name,
-      cause: dispatchError,
-    });
-    await flushTelegramTestMicrotasks();
-    expect(onUpdateId).not.toHaveBeenCalled();
+  registerTelegramSpoolRetryTests({
+    setupUpdateOffsetTracker,
+    withTelegramSpooledReplayUpdate,
+    flushTelegramTestMicrotasks,
   });
 
   it("retries a deferred spooled update after its queued turn is abandoned", async () => {

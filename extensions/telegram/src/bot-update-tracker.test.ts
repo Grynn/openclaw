@@ -237,11 +237,11 @@ describe("createTelegramUpdateTracker", () => {
       tracker.finishUpdate(begun.update, { completed: true });
     }
 
-    // Pending ids stay in the numeric set (never pruned) so re-begin is rejected
-    // as accepted-watermark, not re-dispatched.
+    // Pending ids stay in the numeric set (never pruned) and remain retryable
+    // without being dispatched twice.
     expect(tracker.beginUpdate(updateCtx(pendingId))).toEqual({
       accepted: false,
-      reason: "accepted-watermark",
+      reason: "in-flight",
     });
     const failedRetry = tracker.beginUpdate(updateCtx(failedId));
     if (!failedRetry.accepted) {

@@ -34,7 +34,7 @@ type BeginUpdateResult =
     }
   | {
       accepted: false;
-      reason: "accepted-watermark" | "semantic-dedupe";
+      reason: "accepted-watermark" | "semantic-dedupe" | "in-flight";
     };
 
 type FinishUpdateOptions = {
@@ -195,21 +195,33 @@ export function createTelegramUpdateTracker(options: TelegramUpdateTrackerOption
   const beginUpdate = (ctx: TelegramUpdateKeyContext): BeginUpdateResult => {
     const updateId = resolveTelegramUpdateId(ctx);
     const updateKey = buildTelegramUpdateKey(ctx);
+    const retryingFailedUpdateId = typeof updateId === "number" && failedUpdateIds.has(updateId);
     if (typeof updateId === "number") {
-      if (failedUpdateIds.has(updateId)) {
-        failedUpdateIds.delete(updateId);
-      } else if (initialUpdateId !== null && updateId <= initialUpdateId) {
+      if (pendingUpdateIds.has(updateId)) {
+        // A timed-out spool claim may retry before its original handler settles.
+        // It cannot adopt this update or dispatch it concurrently.
+        skip(`update:${updateId}`);
+        return { accepted: false, reason: "in-flight" };
+      } else if (
+        !retryingFailedUpdateId &&
+        initialUpdateId !== null &&
+        updateId <= initialUpdateId
+      ) {
         // Restored Bot API offset: suppress redelivery of already-persisted ids.
         skip(`update:${updateId}`);
         return { accepted: false, reason: "accepted-watermark" };
-      } else if (acceptedUpdateIds.has(updateId)) {
-        // Same process already accepted this exact id (completed or in-flight).
+      } else if (!retryingFailedUpdateId && acceptedUpdateIds.has(updateId)) {
+        // Same process already completed this exact id.
         skip(`update:${updateId}`);
         return { accepted: false, reason: "accepted-watermark" };
       }
     }
     if (updateKey) {
-      if (activeHandledUpdateKeys.has(updateKey) || recentUpdates.peek(updateKey)) {
+      if (activeHandledUpdateKeys.has(updateKey)) {
+        skip(updateKey);
+        return { accepted: false, reason: "in-flight" };
+      }
+      if (recentUpdates.peek(updateKey)) {
         skip(updateKey);
         return { accepted: false, reason: "semantic-dedupe" };
       }
@@ -217,6 +229,9 @@ export function createTelegramUpdateTracker(options: TelegramUpdateTrackerOption
     }
     let receiveContext: MessageReceiveContext<TelegramUpdateKeyContext> | undefined;
     if (typeof updateId === "number") {
+      if (retryingFailedUpdateId) {
+        failedUpdateIds.delete(updateId);
+      }
       pendingUpdateIds.add(updateId);
       acceptUpdateId(updateId);
       receiveContext = createMessageReceiveContext({

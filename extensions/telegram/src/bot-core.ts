@@ -150,6 +150,12 @@ export async function createTelegramBotCore(
   bot.use(async (ctx, next) => {
     const begin = updateTracker.beginUpdate(ctx);
     if (!begin.accepted) {
+      if (begin.reason === "in-flight" && isTelegramSpooledReplayUpdate(ctx.update)) {
+        recordTelegramMessageProcessingResult({
+          kind: "failed-retryable",
+          error: new Error("Telegram update is still in flight; retry after its handler settles"),
+        });
+      }
       return;
     }
     try {
