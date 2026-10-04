@@ -1,10 +1,45 @@
 /** Projects normalized wire metadata without owning transport or catalog lifetime. */
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import type { McpCatalogTool, McpToolCatalog } from "./agent-bundle-mcp-types.js";
+import type {
+  McpCatalogTool,
+  McpToolCatalog,
+  McpToolCatalogDiagnostic,
+} from "./agent-bundle-mcp-types.js";
 import { readMcpAppToolExtensions } from "./mcp-app-extension-metadata.js";
 import { normalizeMcpCodexToolAnnotations } from "./mcp-codex-tool-approval.js";
+import { isMcpServiceAvailabilityError, redactMcpDiagnosticError } from "./mcp-error.js";
 import { normalizeToolUiVisibility, sanitizeMcpMetadataText } from "./mcp-metadata.js";
+import { McpStartupBackoffError } from "./mcp-startup-backoff.js";
 import type { normalizeMcpToolCatalog } from "./mcp-tool-metadata.js";
+
+/** Projects a catalog failure without deciding transport retirement or logging policy. */
+export function projectBundleMcpCatalogFailure(params: {
+  error: unknown;
+  serverName: string;
+  safeServerName: string;
+  launchDescription: string;
+}): {
+  retryAfterMs: number | undefined;
+  reportFailure: boolean;
+  diagnostic: McpToolCatalogDiagnostic;
+} {
+  const { error } = params;
+  const backoff = error instanceof McpStartupBackoffError ? error : undefined;
+  const serviceUnavailable = backoff
+    ? backoff.serviceUnavailable
+    : isMcpServiceAvailabilityError(error);
+  return {
+    retryAfterMs: backoff?.retryAfterMs,
+    reportFailure: backoff?.reportFailure ?? true,
+    diagnostic: {
+      serverName: params.serverName,
+      safeServerName: params.safeServerName,
+      launchSummary: params.launchDescription,
+      message: redactMcpDiagnosticError(error),
+      ...(serviceUnavailable ? { errorCode: "mcp-service-unavailable" } : {}),
+    },
+  };
+}
 
 export function projectBundleMcpCatalogTools({
   normalizedTools,

@@ -653,6 +653,7 @@ export async function createBundleMcpToolRuntime(params: {
   excludeServerNames?: ReadonlySet<string>;
   reservedToolNames?: Iterable<string>;
   safeServerNamesByServer?: ReadonlyMap<string, string>;
+  logCatalogFailures?: boolean;
   createRuntime?: (params: {
     sessionId: string;
     workspaceDir: string;
@@ -660,6 +661,7 @@ export async function createBundleMcpToolRuntime(params: {
     cfg?: OpenClawConfig;
     excludeServerNames?: ReadonlySet<string>;
     safeServerNamesByServer?: ReadonlyMap<string, string>;
+    logCatalogFailures?: boolean;
   }) => SessionMcpRuntime;
 }): Promise<BundleMcpToolRuntime> {
   const signal = getSessionMcpRequestSignal();
@@ -675,6 +677,9 @@ export async function createBundleMcpToolRuntime(params: {
     ...(params.excludeServerNames ? { excludeServerNames: params.excludeServerNames } : {}),
     ...(params.safeServerNamesByServer
       ? { safeServerNamesByServer: params.safeServerNamesByServer }
+      : {}),
+    ...(params.logCatalogFailures !== undefined
+      ? { logCatalogFailures: params.logCatalogFailures }
       : {}),
   });
   // Private acquisition owns cancellation until the caller receives its disposal handle.

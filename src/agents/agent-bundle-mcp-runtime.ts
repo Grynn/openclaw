@@ -12,7 +12,10 @@ import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { withGuardedFetchRequestAuthority } from "../infra/net/fetch-request-authority.js";
 import { logWarn } from "../logger.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import { projectBundleMcpCatalogTools } from "./agent-bundle-mcp-catalog-projection.js";
+import {
+  projectBundleMcpCatalogFailure,
+  projectBundleMcpCatalogTools,
+} from "./agent-bundle-mcp-catalog-projection.js";
 import {
   createCombinedSessionMcpRuntime,
   mergeMcpToolCatalogs,
@@ -53,11 +56,7 @@ import { isMcpMethodNotFoundError, redactMcpDiagnosticError } from "./mcp-error.
 import { createMcpJsonSchemaValidator } from "./mcp-json-schema-validator.js";
 import { buildMcpClientCapabilities, summarizeServerCapabilities } from "./mcp-metadata.js";
 import { collectMcpPaginatedItems } from "./mcp-pagination.js";
-import {
-  connectWithMcpStartupBackoff,
-  McpStartupBackoffError,
-  resetMcpStartupBackoff,
-} from "./mcp-startup-backoff.js";
+import { connectWithMcpStartupBackoff, resetMcpStartupBackoff } from "./mcp-startup-backoff.js";
 import { isMcpToolAllowed, normalizeMcpToolFilter } from "./mcp-tool-filter.js";
 import { normalizeMcpToolCatalog, type McpToolCatalogMetadata } from "./mcp-tool-metadata.js";
 import { resolveMcpTransport } from "./mcp-transport.js";
@@ -815,26 +814,20 @@ function createServerMcpRuntime(
           ...projectedTools,
         };
       } catch (error) {
-        const message = redactMcpDiagnosticError(error);
-        startupRetryAfterMs =
-          error instanceof McpStartupBackoffError ? error.retryAfterMs : undefined;
-        if (
-          !retiredCatalog &&
-          (!(error instanceof McpStartupBackoffError) || error.reportFailure)
-        ) {
+        const { diagnostic, retryAfterMs, reportFailure } = projectBundleMcpCatalogFailure({
+          error,
+          serverName,
+          safeServerName,
+          launchDescription,
+        });
+        startupRetryAfterMs = retryAfterMs;
+        if (params.logCatalogFailures !== false && !retiredCatalog && reportFailure) {
           const action = reusedSession ? "refresh" : "start";
           logWarn(
-            `bundle-mcp: failed to ${action} server "${serverName}" (${launchDescription}): ${message}`,
+            `bundle-mcp: failed to ${action} server "${serverName}" (${launchDescription}): ${diagnostic.message}`,
           );
         }
-        const diags: McpToolCatalogDiagnostic[] = [
-          {
-            serverName,
-            safeServerName,
-            launchSummary: launchDescription,
-            message,
-          },
-        ];
+        const diags = [diagnostic];
         if (
           !session.connected ||
           isMcpHttpSessionExpired(session, error) ||
