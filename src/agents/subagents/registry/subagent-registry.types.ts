@@ -147,6 +147,8 @@ export type RequesterSettleWakeState = {
   progressOperationId?: string;
   /** Number of times this batch has been deferred due to unsettled descendants. */
   deferralCount?: number;
+  /** Legacy custom-release failure count; only used to bound restored retry timers. */
+  settleFailureCount?: number;
   lastError?: string | null;
   /** Cleanup wanted to retire this row; defer deletion until the outbox resolves. */
   retireAfterSettle?: boolean;

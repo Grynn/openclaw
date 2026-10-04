@@ -6,7 +6,10 @@ import {
 } from "../../../process/gateway-work-admission.js";
 import { AsyncWorkScope, getAsyncWorkSignal } from "../../../shared/async-work-scope.js";
 import { mockBlockedCompletionDeliveryOwner } from "./subagent-registry-lifecycle-completion.test-support.js";
-import { createLifecycleControllerFixture } from "./subagent-registry-lifecycle-controller.test-support.js";
+import {
+  createLifecycleControllerFixture,
+  createRunEntry,
+} from "./subagent-registry-lifecycle-controller.test-support.js";
 import type { SubagentLifecycleOptions } from "./subagent-registry-lifecycle.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { getSubagentRunRuntimeKey } from "./subagent-run-generation.js";
@@ -62,6 +65,69 @@ type WakeParams = Parameters<
 >[0];
 
 describe("requester settle retry lifetime", () => {
+  it.each(["legacy failure", "transport retry", "newer wake"] as const)(
+    "bounds only the captured legacy settlement timer: %s",
+    async (mode) => {
+      resetGatewayWorkAdmission();
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      vi.setSystemTime(10_000);
+      const entry = createRunEntry({
+        execution: { status: "terminal", endedAt: 4_000 },
+        expectsCompletionMessage: false,
+        requesterSettleWake: {
+          status: "pending",
+          attemptCount: 0,
+          rearmGeneration: 1,
+          nextAttemptAt: Date.now() + 3_600_000,
+          ...(mode === "transport retry" ? {} : { settleFailureCount: 3 }),
+        },
+      });
+      const runs = new Map([[entry.runId, entry]]);
+      const wake = vi.fn(async () => false);
+      const beforeWrite = vi.fn();
+      mockBlockedCompletionDeliveryOwner(completionDeliveryMocks);
+      const controller = createLifecycleControllerFixture(
+        { entry, runs, beforeWrite, maybeWakeRequesterAfterAllChildrenSettled: wake },
+        {
+          callGateway: vi.fn(),
+          cleanupBrowserSessionsForLifecycleEnd: vi.fn(),
+          ownersByEntry: completionDeliveryMocks.ownersByEntry,
+        },
+      );
+      try {
+        const current = runs.get(entry.runId)!;
+        const originalWake = structuredClone(current.requesterSettleWake);
+        controller.resumeRequesterSettleWake(entry.runId, current);
+        const firstTimer = controller.scheduledRequesterSettleWakeTimers.get(entry.runId);
+        expect(firstTimer?.deadline).toBe(
+          10_000 + (mode === "transport retry" ? 3_600_000 : 120_000),
+        );
+        await vi.advanceTimersByTimeAsync(60_000);
+        controller.resumeRequesterSettleWake(entry.runId, current);
+        expect(controller.scheduledRequesterSettleWakeTimers.get(entry.runId)).toBe(firstTimer);
+        expect(current.requesterSettleWake).toEqual(originalWake);
+        expect(beforeWrite).not.toHaveBeenCalled();
+        if (mode === "newer wake") {
+          current.requesterSettleWake!.rearmGeneration = 2;
+        }
+        await vi.advanceTimersByTimeAsync(mode === "transport retry" ? 3_540_000 : 60_000);
+        if (mode === "newer wake") {
+          expect(wake).not.toHaveBeenCalled();
+          expect(controller.scheduledRequesterSettleWakeTimers.get(entry.runId)?.deadline).toBe(
+            250_000,
+          );
+          await vi.advanceTimersByTimeAsync(120_000);
+        }
+        await vi.waitFor(() => expect(wake).toHaveBeenCalledOnce());
+        expect(beforeWrite).not.toHaveBeenCalled();
+      } finally {
+        controller.clearScheduledResumeTimers();
+        vi.useRealTimers();
+        resetGatewayWorkAdmission();
+      }
+    },
+  );
+
   it.each([
     { mode: "current entry", rejectCompletion: false },
     { mode: "replacement entry", rejectCompletion: false },

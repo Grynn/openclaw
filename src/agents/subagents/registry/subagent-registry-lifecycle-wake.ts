@@ -29,6 +29,7 @@ import {
   commitRequesterWake,
   getPendingWakeCommit,
   hasRequesterWakeOwner,
+  REQUESTER_SETTLE_WAKE_COMMIT_MAX_BACKOFF_MS,
   retryPendingWakeCommit,
   shouldReportRequesterSettleWakeFailure,
 } from "./subagent-registry-requester-wake-commit.js";
@@ -263,7 +264,8 @@ function scheduleRequesterSettleWakeRetry(
   stateContext: OpenClawStateWorkerContext,
 ): void {
   const pending = getPendingWakeCommit(context, entry);
-  const nextAttemptAt = pending?.nextAttemptAt ?? entry.requesterSettleWake?.nextAttemptAt;
+  const wake = entry.requesterSettleWake;
+  const nextAttemptAt = pending?.nextAttemptAt ?? wake?.nextAttemptAt;
   if (
     pending?.initialTransfer?.blocked ||
     nextAttemptAt === undefined ||
@@ -272,7 +274,15 @@ function scheduleRequesterSettleWakeRetry(
     return;
   }
   const rearmGeneration = pending?.generation ?? entry.requesterSettleWake?.rearmGeneration;
-  if (retainScheduledRequesterSettleWakeTimer(context, entry, nextAttemptAt)) {
+  // Old custom releases persisted hour-long settlement failures. Cap their timer
+  // without changing durable progress bound to the current publication owner.
+  const deadline =
+    !pending && (wake?.settleFailureCount ?? 0) > 0
+      ? Math.min(nextAttemptAt, Date.now() + REQUESTER_SETTLE_WAKE_COMMIT_MAX_BACKOFF_MS)
+      : nextAttemptAt;
+  const legacyFailureRetry =
+    wake && deadline < nextAttemptAt ? { wake: structuredClone(wake), deadline } : undefined;
+  if (retainScheduledRequesterSettleWakeTimer(context, entry, deadline)) {
     return;
   }
   const timer = setTimeout(
@@ -282,16 +292,16 @@ function scheduleRequesterSettleWakeRetry(
       }
       context.scheduledRequesterSettleWakeTimers.delete(runId);
       if (hasRetainedWake(context, entry)) {
-        scheduleRequesterSettleWake(context, runId, entry, stateContext);
+        scheduleRequesterSettleWake(context, runId, entry, stateContext, legacyFailureRetry);
       }
     },
-    Math.max(0, nextAttemptAt - Date.now()),
+    Math.max(0, deadline - Date.now()),
   );
   timer.unref?.();
   context.scheduledRequesterSettleWakeTimers.set(runId, {
     entry,
     timer,
-    deadline: nextAttemptAt,
+    deadline,
     rearmGeneration,
     stateContext,
   });
@@ -302,6 +312,10 @@ export function scheduleRequesterSettleWake(
   runId: string,
   observedEntry: SubagentRunRecord,
   originalContext?: OpenClawStateWorkerContext,
+  legacyFailureRetry?: {
+    wake: NonNullable<SubagentRunRecord["requesterSettleWake"]>;
+    deadline: number;
+  },
 ): void {
   const params = context.options;
   const publishedAtAdmission = params.runs.get(runId);
@@ -355,7 +369,13 @@ export function scheduleRequesterSettleWake(
     }
   };
   const now = Date.now();
-  const nextAttemptAt = pendingAtAdmission?.nextAttemptAt ?? admittedWake?.nextAttemptAt;
+  const legacyFailureRetryDue =
+    legacyFailureRetry &&
+    legacyFailureRetry.deadline <= now &&
+    isDeepStrictEqual(legacyFailureRetry.wake, admittedWake);
+  const nextAttemptAt =
+    pendingAtAdmission?.nextAttemptAt ??
+    (legacyFailureRetryDue ? undefined : admittedWake?.nextAttemptAt);
   const deadline = nextAttemptAt !== undefined && nextAttemptAt > now ? nextAttemptAt : now;
   if (retainScheduledRequesterSettleWakeTimer(context, entry, deadline)) {
     return;
