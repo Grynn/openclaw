@@ -7,6 +7,7 @@ import {
   validateSessionsPreviewParams,
   validateSessionsResolveParams,
   validateSessionsSearchParams,
+  type SessionsSearchQueryState,
 } from "../../../packages/gateway-protocol/src/index.js";
 import {
   resolveExistingAgentSessionStoreTargetsSync,
@@ -17,7 +18,10 @@ import {
   withSessionEntryReadOnlyScope,
 } from "../../config/sessions/session-accessor.js";
 import { SessionTranscriptColdError } from "../../config/sessions/session-cold-storage-state.js";
-import { searchSessionTranscripts } from "../../config/sessions/session-transcript-search.js";
+import {
+  searchSessionTranscripts,
+  searchSessionTranscriptsBatch,
+} from "../../config/sessions/session-transcript-search.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
   isIncognitoSessionKey,
@@ -62,15 +66,26 @@ import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 export const sessionReadHandlers: GatewayRequestHandlers = {
-  "sessions.search": async ({ params, respond, context, client, sessionMutationAuthorization }) => {
+  "sessions.search": async (args) => {
+    const { params, respond, context, client, sessionMutationAuthorization } = args;
     if (!assertValidParams(params, validateSessionsSearchParams, "sessions.search", respond)) {
       return;
     }
-    const query = params.query.trim();
-    if (!query) {
-      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "query must not be empty"));
+    const isBatch = params.queries !== undefined;
+    const queries = params.queries?.map((query) => query.trim()) ?? [params.query?.trim() ?? ""];
+    const emptyQueryIndex = queries.findIndex((query) => !query);
+    if (emptyQueryIndex >= 0) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          isBatch ? `queries[${emptyQueryIndex}] must not be empty` : "query must not be empty",
+        ),
+      );
       return;
     }
+    const query = queries[0]!;
     if (params.scope !== undefined) {
       try {
         await searchProjectedSessionTranscripts({
@@ -159,7 +174,11 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         ? [{ agentId, storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId }) }]
         : resolveExistingAgentSessionStoreTargetsSync(cfg, agentId);
       if (!configured && (searchTargets.length === 0 || scopedSessionKeys?.length === 0)) {
-        respond(true, { results: [] }, undefined);
+        respond(
+          true,
+          isBatch ? { states: queries.map(() => ({ results: [] })) } : { results: [] },
+          undefined,
+        );
         return undefined;
       }
       return searchTargets.flatMap((target) => {
@@ -204,7 +223,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         return [
           {
             ...target,
-            query,
+            ...(isBatch ? { queries } : { query }),
             // Over-fetch retired multi-store searches so deduplication can still fill the caller's
             // requested page when the same transcript was copied during a store migration.
             limit: configured ? params.limit : 25,
@@ -219,8 +238,12 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         if (!requests) {
           return;
         }
-        const targetResults = await Promise.all(
-          requests.map((request) => searchSessionTranscripts(request)),
+        const targetResultsByQuery = await Promise.all(
+          requests.map(async (request) =>
+            "queries" in request
+              ? searchSessionTranscriptsBatch({ ...request, queries: request.queries })
+              : [await searchSessionTranscripts(request)],
+          ),
         );
         // Current configuration, identity, and sharing must authorize the whole result page.
         const current = prepareSearch();
@@ -230,36 +253,49 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         if (JSON.stringify(current) !== JSON.stringify(requests)) {
           continue;
         }
-        const archivedTranscriptsExcluded = targetResults.reduce(
-          (count, result) => count + (result.archivedTranscriptsExcluded ?? 0),
-          0,
-        );
-        const limit = params.limit ?? 10;
-        const sortedHits = targetResults
-          .flatMap((result) => result.hits)
-          .toSorted(
-            (left, right) =>
-              right.score - left.score ||
-              right.timestamp - left.timestamp ||
-              left.messageId.localeCompare(right.messageId),
+        const states: SessionsSearchQueryState[] = queries.map((_query, index) => {
+          const targetResults = targetResultsByQuery.flatMap((results) =>
+            results[index] ? [results[index]!] : [],
           );
-        const seenHits = new Set<string>();
-        const hits = sortedHits.filter((hit) => {
-          const identity = `${hit.sessionKey}\u0000${hit.sessionId}\u0000${hit.messageId}`;
-          if (seenHits.has(identity)) {
-            return false;
+          const archivedTranscriptsExcluded = targetResults.reduce(
+            (count, result) => count + (result.archivedTranscriptsExcluded ?? 0),
+            0,
+          );
+          const limit = params.limit ?? 10;
+          const sortedHits = targetResults
+            .flatMap((result) => result.hits)
+            .toSorted(
+              (left, right) =>
+                right.score - left.score ||
+                right.timestamp - left.timestamp ||
+                left.messageId.localeCompare(right.messageId),
+            );
+          const seenHits = new Set<string>();
+          const hits = sortedHits.filter((hit) => {
+            const identity = `${hit.sessionKey}\u0000${hit.sessionId}\u0000${hit.messageId}`;
+            if (seenHits.has(identity)) {
+              return false;
+            }
+            seenHits.add(identity);
+            return true;
+          });
+          const state: SessionsSearchQueryState = { results: hits.slice(0, limit) };
+          if (archivedTranscriptsExcluded) {
+            state.archivedTranscriptsExcluded = archivedTranscriptsExcluded;
           }
-          seenHits.add(identity);
-          return true;
+          if (targetResults.some((result) => result.indexing)) {
+            state.indexing = true;
+          }
+          if (targetResults.some((result) => result.truncated) || hits.length > limit) {
+            state.truncated = true;
+          }
+          return state;
         });
-        respond(true, {
-          results: hits.slice(0, limit),
-          ...(archivedTranscriptsExcluded ? { archivedTranscriptsExcluded } : {}),
-          ...(targetResults.some((result) => result.indexing) ? { indexing: true } : {}),
-          ...(targetResults.some((result) => result.truncated) || hits.length > limit
-            ? { truncated: true }
-            : {}),
-        });
+        if (isBatch) {
+          respond(true, { states }, undefined);
+        } else {
+          respond(true, states[0]);
+        }
         return;
       }
       throw new Error("Session search scope changed while reading; retry the request");

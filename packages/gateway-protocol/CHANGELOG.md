@@ -8,7 +8,7 @@ authoring dates (2026), not package publication dates.
 
 ## Unreleased
 
-No changes outside the dated history below.
+- Accept a bounded `queries` batch on `sessions.search` alongside the existing single `query`, and add the matching ordered `states` batch result. Additive: a request carrying only `query` stays valid.
 
 ## Deferred to the next wire version
 

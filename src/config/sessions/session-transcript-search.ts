@@ -93,6 +93,17 @@ export async function searchSessionTranscripts(
   });
 }
 
+/** Executes bounded query batches through the current transcript-search worker owner. */
+export async function searchSessionTranscriptsBatch(
+  params: Omit<SessionTranscriptSearchParams, "query"> & { queries: string[] },
+): Promise<SessionTranscriptSearchResult[]> {
+  if (params.queries.length === 0 || params.queries.length > 8) {
+    throw new Error("queries must contain 1-8 items");
+  }
+  const { queries, ...scope } = params;
+  return await Promise.all(queries.map((query) => searchSessionTranscripts({ ...scope, query })));
+}
+
 function validateSearchQuery(input: string): string {
   const query = input.trim();
   if (!query) {

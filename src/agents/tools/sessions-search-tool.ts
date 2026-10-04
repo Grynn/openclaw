@@ -2,7 +2,12 @@ import { Type, type Static } from "typebox";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { jsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
 import { redactToolPayloadText } from "../../logging/redact.js";
-import { isIncognitoSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
+import {
+  agentSessionKeysMatchByRequestKey,
+  isIncognitoSessionKey,
+  parseAgentSessionKey,
+} from "../../routing/session-key.js";
+import { isRecordWithoutThrowing } from "../../shared/safe-record.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
 import { optionalPositiveIntegerSchema, requesterProfileSchema } from "../schema/typebox.js";
@@ -37,28 +42,53 @@ import {
   resolveSessionToolContext,
   resolveVisibleSessionReference,
 } from "./sessions-helpers.js";
+import {
+  capBatchSearchHits,
+  interleaveSearchChunks,
+  readSearchQueries,
+  SESSIONS_SEARCH_MAX_BATCH_QUERIES,
+  SESSIONS_SEARCH_MAX_QUERY_CHARS,
+  type BatchSearchQueryState,
+} from "./sessions-search-batch.js";
+import {
+  listVisibleSearchSessions,
+  type SearchSessionCandidate,
+} from "./sessions-search-discovery.js";
 
 const SESSIONS_SEARCH_DEFAULT_LIMIT = 10;
 const SESSIONS_SEARCH_MAX_LIMIT = 25;
 const SESSIONS_SEARCH_MAX_SESSION_KEYS = 200;
-// Bounds FTS token expansion on the synchronous gateway path while leaving ample query context.
-const SESSIONS_SEARCH_MAX_QUERY_CHARS = 4096;
+const SESSIONS_SEARCH_MAX_BATCH_LIST_CALLS = 16;
+const SESSIONS_SEARCH_MAX_BATCH_SEARCH_CALLS = 48;
 const SESSIONS_SEARCH_MAX_BYTES = 32 * 1024;
 const SESSIONS_SEARCH_SNIPPET_MAX_CHARS = 300;
 const SESSIONS_SEARCH_INDEXING_WARNING =
   "Transcript indexing is in progress; results may be incomplete. Retry sessions_search shortly.";
 
+function describeArchivedTranscriptsExcluded(count: number): string {
+  return `Search excludes ${count} archived transcripts. Restore a transcript to include it in search.`;
+}
+
 const SessionsSearchToolSchema = Type.Object({
   user: requesterProfileSchema(),
-  query: Type.String({
-    minLength: 1,
-    maxLength: SESSIONS_SEARCH_MAX_QUERY_CHARS,
-    description: "Required non-empty keywords to match in past user and assistant text.",
-  }),
+  query: Type.Optional(
+    Type.String({
+      minLength: 1,
+      maxLength: SESSIONS_SEARCH_MAX_QUERY_CHARS,
+      description: "One recall query; use query or queries, not both.",
+    }),
+  ),
+  queries: Type.Optional(
+    Type.Array(Type.String({ minLength: 1, maxLength: SESSIONS_SEARCH_MAX_QUERY_CHARS }), {
+      minItems: 1,
+      maxItems: SESSIONS_SEARCH_MAX_BATCH_QUERIES,
+      description: "One to eight distinct related recall queries; whitespace is trimmed.",
+    }),
+  ),
   sessionKey: Type.Optional(Type.String()),
   limit: optionalPositiveIntegerSchema({
     maximum: SESSIONS_SEARCH_MAX_LIMIT,
-    description: `Maximum search results: ${SESSIONS_SEARCH_MAX_LIMIT}. Defaults to ${SESSIONS_SEARCH_DEFAULT_LIMIT}.`,
+    description: "Maximum results per query; complete batch output is capped at 32 KiB.",
   }),
 });
 
@@ -71,6 +101,7 @@ const SessionsSearchHitSchema = Type.Object(
     score: Type.Number(),
     sessionId: Type.Optional(Type.String()),
     messageId: Type.Optional(Type.String()),
+    queryIndex: Type.Optional(Type.Integer({ minimum: 0 })),
   },
   { additionalProperties: false },
 );
@@ -80,6 +111,10 @@ const SessionsSearchOutputSchema = Type.Union([
     {
       results: Type.Array(SessionsSearchHitSchema),
       sessionLinkRule: Type.Optional(Type.String({ description: SESSION_LINK_RULE_DESCRIPTION })),
+      batch: Type.Optional(Type.Literal(true)),
+      queryCount: Type.Optional(Type.Integer({ minimum: 1 })),
+      indexingQueries: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }))),
+      truncatedQueries: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }))),
       indexing: Type.Optional(Type.Literal(true)),
       archivedTranscriptsExcluded: Type.Optional(Type.Integer({ minimum: 1 })),
       warning: Type.Optional(Type.String()),
@@ -96,14 +131,30 @@ const SessionsSearchOutputSchema = Type.Union([
   ),
 ]);
 
+type GatewaySearchQueryState = {
+  results: GatewaySearchHit[];
+  indexing?: boolean;
+  archivedTranscriptsExcluded?: number;
+  truncated?: boolean;
+};
+
+function isGatewaySearchQueryState(value: unknown): value is GatewaySearchQueryState {
+  if (!isRecordWithoutThrowing(value)) {
+    return false;
+  }
+  return (
+    Array.isArray(value.results) &&
+    (value.indexing === undefined || typeof value.indexing === "boolean") &&
+    (value.archivedTranscriptsExcluded === undefined ||
+      typeof value.archivedTranscriptsExcluded === "number") &&
+    (value.truncated === undefined || typeof value.truncated === "boolean")
+  );
+}
+
 type SanitizedSearchHit = Static<typeof SessionsSearchHitSchema>;
 type GatewaySearchHit = Partial<Record<keyof SanitizedSearchHit, unknown>>;
 
-type SearchSessionCandidate = {
-  key: string;
-  agentId?: string;
-  expectedSessionId?: string;
-};
+type SearchQueryState = BatchSearchQueryState<SanitizedSearchHit>;
 
 function sanitizeHit(params: {
   alias: string;
@@ -158,108 +209,6 @@ function capSearchHits(items: SanitizedSearchHit[]): {
   return { items: selected, truncated: false };
 }
 
-async function listVisibleSearchSessions(params: {
-  unscopedAgentId: string;
-  effectiveRequesterAgentId?: string;
-  effectiveRequesterKey: string;
-  gatewayCall: GatewayCaller;
-  rowGuard: Pick<ReturnType<typeof createSessionVisibilityRowChecker>, "check">;
-  restrictToSpawned: boolean;
-}): Promise<SearchSessionCandidate[]> {
-  const candidates = new Map<string, SearchSessionCandidate>();
-  const candidateId = (candidate: Pick<SearchSessionCandidate, "agentId" | "key">) =>
-    parseAgentSessionKey(candidate.key)
-      ? candidate.key
-      : `${candidate.agentId ?? ""}\0${candidate.key}`;
-  if (
-    params.rowGuard.check({
-      key: params.effectiveRequesterKey,
-      ...(params.effectiveRequesterAgentId ? { agentId: params.effectiveRequesterAgentId } : {}),
-    }).allowed
-  ) {
-    const requesterCandidate = {
-      key: params.effectiveRequesterKey,
-      ...(params.effectiveRequesterAgentId ? { agentId: params.effectiveRequesterAgentId } : {}),
-    } satisfies SearchSessionCandidate;
-    candidates.set(candidateId(requesterCandidate), requesterCandidate);
-  }
-  const listPages = async (agentId?: string) => {
-    for (const archived of [false, true]) {
-      let offset = 0;
-      while (true) {
-        const page = await params.gatewayCall<{
-          sessions?: Array<{
-            key?: unknown;
-            agentId?: unknown;
-            ownerSessionKey?: unknown;
-            parentSessionKey?: unknown;
-            spawnedBy?: unknown;
-          }>;
-          hasMore?: boolean;
-          nextOffset?: number;
-        }>({
-          method: "sessions.list",
-          params: {
-            limit: 200,
-            offset,
-            archived,
-            includeGlobal: !params.restrictToSpawned,
-            includeUnknown: false,
-            ...(agentId ? { agentId } : {}),
-            ...(params.restrictToSpawned ? { spawnedBy: params.effectiveRequesterKey } : {}),
-          },
-        });
-        for (const row of Array.isArray(page.sessions) ? page.sessions : []) {
-          if (typeof row.key !== "string" || (!agentId && parseAgentSessionKey(row.key) === null)) {
-            continue;
-          }
-          const visibilityRow = {
-            key: row.key,
-            ...(typeof row.agentId === "string"
-              ? { agentId: row.agentId }
-              : agentId
-                ? { agentId }
-                : {}),
-            ...(typeof row.ownerSessionKey === "string"
-              ? { ownerSessionKey: row.ownerSessionKey }
-              : {}),
-            ...(typeof row.parentSessionKey === "string"
-              ? { parentSessionKey: row.parentSessionKey }
-              : {}),
-            ...(typeof row.spawnedBy === "string"
-              ? { spawnedBy: row.spawnedBy }
-              : params.restrictToSpawned
-                ? { spawnedBy: params.effectiveRequesterKey }
-                : {}),
-          };
-          if (params.rowGuard.check(visibilityRow).allowed) {
-            const id = candidateId(visibilityRow);
-            candidates.set(id, {
-              key: visibilityRow.key,
-              agentId: visibilityRow.agentId,
-            });
-          }
-        }
-        if (
-          page.hasMore !== true ||
-          typeof page.nextOffset !== "number" ||
-          page.nextOffset <= offset
-        ) {
-          break;
-        }
-        offset = page.nextOffset;
-      }
-    }
-  };
-  await listPages();
-  if (!params.restrictToSpawned) {
-    // Unscoped keys cannot encode a foreign owner for a follow-up sessions_history call. Only the
-    // requester's agent-scoped listing may contribute them; combined rows supply scoped keys.
-    await listPages(params.unscopedAgentId);
-  }
-  return [...candidates.values()].toSorted((left, right) => left.key.localeCompare(right.key));
-}
-
 function compareSearchHits(left: SanitizedSearchHit, right: SanitizedSearchHit): number {
   return (
     right.score - left.score ||
@@ -269,28 +218,24 @@ function compareSearchHits(left: SanitizedSearchHit, right: SanitizedSearchHit):
   );
 }
 
-function createSearchHitMatcher(agentId: string, candidates: SearchSessionCandidate[]) {
-  const exactKeys = new Map<string, number>();
-  const aliases = new Map<string, number>();
-  for (const [ordinal, candidate] of candidates.entries()) {
-    if (!exactKeys.has(candidate.key)) {
-      exactKeys.set(candidate.key, ordinal);
+function matchSearchHitCandidate(params: {
+  agentId: string;
+  candidates: SearchSessionCandidate[];
+  hitKey: string;
+}): { candidate: SearchSessionCandidate; visibilityKey: string } | undefined {
+  for (const candidate of params.candidates) {
+    if (candidate.key === params.hitKey) {
+      return { candidate, visibilityKey: candidate.key };
     }
-    if (!parseAgentSessionKey(candidate.key)) {
-      const alias = candidate.key.trim();
-      if (alias && !aliases.has(alias)) {
-        aliases.set(alias, ordinal);
-      }
+    if (
+      !parseAgentSessionKey(candidate.key) &&
+      parseAgentSessionKey(params.hitKey)?.agentId === params.agentId &&
+      agentSessionKeysMatchByRequestKey(params.hitKey, candidate.key)
+    ) {
+      return { candidate, visibilityKey: candidate.key };
     }
   }
-  return (hitKey: string): SearchSessionCandidate | undefined => {
-    const exact = exactKeys.get(hitKey);
-    const parsed = parseAgentSessionKey(hitKey);
-    const alias = parsed?.agentId === agentId ? aliases.get(parsed.rest) : undefined;
-    // An authorized alias may precede an exact key in the original candidate order.
-    const ordinal = alias !== undefined && (exact === undefined || alias < exact) ? alias : exact;
-    return ordinal === undefined ? undefined : candidates[ordinal];
-  };
+  return undefined;
 }
 
 export function createSessionsSearchTool(opts?: {
@@ -310,19 +255,15 @@ export function createSessionsSearchTool(opts?: {
     description: describeSessionsSearchTool({ sessionLinkBase: opts?.sessionLinkBase }),
     parameters: SessionsSearchToolSchema,
     outputSchema: SessionsSearchOutputSchema,
-    execute: wrapGatewayPersonalToolExecution(async (_toolCallId, args) => {
+    execute: wrapGatewayPersonalToolExecution(async (_toolCallId, args, signal) => {
+      signal?.throwIfAborted();
+      const signalGatewayCall: GatewayCaller = async <T>(request: Parameters<GatewayCaller>[0]) =>
+        await gatewayCall<T>({
+          ...request,
+          ...(signal ? { signal } : {}),
+        });
       const params = args as Record<string, unknown>;
-      const query = readToolStringParam(params, "query") ?? "";
-      if (!query) {
-        throw new ToolInputError(
-          "query must not be empty; retry with non-empty keywords to match in past session text",
-        );
-      }
-      if (query.length > SESSIONS_SEARCH_MAX_QUERY_CHARS) {
-        throw new ToolInputError(
-          `query must not exceed ${SESSIONS_SEARCH_MAX_QUERY_CHARS} characters`,
-        );
-      }
+      const searchInput = readSearchQueries(params);
       const limit =
         readPositiveIntegerParam(params, "limit", {
           max: SESSIONS_SEARCH_MAX_LIMIT,
@@ -379,7 +320,7 @@ export function createSessionsSearchTool(opts?: {
           mainKey,
           requesterInternalKey: effectiveRequesterKey,
           restrictToSpawned,
-          callGateway: gatewayCall,
+          callGateway: signalGatewayCall,
         });
         if (!resolved.ok) {
           return jsonResult({ status: resolved.status, error: resolved.error });
@@ -391,7 +332,7 @@ export function createSessionsSearchTool(opts?: {
           requesterAgentId,
           restrictToSpawned,
           visibilitySessionKey: requestedSessionKey,
-          callGateway: gatewayCall,
+          callGateway: signalGatewayCall,
         });
         if (!visible.ok) {
           return jsonResult({ status: visible.status, error: visible.error });
@@ -417,13 +358,14 @@ export function createSessionsSearchTool(opts?: {
         visibility,
         a2aPolicy,
       });
+      let revalidateSessionTargetAccess: (() => Promise<void>) | undefined;
       if (sessionTarget) {
         const { agentId, key, requesterOwned } = sessionTarget;
         const authorizationTargetSessionKey =
           agentId !== requesterAgentId && !parseAgentSessionKey(key)
             ? `agent:${agentId}:${key}`
             : key;
-        const access = await resolveSessionToolAccess({
+        const accessParams = {
           action: "history",
           displayAction: "search",
           requesterAgentId,
@@ -436,8 +378,9 @@ export function createSessionsSearchTool(opts?: {
           requesterOwned,
           visibility,
           a2aPolicy,
-          callGateway: gatewayCall,
-        });
+          callGateway: signalGatewayCall,
+        } as const;
+        const access = await resolveSessionToolAccess(accessParams);
         if (!access.allowed) {
           return jsonResult({
             status: access.status,
@@ -449,37 +392,60 @@ export function createSessionsSearchTool(opts?: {
         }
         if (access.expectedSessionId) {
           sessionTarget.expectedSessionId = access.expectedSessionId;
+          const expectedSessionId = access.expectedSessionId;
+          revalidateSessionTargetAccess = async () => {
+            const current = await resolveSessionToolAccess(accessParams);
+            if (!current.allowed) {
+              throw new Error(
+                formatSessionToolAccessDenial(current, {
+                  action: "search",
+                  targetSessionKey: key,
+                }),
+              );
+            }
+            if (current.expectedSessionId && current.expectedSessionId !== expectedSessionId) {
+              throw new Error(`Session "${key}" access changed during search.`);
+            }
+          };
         }
       }
-      const searchSessions = (
-        sessionTarget
-          ? [
-              {
-                key: sessionTarget.key,
-                ...(sessionTarget.expectedSessionId
-                  ? { expectedSessionId: sessionTarget.expectedSessionId }
-                  : {}),
-                ...(!parseAgentSessionKey(sessionTarget.key)
-                  ? { agentId: sessionTarget.agentId }
-                  : {}),
-              },
-            ]
-          : await listVisibleSearchSessions({
-              unscopedAgentId: requesterAgentId,
-              effectiveRequesterAgentId: opts?.agentId,
-              effectiveRequesterKey,
-              gatewayCall,
-              rowGuard,
-              restrictToSpawned,
-            })
-      )
-        // Search excerpts are re-persisted in the caller transcript; incognito
-        // sessions therefore stay absent even when the caller could otherwise see them.
-        .filter((candidate) => !isIncognitoSessionKey(candidate.key));
-      const visibleHits: SanitizedSearchHit[] = [];
-      let indexing = false;
-      let archivedTranscriptsExcluded = 0;
-      let backendTruncated = false;
+      let discoveryTruncated = false;
+      let searchSessions: SearchSessionCandidate[];
+      if (sessionTarget) {
+        searchSessions = [
+          {
+            key: sessionTarget.key,
+            access: "authorized",
+            ...(sessionTarget.expectedSessionId
+              ? { expectedSessionId: sessionTarget.expectedSessionId }
+              : {}),
+            ...(!parseAgentSessionKey(sessionTarget.key) ? { agentId: sessionTarget.agentId } : {}),
+          },
+        ];
+      } else {
+        const discovery = await listVisibleSearchSessions({
+          unscopedAgentId: requesterAgentId,
+          effectiveRequesterAgentId: opts?.agentId,
+          effectiveRequesterKey,
+          gatewayCall: signalGatewayCall,
+          rowGuard,
+          restrictToSpawned,
+          preserveRoundRobin: searchInput.batch,
+          ...(searchInput.batch ? { maxGatewayCalls: SESSIONS_SEARCH_MAX_BATCH_LIST_CALLS } : {}),
+          ...(signal ? { signal } : {}),
+        });
+        searchSessions = discovery.candidates;
+        discoveryTruncated = discovery.truncated;
+      }
+      // Search excerpts are re-persisted in the caller transcript; incognito
+      // sessions therefore stay absent even when the caller could otherwise see them.
+      searchSessions = searchSessions.filter((candidate) => !isIncognitoSessionKey(candidate.key));
+      const queryStates = searchInput.queries.map((): SearchQueryState => ({
+        visibleHits: [],
+        indexing: false,
+        backendTruncated: discoveryTruncated,
+        archivedTranscriptsExcluded: 0,
+      }));
       const sessionsByAgent = new Map<string, SearchSessionCandidate[]>();
       for (const candidate of searchSessions) {
         const agentId = resolveSessionAgentId({
@@ -491,91 +457,162 @@ export function createSessionsSearchTool(opts?: {
         candidates.push(candidate);
         sessionsByAgent.set(agentId, candidates);
       }
-      // Visibility filtering precedes result/byte caps so hidden hit counts never affect output.
-      for (const [agentId, candidates] of [...sessionsByAgent].toSorted(([left], [right]) =>
+      const agentGroups = [...sessionsByAgent].toSorted(([left], [right]) =>
         left.localeCompare(right),
-      )) {
-        for (
-          let offset = 0;
-          offset < candidates.length;
-          offset += SESSIONS_SEARCH_MAX_SESSION_KEYS
-        ) {
-          const chunk = candidates.slice(offset, offset + SESSIONS_SEARCH_MAX_SESSION_KEYS);
-          const runSearch = () =>
-            gatewayCall<{
-              results?: GatewaySearchHit[];
-              indexing?: boolean;
-              archivedTranscriptsExcluded?: number;
-              truncated?: boolean;
-            }>({
-              method: "sessions.search",
-              params: {
-                agentId,
-                query,
-                limit: SESSIONS_SEARCH_MAX_LIMIT,
-                sessionKeys: chunk.map((candidate) => candidate.key),
-              },
-            });
-          const scopedCandidate = chunk.length === 1 ? chunk[0] : undefined;
-          const result = scopedCandidate?.expectedSessionId
-            ? await runWithScopedSessionAccess({
-                cfg,
-                agentId,
-                expectedSessionId: scopedCandidate.expectedSessionId,
-                targetSessionKey: scopedCandidate.key,
-                run: runSearch,
-              })
-            : await runSearch();
-          indexing ||= result.indexing === true;
-          archivedTranscriptsExcluded += result.archivedTranscriptsExcluded ?? 0;
-          backendTruncated ||= result.truncated === true;
-          const hits = Array.isArray(result.results) ? result.results : [];
-          if (hits.length === 0) {
-            continue;
+      );
+      const searchChunks = interleaveSearchChunks(agentGroups, SESSIONS_SEARCH_MAX_SESSION_KEYS);
+      const maxSearchChunks = searchInput.batch
+        ? Math.max(
+            1,
+            Math.floor(SESSIONS_SEARCH_MAX_BATCH_SEARCH_CALLS / searchInput.queries.length),
+          )
+        : Number.POSITIVE_INFINITY;
+      // Visibility filtering precedes result/byte caps so hidden hit counts never affect output.
+      for (let chunkIndex = 0; chunkIndex < searchChunks.length; chunkIndex += 1) {
+        if (chunkIndex >= maxSearchChunks) {
+          for (const state of queryStates) {
+            state.backendTruncated = true;
           }
-          const matchHit = createSearchHitMatcher(agentId, chunk);
-          for (const hit of hits) {
-            if (typeof hit.sessionKey !== "string") {
-              continue;
+          break;
+        }
+        const searchChunk = searchChunks[chunkIndex];
+        if (!searchChunk) {
+          continue;
+        }
+        const { groupKey: agentId, items: chunk } = searchChunk;
+        const scopedCandidate = chunk.length === 1 ? chunk[0] : undefined;
+        const runChunkSearches = async () => {
+          signal?.throwIfAborted();
+          if (scopedCandidate?.expectedSessionId && revalidateSessionTargetAccess) {
+            await revalidateSessionTargetAccess();
+            signal?.throwIfAborted();
+          }
+          const scopeParams = {
+            agentId,
+            limit: SESSIONS_SEARCH_MAX_LIMIT,
+            sessionKeys: chunk.map((candidate) => candidate.key),
+          };
+          const gatewayStates = searchInput.batch
+            ? (
+                await signalGatewayCall<{ states?: GatewaySearchQueryState[] }>({
+                  method: "sessions.search",
+                  params: { ...scopeParams, queries: searchInput.queries },
+                })
+              ).states
+            : [
+                await signalGatewayCall<GatewaySearchQueryState>({
+                  method: "sessions.search",
+                  params: { ...scopeParams, query: searchInput.queries[0] },
+                }),
+              ];
+          signal?.throwIfAborted();
+          if (scopedCandidate?.expectedSessionId && revalidateSessionTargetAccess) {
+            await revalidateSessionTargetAccess();
+            signal?.throwIfAborted();
+          }
+          if (
+            !Array.isArray(gatewayStates) ||
+            gatewayStates.length !== queryStates.length ||
+            !gatewayStates.every(isGatewaySearchQueryState)
+          ) {
+            throw new Error("sessions.search returned an invalid response");
+          }
+          for (let queryIndex = 0; queryIndex < gatewayStates.length; queryIndex += 1) {
+            const result = gatewayStates[queryIndex];
+            const queryState = queryStates[queryIndex];
+            if (!result || !queryState) {
+              throw new Error("sessions.search returned an invalid response");
             }
-            const candidate = matchHit(hit.sessionKey);
-            if (!candidate) {
-              continue;
-            }
-            const sanitized = sanitizeHit({
-              alias,
-              hit: { ...hit, sessionKey: candidate.key },
-              mainKey,
-            });
-            if (sanitized) {
-              visibleHits.push(sanitized);
+            queryState.indexing ||= result.indexing === true;
+            queryState.archivedTranscriptsExcluded += result.archivedTranscriptsExcluded ?? 0;
+            queryState.backendTruncated ||= result.truncated === true;
+            for (const hit of result.results) {
+              if (typeof hit.sessionKey !== "string") {
+                continue;
+              }
+              const candidateMatch = matchSearchHitCandidate({
+                agentId,
+                candidates: chunk,
+                hitKey: hit.sessionKey,
+              });
+              if (!candidateMatch) {
+                continue;
+              }
+              const { candidate, visibilityKey } = candidateMatch;
+              const access =
+                candidate.access === "authorized"
+                  ? { allowed: true as const }
+                  : rowGuard.check(candidate);
+              if (!access.allowed) {
+                continue;
+              }
+              const sanitized = sanitizeHit({
+                alias,
+                hit: { ...hit, sessionKey: visibilityKey },
+                mainKey,
+              });
+              if (sanitized) {
+                queryState.visibleHits.push(sanitized);
+              }
             }
           }
+        };
+        if (scopedCandidate?.expectedSessionId) {
+          await runWithScopedSessionAccess({
+            cfg,
+            agentId,
+            expectedSessionId: scopedCandidate.expectedSessionId,
+            ...(signal ? { signal } : {}),
+            targetSessionKey: scopedCandidate.key,
+            run: runChunkSearches,
+          });
+        } else {
+          await runChunkSearches();
         }
       }
-      visibleHits.sort(compareSearchHits);
-      const limited = visibleHits.slice(0, limit);
+      signal?.throwIfAborted();
+      for (const state of queryStates) {
+        state.visibleHits.sort(compareSearchHits);
+      }
+      const sessionLinkRule = opts?.sessionLinkBase
+        ? describeSessionLinkRule(opts.sessionLinkBase)
+        : undefined;
+      if (searchInput.batch) {
+        return jsonResult(
+          capBatchSearchHits({
+            states: queryStates,
+            limit,
+            maxBytes: SESSIONS_SEARCH_MAX_BYTES,
+            indexingWarning: SESSIONS_SEARCH_INDEXING_WARNING,
+            describeArchivedExclusion: describeArchivedTranscriptsExcluded,
+            sessionLinkRule,
+          }),
+        );
+      }
+      const state = queryStates[0];
+      if (!state) {
+        throw new ToolInputError("query must not be empty");
+      }
+      const limited = state.visibleHits.slice(0, limit);
       const capped = capSearchHits(limited);
       return jsonResult({
         results: capped.items,
-        ...(opts?.sessionLinkBase
-          ? { sessionLinkRule: describeSessionLinkRule(opts.sessionLinkBase) }
+        ...(sessionLinkRule ? { sessionLinkRule } : {}),
+        ...(state.indexing ? { indexing: true } : {}),
+        ...(state.archivedTranscriptsExcluded > 0
+          ? { archivedTranscriptsExcluded: state.archivedTranscriptsExcluded }
           : {}),
-        ...(indexing ? { indexing: true } : {}),
-        ...(archivedTranscriptsExcluded > 0 ? { archivedTranscriptsExcluded } : {}),
-        ...(indexing || archivedTranscriptsExcluded > 0
+        ...(state.indexing || state.archivedTranscriptsExcluded > 0
           ? {
               warning: [
-                ...(indexing ? [SESSIONS_SEARCH_INDEXING_WARNING] : []),
-                ...(archivedTranscriptsExcluded > 0
-                  ? [
-                      `Search excludes ${archivedTranscriptsExcluded} archived transcripts. Restore a transcript to include it in search.`,
-                    ]
+                ...(state.indexing ? [SESSIONS_SEARCH_INDEXING_WARNING] : []),
+                ...(state.archivedTranscriptsExcluded > 0
+                  ? [describeArchivedTranscriptsExcluded(state.archivedTranscriptsExcluded)]
                   : []),
               ].join(" "),
             }
           : {}),
-        ...(backendTruncated || visibleHits.length > limit || capped.truncated
+        ...(state.backendTruncated || state.visibleHits.length > limit || capped.truncated
           ? { truncated: true }
           : {}),
       });

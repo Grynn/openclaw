@@ -10,17 +10,20 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import type { GatewayRequestContext, RespondFn } from "./types.js";
 
 const fixedStorePath = path.resolve("/stores/shared/sessions.sqlite");
 const templateStorePath = path.resolve("/stores/{agentId}.json");
 
 const searchSessionTranscriptsMock = vi.fn();
+const searchSessionTranscriptsBatchMock = vi.fn();
 const listSessionEntriesMock = vi.fn();
 const resolveExistingAgentSessionStoreTargetsSyncMock = vi.fn();
 
 vi.mock("../../config/sessions/session-transcript-search.js", () => ({
   searchSessionTranscripts: (...args: unknown[]) => searchSessionTranscriptsMock(...args),
+  searchSessionTranscriptsBatch: (...args: unknown[]) => searchSessionTranscriptsBatchMock(...args),
 }));
 vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../config/sessions/session-accessor.js")>()),
@@ -47,8 +50,9 @@ async function callSearch(
   params: Record<string, unknown>,
   scopes?: string[],
   profileId?: string,
+  admission?: { assertCurrent: () => void; respond: ReturnType<typeof vi.fn> },
 ): Promise<ReturnType<typeof vi.fn>> {
-  const respond = vi.fn();
+  const respond = admission?.respond ?? vi.fn();
   await expectDefined(
     sessionReadHandlers["sessions.search"],
     'sessionReadHandlers["sessions.search"] test invariant',
@@ -73,6 +77,14 @@ async function callSearch(
         } as never)
       : null,
     isWebchatConnect: () => false,
+    ...(admission
+      ? {
+          sessionMutationAuthorization: {
+            assertCurrent: admission.assertCurrent,
+            assertTargetCurrent: admission.assertCurrent,
+          },
+        }
+      : {}),
   });
   return respond;
 }
@@ -128,7 +140,11 @@ describe("sessions.search gateway method", () => {
       },
     };
     searchSessionTranscriptsMock.mockReset();
-    searchSessionTranscriptsMock.mockReturnValue({ hits: [], indexing: false });
+    searchSessionTranscriptsMock.mockReturnValue({ hits: [], indexing: false, truncated: false });
+    searchSessionTranscriptsBatchMock.mockReset();
+    searchSessionTranscriptsBatchMock.mockImplementation(({ queries }: { queries: string[] }) =>
+      queries.map(() => ({ hits: [], indexing: false, truncated: false })),
+    );
     listSessionEntriesMock.mockReset();
     listSessionEntriesMock.mockReturnValue([]);
     resolveExistingAgentSessionStoreTargetsSyncMock.mockReset();
@@ -221,7 +237,125 @@ describe("sessions.search gateway method", () => {
       undefined,
       expect.objectContaining({ message: "query must not be empty" }),
     );
+    const emptyBatchQuery = await callSearch({ queries: ["valid", "   "] });
+    expect(emptyBatchQuery).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ message: "queries[1] must not be empty" }),
+    );
+    const mixedModes = await callSearch({ query: "needle", queries: ["other"] });
+    expect(mixedModes).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "INVALID_REQUEST" }),
+    );
+    const projectedBatch = await callSearch({ queries: ["needle"], scope: {} });
+    expect(projectedBatch).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "INVALID_REQUEST" }),
+    );
     expect(searchSessionTranscriptsMock).not.toHaveBeenCalled();
+    expect(searchSessionTranscriptsBatchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("rechecks live admission after search, batch=%s", async (batch) => {
+    let revoked = false;
+    const respond = vi.fn();
+    const admission = {
+      respond,
+      assertCurrent: () => {
+        if (revoked) {
+          throw new SessionMutationAuthorizationChangedError({
+            code: "INVALID_REQUEST",
+            message: "revoked",
+          });
+        }
+      },
+    };
+    const search = batch ? searchSessionTranscriptsBatchMock : searchSessionTranscriptsMock;
+    search.mockImplementationOnce(async () => {
+      revoked = true;
+      const result = { hits: [], indexing: false, truncated: false };
+      return batch ? [result] : result;
+    });
+    await expect(
+      callSearch(
+        batch ? { queries: ["needle"] } : { query: "needle" },
+        undefined,
+        undefined,
+        admission,
+      ),
+    ).rejects.toBeInstanceOf(SessionMutationAuthorizationChangedError);
+    expect(search).toHaveBeenCalledOnce();
+    expect(respond).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("reprepares changed store scope after search, batch=%s", async (batch) => {
+    const search = batch ? searchSessionTranscriptsBatchMock : searchSessionTranscriptsMock;
+    search.mockImplementationOnce(async () => {
+      cfg = { ...cfg, session: { store: templateStorePath } };
+      const result = {
+        hits: [{ sessionKey: "agent:main:main", messageId: "stale" }],
+        indexing: false,
+        truncated: false,
+      };
+      return batch ? [result] : result;
+    });
+    const respond = await callSearch(batch ? { queries: ["needle"] } : { query: "needle" });
+    expect(search).toHaveBeenCalledTimes(2);
+    expect(search).toHaveBeenLastCalledWith(
+      expect.objectContaining({ storePath: templateStorePath.replace("{agentId}", "main") }),
+    );
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      batch ? { states: [{ results: [] }] } : { results: [] },
+      ...(batch ? [undefined] : []),
+    );
+  });
+
+  it("searches an ordered native batch with one transcript setup per store", async () => {
+    const firstHit = {
+      sessionKey: "agent:work:main",
+      sessionId: "session-work",
+      messageId: "message-first",
+      role: "assistant",
+      timestamp: 123,
+      snippet: "deployment failure",
+      score: 2,
+    };
+    const secondHit = { ...firstHit, messageId: "message-second", snippet: "rollback plan" };
+    searchSessionTranscriptsBatchMock.mockReturnValueOnce([
+      { hits: [firstHit], indexing: true, truncated: false },
+      { hits: [secondHit], indexing: false, truncated: true },
+    ]);
+
+    const respond = await callSearch({
+      agentId: "work",
+      queries: [" deployment failure ", "rollback plan"],
+      sessionKeys: ["agent:work:main"],
+      limit: 5,
+    });
+
+    expect(searchSessionTranscriptsBatchMock).toHaveBeenCalledOnce();
+    expect(searchSessionTranscriptsBatchMock).toHaveBeenCalledWith({
+      agentId: "work",
+      queries: ["deployment failure", "rollback plan"],
+      limit: 5,
+      sessionKeys: ["agent:work:main"],
+      storePath: expect.any(String),
+    });
+    expect(searchSessionTranscriptsMock).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      {
+        states: [
+          { results: [firstHit], indexing: true },
+          { results: [secondHit], truncated: true },
+        ],
+      },
+      undefined,
+    );
   });
 
   it.each([undefined, fixedStorePath, templateStorePath])(
