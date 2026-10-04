@@ -507,6 +507,9 @@ function buildCoreDistEntries(): Record<string, string> {
     "plugin-metadata-readers.runtime": "src/plugins/plugin-metadata-readers.runtime.ts",
     "legacy-config-binding-repair.runtime":
       "src/commands/doctor/shared/legacy-config-binding-repair.runtime.ts",
+    // The cold snapshot bridge requires these adjacent filenames, not hashed chunks.
+    "current-plugin-metadata-snapshot": "src/plugins/current-plugin-metadata-snapshot.ts",
+    "plugin-metadata-snapshot": "src/plugins/plugin-metadata-snapshot.ts",
     "infra/warning-filter": "src/infra/warning-filter.ts",
     "telegram-ingress-worker.runtime": bundledPluginFile(
       "telegram",

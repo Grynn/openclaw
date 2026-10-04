@@ -378,9 +378,10 @@ console.log("relocated worker facade activation follows the shared config snapsh
         );
         expect(result.error, `${root}\n${result.stderr}`).toBeUndefined();
         expect(result.status, result.stderr).toBe(0);
-        expect(result.stdout.trim()).toBe(
+        expect(result.stdout.split("\n").filter(Boolean)).toEqual([
+          '{"fsSafeNativeMode":"off","protocol":1}',
           "relocated worker facade activation follows the shared config snapshot",
-        );
+        ]);
 
         const { collectPackageDistImportErrors } =
           await import("../../scripts/lib/package-dist-imports.mjs");
@@ -570,10 +571,17 @@ console.log("portable worker highlighting and shell analysis passed");
             TMPDIR: root,
             TMP: root,
             TEMP: root,
+            // The sealed worker owns its filesystem policy; a host override must
+            // not pull optional native code into a hash-bound bundle.
+            FS_SAFE_NATIVE_MODE: "require",
           },
         },
       );
-      expect(result.stdout.trim()).toBe("portable worker highlighting and shell analysis passed");
+      // The prewarm branch runs first and acknowledges the sealed fs-safe policy.
+      expect(result.stdout.split("\n").filter(Boolean)).toEqual([
+        '{"fsSafeNativeMode":"off","protocol":1}',
+        "portable worker highlighting and shell analysis passed",
+      ]);
       expect(result.stderr).toBe("");
     });
 
@@ -666,7 +674,10 @@ console.log("relocated worker WebSocket and transcription passed");
           { cwd: relocated },
         );
         expect(result.status, result.stderr).toBe(0);
-        expect(result.stdout.trim()).toBe("relocated worker WebSocket and transcription passed");
+        expect(result.stdout.split("\n").filter(Boolean)).toEqual([
+          '{"fsSafeNativeMode":"off","protocol":1}',
+          "relocated worker WebSocket and transcription passed",
+        ]);
         expect(requests).toEqual([
           { path: "/client", header: "client-header" },
           { path: "/transcription", header: "transcription-header" },

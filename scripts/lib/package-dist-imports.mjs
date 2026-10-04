@@ -2,6 +2,15 @@
 import path from "node:path";
 import { visitJavaScriptStatements } from "./javascript-statements.mjs";
 const JS_FILE_RE = /\.(?:cjs|js|mjs)$/u;
+const LAUNCHER_PATH = "openclaw.mjs";
+const LAUNCHER_ENTRY_ALTERNATES = ["dist/entry.js", "dist/entry.mjs"];
+const LAUNCHER_OPTIONAL_PROBES = new Set([
+  ...LAUNCHER_ENTRY_ALTERNATES,
+  "dist/warning-filter.js",
+  "dist/warning-filter.mjs",
+  "dist/cli/program/root-help.js",
+  "dist/cli/program/root-help.mjs",
+]);
 
 function normalizePackagePath(value) {
   return value.replace(/\\/gu, "/").replace(/^package\//u, "");
@@ -187,9 +196,12 @@ export function collectPackageDistImportErrors(params) {
       kind === "require"
         ? resolvesCommonJs(importedPath, fileSet, packageJsons)
         : fileSet.has(importedPath);
-    if (!found) {
+    if (!found && !(importerPath === LAUNCHER_PATH && LAUNCHER_OPTIONAL_PROBES.has(importedPath))) {
       errors.push(`${importerPath} imports missing ${importedPath}`);
     }
+  }
+  if (fileSet.has(LAUNCHER_PATH) && !LAUNCHER_ENTRY_ALTERNATES.some((file) => fileSet.has(file))) {
+    errors.push(`${LAUNCHER_PATH} has no CLI entry (${LAUNCHER_ENTRY_ALTERNATES.join(" or ")})`);
   }
 
   return errors;

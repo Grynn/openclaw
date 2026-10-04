@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, readFile, symlink, unlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -120,6 +120,55 @@ describe("resolveCurrentOpenClawCliInvocation", () => {
       command: "/usr/bin/node",
       args: ["--enable-source-maps", distEntry, ...commandArgs],
       cwd: repoRoot,
+    });
+  });
+
+  it("pins a symlinked package entry to its immutable dist target", async () => {
+    await withTempDir("openclaw-cli-invocation-symlink-", async (root) => {
+      const packageRoot = path.join(root, "releases", "immutable");
+      const currentRoot = path.join(root, "current");
+      const distEntry = path.join(packageRoot, "dist", "index.js");
+      await mkdir(path.dirname(distEntry), { recursive: true });
+      await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ name: "openclaw" }));
+      await writeFile(distEntry, "export {};\n");
+      await symlink(packageRoot, currentRoot, process.platform === "win32" ? "junction" : "dir");
+      expect(
+        resolveCurrentOpenClawCliInvocation(commandArgs, {
+          argv1: path.join(currentRoot, "dist", "index.js"),
+          cwd: root,
+          execArgv: ["--enable-source-maps"],
+          execPath: "/usr/bin/node",
+        }),
+      ).toEqual({
+        command: "/usr/bin/node",
+        args: ["--enable-source-maps", distEntry, ...commandArgs],
+        cwd: packageRoot,
+      });
+    });
+  });
+
+  it("keeps a symlinked launcher on the original release after current changes", async () => {
+    await withTempDir("openclaw-cli-invocation-wrapper-", async (root) => {
+      const releaseA = path.join(root, "releases", "a");
+      const releaseB = path.join(root, "releases", "b");
+      const current = path.join(root, "current");
+      for (const release of [releaseA, releaseB]) {
+        await mkdir(release, { recursive: true });
+        await writeFile(path.join(release, "package.json"), JSON.stringify({ name: "openclaw" }));
+        await writeFile(path.join(release, "openclaw.mjs"), path.basename(release));
+      }
+      await symlink(releaseA, current, process.platform === "win32" ? "junction" : "dir");
+      const invocation = resolveCurrentOpenClawCliInvocation(commandArgs, {
+        argv1: path.join(current, "openclaw.mjs"),
+        cwd: root,
+        execArgv: [],
+        execPath: "/usr/bin/node",
+      });
+      await unlink(current);
+      await symlink(releaseB, current, process.platform === "win32" ? "junction" : "dir");
+      expect(invocation.args).toEqual([path.join(releaseA, "openclaw.mjs"), ...commandArgs]);
+      expect(invocation.cwd).toBe(releaseA);
+      expect(await readFile(invocation.args[0]!, "utf8")).toBe("a");
     });
   });
 

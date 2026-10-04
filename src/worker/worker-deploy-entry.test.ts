@@ -14,6 +14,10 @@ vi.mock("node:module", async (importOriginal) => ({
 }));
 vi.mock("./worker-deploy-runtime.js", () => ({}));
 vi.mock("./worker.runtime.js", () => ({ loadWorkerTurnRuntime: runtime.loadWorkerTurnRuntime }));
+// Stands in for the sealed bootstrap that ./worker-deploy-runtime.js performs.
+vi.mock("@openclaw/fs-safe", () => ({
+  getFsSafeNativeConfig: () => ({ mode: "off" }),
+}));
 vi.mock("../process/output-drain.js", () => ({ drainProcessOutput: vi.fn() }));
 vi.mock("../infra/runtime-guard.js", () => ({
   assertSupportedRuntime: runtime.assertSupportedRuntime,
@@ -39,6 +43,20 @@ afterEach(() => {
   process.exitCode = originalExitCode;
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+});
+
+it("acknowledges a prewarm run with the sealed fs-safe policy and runs no worker", async () => {
+  process.argv = [process.execPath, "worker.mjs", "--internal-worker-prewarm"];
+  const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+
+  await expect(import("./worker-deploy-entry.js")).resolves.toBeDefined();
+
+  // The parent observes no other side effect, so this line is the whole protocol.
+  expect(stdout.mock.calls.map(([chunk]) => String(chunk))).toEqual([
+    '{"fsSafeNativeMode":"off","protocol":1}\n',
+  ]);
+  expect(process.exitCode).toBeUndefined();
+  expect(runtime.runWorkerProcess).not.toHaveBeenCalled();
 });
 
 it.each([

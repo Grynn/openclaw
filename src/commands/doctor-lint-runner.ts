@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { withSuppressedNotes } from "../../packages/terminal-core/src/note.js";
 import { resolveAgentWorkspaceDir, tryResolveDefaultAgentId } from "../agents/agent-scope.js";
 import { closeAuthProfileReadPool } from "../agents/auth-profiles/sqlite.js";
 import {
@@ -110,9 +111,14 @@ export async function runDoctorLintCliInProcess(
     reported = execution;
   };
   try {
-    const execution = await withArtifactPreservingStateReads(() =>
-      prepareDoctorLintExecution(runtime, opts, reportBeforeDisposal ? report : undefined),
-    );
+    const prepare = () =>
+      withArtifactPreservingStateReads(() =>
+        prepareDoctorLintExecution(runtime, opts, reportBeforeDisposal ? report : undefined),
+      );
+    const execution =
+      detectDoctorLintOutputMode(opts) === "json"
+        ? await withSuppressedNotes(prepare)
+        : await prepare();
     if (!reported) {
       report(execution);
     } else {
