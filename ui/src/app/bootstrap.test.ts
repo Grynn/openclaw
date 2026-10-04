@@ -20,6 +20,23 @@ import { loadSettings, saveSettings } from "./settings.ts";
 // under a loaded CI runner that budget expires before startup reaches the step.
 const STARTUP_STEP_WAIT = { timeout: 15_000 };
 
+type BootstrapRuntime = ReturnType<typeof bootstrapApplication>;
+
+// Router start now waits for an authenticated gateway client, so a startup test must
+// replay a connected snapshot or the router step never runs.
+function replayConnectedGatewayForStartup(runtime: BootstrapRuntime): void {
+  const gateway = runtime.context.gateway;
+  const subscribe = gateway.subscribe.bind(gateway);
+  const client = {} as GatewayBrowserClient;
+  gateway.subscribe = (listener) => {
+    const unsubscribe = subscribe(listener);
+    queueMicrotask(() => {
+      listener({ ...gateway.snapshot, phase: "connected", client });
+    });
+    return unsubscribe;
+  };
+}
+
 describe("bootstrapApplication", () => {
   let previousSettings: ReturnType<typeof loadSettings>;
   let previousUrl: string;
@@ -420,6 +437,7 @@ describe("bootstrapApplication", () => {
     document.documentElement.setAttribute(CONTROL_UI_BASE_PATH_ATTRIBUTE, "");
     window.history.replaceState({}, "", "/__openclaw__/new");
     const runtime = bootstrapApplication();
+    replayConnectedGatewayForStartup(runtime);
 
     try {
       await runtime.start();
@@ -558,6 +576,52 @@ describe("bootstrapApplication", () => {
     }
   });
 
+  it("starts a retained deep link only after the first authenticated connection", async () => {
+    window.history.replaceState({}, "", "/settings/about?keep=yes#section=commit");
+    const runtime = bootstrapApplication();
+    const routerStart = vi.spyOn(runtime.router, "start");
+    type GatewayListener = Parameters<typeof runtime.context.gateway.subscribe>[0];
+    const gatewayListeners = new Set<GatewayListener>();
+    runtime.context.gateway.subscribe = (listener) => {
+      gatewayListeners.add(listener);
+      return () => gatewayListeners.delete(listener);
+    };
+
+    try {
+      const start = runtime.start();
+      await vi.waitFor(() => expect(gatewayListeners.size).toBeGreaterThan(0), STARTUP_STEP_WAIT);
+      expect(routerStart).not.toHaveBeenCalled();
+      expect(`${window.location.pathname}${window.location.search}${window.location.hash}`).toBe(
+        "/settings/about?keep=yes#section=commit",
+      );
+
+      for (const listener of gatewayListeners) {
+        listener({ ...runtime.context.gateway.snapshot, phase: "stopped" });
+      }
+      await Promise.resolve();
+      expect(routerStart).not.toHaveBeenCalled();
+
+      const client = {} as GatewayBrowserClient;
+      for (const listener of gatewayListeners) {
+        listener({ ...runtime.context.gateway.snapshot, phase: "connected", client });
+      }
+      await start;
+
+      expect(routerStart).toHaveBeenCalledOnce();
+      expect(runtime.router.getState().matches[0]?.routeId).toBe("about");
+      expect(`${window.location.pathname}${window.location.search}${window.location.hash}`).toBe(
+        "/settings/about?keep=yes#section=commit",
+      );
+      for (const listener of gatewayListeners) {
+        listener({ ...runtime.context.gateway.snapshot, phase: "connected", client });
+      }
+      await Promise.resolve();
+      expect(routerStart).toHaveBeenCalledOnce();
+    } finally {
+      runtime.stop();
+    }
+  });
+
   it("keeps the latest navigation requested before router start", async () => {
     saveSettings({
       ...previousSettings,
@@ -566,6 +630,7 @@ describe("bootstrapApplication", () => {
     });
     window.history.replaceState({}, "", "/chat");
     const runtime = bootstrapApplication();
+    replayConnectedGatewayForStartup(runtime);
     const pushState = vi.spyOn(window.history, "pushState");
 
     try {
@@ -594,6 +659,7 @@ describe("bootstrapApplication", () => {
     });
     window.history.replaceState({}, "", "/settings/appearance");
     const runtime = bootstrapApplication();
+    replayConnectedGatewayForStartup(runtime);
     const pushState = vi.spyOn(window.history, "pushState");
     const replaceState = vi.spyOn(window.history, "replaceState");
 
@@ -743,6 +809,7 @@ describe("bootstrapApplication", () => {
     });
     window.history.replaceState({}, "", "/settings/appearance");
     const runtime = bootstrapApplication();
+    replayConnectedGatewayForStartup(runtime);
     const routerStarted = createDeferred();
     const routerStart = vi.spyOn(runtime.router, "start").mockReturnValue(routerStarted.promise);
     const routerStop = vi.spyOn(runtime.router, "stop");
@@ -769,6 +836,7 @@ describe("bootstrapApplication", () => {
     });
     window.history.replaceState({}, "", "/settings/about");
     const runtime = bootstrapApplication();
+    replayConnectedGatewayForStartup(runtime);
     const routerStart = vi
       .spyOn(runtime.router, "start")
       .mockRejectedValue({ type: "notFound", data: { routeId: "chat" } });

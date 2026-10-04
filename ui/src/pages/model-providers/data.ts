@@ -78,6 +78,8 @@ export type ModelProviderCard = {
   hasConfigApiKey: boolean;
   modelCount: number;
   availableModelCount: number;
+  /** Non-default runtimes that own at least one usable configured model route. */
+  availableAgentRuntimeIds: string[];
   catalogStatus?: ModelCatalogProviderOutcome["status"];
   checkingModels?: boolean;
   /** Live provider-reported usage (quota windows, billing, cost history). */
@@ -135,6 +137,7 @@ function ensureDraft(drafts: CardDraft[], id: string, displayName: string): Card
       hasConfigApiKey: false,
       modelCount: 0,
       availableModelCount: 0,
+      availableAgentRuntimeIds: [],
     },
     hasModelAuth: false,
   };
@@ -248,6 +251,15 @@ export function buildModelProviderCards(input: ModelProviderCardsInput): ModelPr
     draft.card.modelCount += 1;
     if (entry.available === true) {
       draft.card.availableModelCount += 1;
+      const runtimeId = normalizeProviderId(entry.agentRuntime?.id ?? "");
+      if (
+        runtimeId &&
+        runtimeId !== "openclaw" &&
+        runtimeId !== "auto" &&
+        runtimeId !== "default"
+      ) {
+        addProviderId(draft.card.availableAgentRuntimeIds, runtimeId);
+      }
     }
   }
 

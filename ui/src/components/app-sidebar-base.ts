@@ -38,6 +38,7 @@ export abstract class AppSidebarBase extends OpenClawLightDomContentsElement {
   @property({ attribute: false }) enabledRouteIds?: readonly NavigationRouteId[];
   @property({ attribute: false }) connected = false;
   @property({ attribute: false }) connectionStatus: GatewayStatus | null = null;
+  @property({ attribute: false }) sessionCatalogSurfaceVisible = true;
   @property({ attribute: false }) lastError: string | null = null;
   @property({ attribute: false }) storedOutboxes: SidebarOutboxSummary | undefined;
   @property({ attribute: false }) terminalAvailable = false;

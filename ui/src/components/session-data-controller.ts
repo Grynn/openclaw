@@ -35,7 +35,9 @@ import {
   invalidateSessionCatalogs as invalidateSessionCatalogData,
   loadMoreSessionCatalog as loadMoreSessionCatalogData,
   refreshSessionCatalogs as refreshSessionCatalogData,
+  resetSessionCatalogConnection,
   resolveSessionCatalogAgentId,
+  retireSessionCatalogData,
   scheduleSessionCatalogRefresh,
   type SessionCatalogDataOwner,
   type SessionDataControllerHost,
@@ -112,6 +114,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
   private gatewayClient: GatewayBrowserClient | null = null;
   private gatewayConnected = false;
   private gatewayAvailable = false;
+  private sessionCatalogSurfaceWasVisible = true;
   // Bind mutation completions to one epoch so stale failures cannot cross reconnects.
   private sessionMutationEpoch = 0;
   // Owns the abort signal handed to every epoch-scoped destructive confirm dialog.
@@ -180,6 +183,10 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     return this.host.connected;
   }
 
+  get sessionCatalogSurfaceVisible(): boolean {
+    return this.host.sessionCatalogSurfaceVisible;
+  }
+
   expandedAgentId = (): string => this.host.expandedAgentId();
 
   sessionCatalogIdsWithoutVisibleRows = (): readonly string[] =>
@@ -210,7 +217,17 @@ export class SessionDataController implements ReactiveController, SessionCatalog
       this.synchronizeOwnerSessionCounts();
       this.lineage.synchronize();
       this.scroll.synchronize(this.host);
+      const refreshOnReveal =
+        this.host.sessionCatalogSurfaceVisible &&
+        !this.sessionCatalogSurfaceWasVisible &&
+        this.sessionCatalogLive.hasRequested;
+      this.sessionCatalogSurfaceWasVisible = this.host.sessionCatalogSurfaceVisible;
       updateSessionCatalogData(this);
+      if (refreshOnReveal) {
+        // Reopening navigation needs one current view, owned by the existing
+        // event coordinator; ordinary renders must not postpone its deadline.
+        scheduleSessionCatalogRefresh(this);
+      }
     }
   }
 
@@ -226,7 +243,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     this.gatewayClient = null;
     this.gatewayConnected = false;
     this.gatewayAvailable = false;
-    this.retireSessionCatalogData();
+    retireSessionCatalogData(this);
     this.scroll.dispose();
     this.lineage.disconnect();
     this.subscriptions.hostDisconnected();
@@ -245,24 +262,6 @@ export class SessionDataController implements ReactiveController, SessionCatalog
       this.context?.gateway.snapshot.selfUser?.id ?? null,
       this.context?.connectionBootstrap,
     );
-  }
-
-  retireSessionCatalogData(): void {
-    this.sessionScopeGeneration += 1;
-    this.pendingCatalogArchives = new Set();
-    this.sessionsLoading = false;
-    this.loadingMoreSessionCatalogIds = new Set();
-    this.sessionCatalogLive.clear();
-  }
-
-  resetSessionCatalogConnection(): void {
-    this.retireSessionCatalogData();
-    this.sessionCatalogRevision += 1;
-    this.sessionCatalogs = [];
-    this.sessionCatalogRefreshStatus = createPanelRefreshStatus();
-    this.sessionCatalogPageDepths.clear();
-    this.sessionCatalogRevisions.clear();
-    this.requestSessionDataUpdate();
   }
 
   synchronizeSessionScope(): void {
@@ -293,7 +292,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
 
     this.sessionScopeAgentId = nextAgentId;
     this.sessionCatalogAgentId = nextCatalogAgentId;
-    this.retireSessionCatalogData();
+    retireSessionCatalogData(this);
     this.sessionCatalogRevision += 1;
     this.sessionCatalogRefreshStatus = createPanelRefreshStatus();
 
@@ -470,9 +469,9 @@ export class SessionDataController implements ReactiveController, SessionCatalog
       if (sessionSourceChanged) {
         this.clearSessionCache();
       }
-      this.resetSessionCatalogConnection();
+      resetSessionCatalogConnection(this);
     } else {
-      this.retireSessionCatalogData();
+      retireSessionCatalogData(this);
     }
     if (connected && this.sessionsSource && hasSidebarListFilter(this.host)) {
       void this.scheduleSidebarSessions();

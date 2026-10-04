@@ -61,6 +61,7 @@ import type { ApplicationNavigationOptions, ApplicationContext } from "./context
 import { createScopeUpgradeCapability } from "./device-scope-upgrade.ts";
 import { startGatewayPageActivation } from "./gateway-page-activation.ts";
 import { startGatewayPresenceActivity } from "./gateway-presence-activity.ts";
+import { waitForGatewayClient } from "./gateway-readiness.ts";
 import { createApplicationGateway } from "./gateway-store.ts";
 import { startLinkReaderRouting } from "./link-reader-routing.ts";
 import { startMcpAppRouting } from "./mcp-app-link-routing.ts";
@@ -621,6 +622,18 @@ export function bootstrapApplication(): ApplicationRuntime {
         if (initialFirstRunDecision) {
           steps.push(() => initialFirstRunDecision);
         }
+        // Route loaders own the authenticated application graph. Keep every route
+        // dormant through a rejected first attempt; reconnects retain the one start.
+        steps.push(() =>
+          waitForGatewayClient(gateway, startupLifecycle.signal).then(
+            () => undefined,
+            (error: unknown) => {
+              if (!startupLifecycle.signal.aborted) {
+                throw error;
+              }
+            },
+          ),
+        );
         steps.push(async () => {
           const pendingNavigation = pendingRouterStartNavigation;
           pendingRouterStartNavigation = null;

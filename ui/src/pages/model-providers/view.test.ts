@@ -335,7 +335,7 @@ describe("renderModelProviders", () => {
     expect(
       provider?.querySelector<HTMLInputElement>(".model-providers__inline-form input")?.disabled,
     ).toBe(true);
-    expect(button(provider!, "Set API key")?.disabled).toBe(true);
+    expect(button(provider!, "Replace key")?.disabled).toBe(true);
     expect(button(provider!, "Remove key")?.disabled).toBe(true);
     expect(
       provider?.querySelector<HTMLButtonElement>(".model-providers__profile-logout")?.disabled,
@@ -562,6 +562,58 @@ describe("renderModelProviders", () => {
     },
   );
 
+  it.each(["missing", "expired", "expiring"] as const)(
+    "keeps available runtime credentials ready when direct auth is %s",
+    (kind) => {
+      const container = mount(
+        props({
+          cards: [
+            card({
+              id: "anthropic",
+              displayName: "Claude",
+              apiKey: undefined,
+              credentialProviderIds: [],
+              auth: { kind },
+              availableAgentRuntimeIds: ["claude-cli"],
+              catalogStatus: "ready",
+            }),
+          ],
+        }),
+      );
+
+      const provider = container.querySelector('[data-provider-id="anthropic"]');
+      expect(text(provider)).toContain("Managed by Claude CLI");
+      expect(text(provider)).toContain("Ready");
+      expect(text(provider)).not.toContain("Not configured");
+      expect(text(provider)).not.toContain("Not signed in");
+      expect(text(provider?.querySelector(".settings-row__control") ?? null)).toBe("Ready");
+      expect(button(provider!, "Set direct API key")).toBeDefined();
+      expect(button(provider!, "Test connection")).toBeUndefined();
+    },
+  );
+
+  it.each([
+    ["missing", "Not signed in"],
+    ["expired", "Expired"],
+    ["expiring", "Expiring"],
+  ] as const)("keeps a %s credential warning without a usable runtime route", (kind, label) => {
+    const container = mount(
+      props({
+        cards: [
+          card({
+            auth: { kind },
+            modelCount: 1,
+            availableModelCount: 0,
+          }),
+        ],
+      }),
+    );
+
+    expect(
+      text(container.querySelector('[data-provider-id="openai"] .settings-row__control')),
+    ).toBe(label);
+  });
+
   it("does not report an unverified API key as ready", () => {
     const container = mount(
       props({
@@ -595,7 +647,7 @@ describe("renderModelProviders", () => {
     expect(text(provider)).toContain("Global session spend · 30d");
   });
 
-  it("does not invent config key provenance when auth status is unavailable", () => {
+  it("keeps a known configured key visible when auth status is unavailable", () => {
     const container = mount(
       props({
         cards: [card({ apiKey: undefined, hasConfigApiKey: true })],
@@ -603,8 +655,27 @@ describe("renderModelProviders", () => {
     );
 
     const provider = container.querySelector('[data-provider-id="openai"]');
-    expect(text(provider)).not.toContain("API key set in config");
-    expect(text(provider)).toContain("Not configured");
+    expect(text(provider?.querySelector(".model-providers__credentials") ?? null)).toContain(
+      "API key set in config",
+    );
+    expect(text(provider)).not.toContain("Not configured");
+    expect(button(provider!, "Replace key")).toBeDefined();
+  });
+
+  it("does not replace explicit environment key provenance with the config fallback", () => {
+    const container = mount(props({ cards: [card({ hasConfigApiKey: true })] }));
+    const summary = container.querySelector(".model-providers__credentials");
+    expect(text(summary)).toContain("API key from environment (OPENAI_API_KEY)");
+    expect(text(summary)).not.toContain("API key set in config");
+  });
+
+  it("keeps credentials unconfigured when neither config nor auth reports a key", () => {
+    const container = mount(
+      props({ cards: [card({ apiKey: undefined, hasConfigApiKey: false })] }),
+    );
+    expect(text(container.querySelector(".model-providers__credentials"))).toContain(
+      "Not configured",
+    );
   });
 
   it("renders mixed credential probes as connected with warnings", () => {

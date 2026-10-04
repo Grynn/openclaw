@@ -33,16 +33,23 @@ function renderAuthStatus(card: ModelProviderCard) {
   `;
 }
 
-export function hasProviderCredentials(card: ModelProviderCard): boolean {
+export function hasDirectProviderCredentials(card: ModelProviderCard): boolean {
   return card.hasConfigApiKey || Boolean(card.apiKey) || card.profiles.length > 0;
 }
 
+export function hasProviderCredentials(card: ModelProviderCard): boolean {
+  return hasDirectProviderCredentials(card) || card.availableAgentRuntimeIds.length > 0;
+}
+
 export function hasVerifiedProvider(card: ModelProviderCard): boolean {
+  // An available external-runtime route is already credentialed by that runtime;
+  // unhealthy direct-provider auth must not downgrade the working route.
   return (
     card.catalogStatus === "ready" &&
-    card.auth?.kind !== "expired" &&
-    card.auth?.kind !== "missing" &&
-    card.auth?.kind !== "expiring"
+    (card.availableAgentRuntimeIds.length > 0 ||
+      (card.auth?.kind !== "expired" &&
+        card.auth?.kind !== "missing" &&
+        card.auth?.kind !== "expiring"))
   );
 }
 
@@ -54,9 +61,10 @@ export function renderProviderStatus(card: ModelProviderCard) {
     });
   }
   if (
-    card.auth?.kind === "expired" ||
-    card.auth?.kind === "missing" ||
-    card.auth?.kind === "expiring"
+    card.availableAgentRuntimeIds.length === 0 &&
+    (card.auth?.kind === "expired" ||
+      card.auth?.kind === "missing" ||
+      card.auth?.kind === "expiring")
   ) {
     return renderAuthStatus(card);
   }

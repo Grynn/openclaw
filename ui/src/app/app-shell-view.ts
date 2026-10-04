@@ -251,6 +251,7 @@ export function renderApplicationShell(host: ShellViewHost) {
       sessionKey: host.activeSessionKey,
       connected: gatewayConnected,
       connectionStatus,
+      sessionCatalogSurfaceVisible: !navigationSurfaceHidden,
       lastError: gatewaySnapshot.lastError,
       storedOutboxes: host.storedOutboxes,
       terminalAvailable,

@@ -36,6 +36,7 @@ import type {
 } from "./app-sidebar-session-types.ts";
 import {
   completePanelRefresh,
+  createPanelRefreshStatus,
   failPanelRefresh,
   type PanelRefreshStatus,
 } from "./panel-refresh-status.ts";
@@ -44,6 +45,7 @@ export interface SessionDataControllerHost extends ReactiveControllerHost {
   readonly isConnected: boolean;
   readonly connected: boolean;
   readonly activeRouteId?: string;
+  readonly sessionCatalogSurfaceVisible: boolean;
   getRouteSessionKey(): string;
   readonly sessionDataContext: ApplicationContext | undefined;
   dismissTransientMenus(): boolean;
@@ -60,6 +62,7 @@ export interface SessionCatalogDataOwner {
   readonly context: ApplicationContext | undefined;
   readonly isSessionDataHostConnected: boolean;
   readonly sessionDataHostConnected: boolean;
+  readonly sessionCatalogSurfaceVisible: boolean;
   sessionCatalogs: SessionCatalog[];
   sessionCatalogRefreshStatus: PanelRefreshStatus;
   loadingMoreSessionCatalogIds: ReadonlySet<string>;
@@ -74,6 +77,30 @@ export interface SessionCatalogDataOwner {
   requestSessionDataUpdate(): void;
   refreshSessionCatalogs(): Promise<void>;
   sessionCatalogIdsWithoutVisibleRows(): readonly string[];
+}
+
+interface SessionCatalogLifecycleOwner extends SessionCatalogDataOwner {
+  sessionScopeGeneration: number;
+  pendingCatalogArchives: ReadonlySet<string>;
+  sessionsLoading: boolean;
+}
+
+export function retireSessionCatalogData(owner: SessionCatalogLifecycleOwner): void {
+  owner.sessionScopeGeneration += 1;
+  owner.pendingCatalogArchives = new Set();
+  owner.sessionsLoading = false;
+  owner.loadingMoreSessionCatalogIds = new Set();
+  owner.sessionCatalogLive.clear();
+}
+
+export function resetSessionCatalogConnection(owner: SessionCatalogLifecycleOwner): void {
+  retireSessionCatalogData(owner);
+  owner.sessionCatalogRevision += 1;
+  owner.sessionCatalogs = [];
+  owner.sessionCatalogRefreshStatus = createPanelRefreshStatus();
+  owner.sessionCatalogPageDepths.clear();
+  owner.sessionCatalogRevisions.clear();
+  owner.requestSessionDataUpdate();
 }
 
 /** A completed list RPC can still leave pending hosts or hidden discovery pages. */
@@ -107,8 +134,12 @@ export function areSessionCatalogsSettled(
   );
 }
 
+function sessionCatalogSurfaceIsVisible(owner: SessionCatalogDataOwner): boolean {
+  return owner.sessionCatalogSurfaceVisible && document.visibilityState !== "hidden";
+}
+
 function visibleSessionCatalogClient(owner: SessionCatalogDataOwner): GatewayBrowserClient | null {
-  if (document.visibilityState === "hidden") {
+  if (!sessionCatalogSurfaceIsVisible(owner)) {
     return null;
   }
   return sessionCatalogListClient(owner.context?.gateway.snapshot, owner.sessionDataHostConnected);
@@ -185,7 +216,7 @@ export function scheduleSessionCatalogRefresh(owner: SessionCatalogDataOwner): v
 function requestSessionCatalogRefresh(owner: SessionCatalogDataOwner): Promise<void> {
   const snapshot = owner.context?.gateway.snapshot;
   return owner.sessionCatalogLive.requestRefresh({
-    visible: document.visibilityState !== "hidden",
+    visible: sessionCatalogSurfaceIsVisible(owner),
     connected:
       owner.isSessionDataHostConnected &&
       owner.sessionCatalogAgentId !== null &&
@@ -198,6 +229,10 @@ function requestSessionCatalogRefresh(owner: SessionCatalogDataOwner): Promise<v
 export function updateSessionCatalogData(owner: SessionCatalogDataOwner): void {
   if (owner.context) {
     owner.synchronizeSessionScope();
+  }
+  if (!sessionCatalogSurfaceIsVisible(owner)) {
+    owner.sessionCatalogLive.cancelScheduledRefreshes();
+    return;
   }
   if (
     !visibleSessionCatalogClient(owner) ||
@@ -294,7 +329,7 @@ export async function refreshSessionCatalogs(owner: SessionCatalogDataOwner): Pr
     currentClient: () => owner.sessionCatalogGatewayClient(),
     catalogs: () => owner.sessionCatalogs,
     pageDepths: owner.sessionCatalogPageDepths,
-    connected: () => owner.isSessionDataHostConnected,
+    connected: () => owner.isSessionDataHostConnected && sessionCatalogSurfaceIsVisible(owner),
     catalogChangedEvents: sessionCatalogChangesAdvertised(owner),
     applyFinal: (catalogs, revisedCatalogIds) => {
       owner.sessionCatalogs = owner.sessionCatalogLive.resumeDiscovery(catalogs);

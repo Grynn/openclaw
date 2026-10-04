@@ -858,6 +858,16 @@ describeControlUiE2e("Control UI initial connect splash E2E", () => {
 
   it("falls back to the login gate when stored credentials are rejected", async () => {
     const page = await createPage();
+    const requestedWorkspaceModules = new Set<string>();
+    page.on("request", (request) => {
+      const pathname = new URL(request.url()).pathname;
+      if (
+        pathname === "/src/components/app-sidebar.ts" ||
+        pathname === "/src/pages/chat/chat-page.ts"
+      ) {
+        requestedWorkspaceModules.add(pathname);
+      }
+    });
     const gateway = await installMockGateway(page, { deferredMethods: ["connect"] });
 
     await page.goto(`${server.baseUrl}#token=stale-token`);
@@ -871,6 +881,60 @@ describeControlUiE2e("Control UI initial connect splash E2E", () => {
     });
     await page.locator("openclaw-login-gate").waitFor();
     expect(await page.locator(".connect-splash").count()).toBe(0);
+    expect([...requestedWorkspaceModules]).toEqual([]);
+  });
+
+  it("retains a deep link without mounting its route until authentication succeeds", async () => {
+    const page = await createPage();
+    const aboutModulePath = "/src/pages/about/about-page.ts";
+    const requestedAboutModules: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === aboutModulePath) {
+        requestedAboutModules.push(request.url());
+      }
+    });
+    const gateway = await installMockGateway(page, { deferredMethods: ["connect"] });
+    const retainedPath = "/settings/about?keep=yes#section=commit";
+    const retainedUrl = new URL(retainedPath, server.baseUrl).href;
+
+    await page.goto(`${server.baseUrl}settings/about?keep=yes#section=commit&token=stale-token`);
+    await gateway.waitForRequest("connect");
+    await gateway.rejectDeferred("connect", {
+      code: "UNAUTHORIZED",
+      message: "unauthorized: gateway token mismatch",
+      details: { code: ConnectErrorDetailCodes.AUTH_TOKEN_MISMATCH },
+    });
+    await page.locator("openclaw-login-gate").waitFor();
+
+    expect(page.url()).toBe(retainedUrl);
+    // Explicit-route module warmup may download bytes before auth, but the
+    // router must not mount the route or run its authenticated loaders.
+    expect(await page.locator("openclaw-about-page").count()).toBe(0);
+
+    const rejectedConnectCount = (await gateway.getRequests("connect")).length;
+    await gateway.deferNext("connect");
+    await page.getByLabel("Gateway secret", { exact: true }).fill("fresh-token");
+    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    await expect
+      .poll(async () => (await gateway.getRequests("connect")).length)
+      .toBe(rejectedConnectCount + 1);
+    expect(await page.locator("openclaw-about-page").count()).toBe(0);
+
+    await gateway.resolveDeferred("connect");
+    await page.locator("openclaw-about-page").waitFor();
+    expect(page.url()).toBe(retainedUrl);
+    expect(requestedAboutModules).toHaveLength(1);
+
+    await gateway.deferNext("connect");
+    await gateway.closeLatest(1006, "test reconnect");
+    await expect
+      .poll(async () => (await gateway.getRequests("connect")).length)
+      .toBe(rejectedConnectCount + 2);
+    expect(await page.locator("openclaw-about-page").count()).toBe(1);
+
+    await gateway.resolveDeferred("connect");
+    await page.locator("openclaw-about-page").waitFor();
+    expect(requestedAboutModules).toHaveLength(1);
   });
 
   it("keeps retryable Gateway startup on the progress splash", async () => {
