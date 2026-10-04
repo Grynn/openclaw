@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { visibleWidth } from "../../packages/terminal-core/src/ansi.js";
 import { buildAcpDatabaseSessionKey } from "../acp/runtime/session-meta-keys.js";
 import { writeAcpSessionMetaForMigration } from "../acp/runtime/session-meta.js";
+import { capLiveExecResult, sanitizeToolResult } from "../agents/embedded-agent-tool-results.js";
 import { ExpectedCliError } from "../cli/failure-output.js";
 import {
   replaceSessionEntrySync,
@@ -279,6 +280,27 @@ describe("sessionsTailCommand", () => {
       success: true,
       output: "x".repeat(40_000),
     });
+    const shortenedResult = sanitizeToolResult({
+      content: [{ type: "text", text: "private-output ".repeat(700) }],
+    });
+    recorder.recordEvent("tool.result", {
+      name: "sanitized-output",
+      success: true,
+      result: shortenedResult,
+    });
+    recorder.recordEvent("tool.result", {
+      name: "capped-exec-output",
+      success: true,
+      result: capLiveExecResult({
+        details: { status: "completed", aggregated: "private-output ".repeat(700) },
+      }),
+    });
+    recorder.recordEvent("tool.result", {
+      name: "measured-output",
+      success: true,
+      result: shortenedResult,
+      resultBytes: 10_240,
+    });
     await recorder.flush();
     await appendEvents([
       makeEvent({
@@ -312,6 +334,12 @@ describe("sessionsTailCommand", () => {
     expect(runtimeOutput(runtime)).toContain("context compiled (>=64 tools)");
     expect(runtimeOutput(runtime)).toContain("large-output ok");
     expect(runtimeOutput(runtime)).not.toContain("large-output ok result=");
+    expect(runtimeOutput(runtime)).toContain("sanitized-output ok");
+    expect(runtimeOutput(runtime)).not.toContain("sanitized-output ok result=");
+    expect(runtimeOutput(runtime)).toContain("capped-exec-output ok");
+    expect(runtimeOutput(runtime)).not.toContain("capped-exec-output ok result=");
+    expect(runtimeOutput(runtime)).toContain("measured-output ok result=10KB");
+    expect(runtimeOutput(runtime)).not.toContain("private-output");
     expect(runtimeOutput(runtime)).not.toContain("skill-64");
     expect(runtimeOutput(runtime)).not.toContain("tool-64");
   });

@@ -156,8 +156,13 @@ function resultBytes(data: Record<string, unknown> | undefined): number | undefi
 }
 
 function containsBoundedPayload(value: unknown): boolean {
-  if (value === "[Truncated]") {
-    return true;
+  if (typeof value === "string") {
+    // Embedded results can be shortened before the trajectory recorder sees them.
+    return (
+      value === "[Truncated]" ||
+      value.endsWith("\n…(truncated)…") ||
+      value.endsWith("\n...(live output truncated)...")
+    );
   }
   if (Array.isArray(value)) {
     return value.some(containsBoundedPayload);
