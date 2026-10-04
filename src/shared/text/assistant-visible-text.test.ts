@@ -296,6 +296,34 @@ describe("sanitizeAssistantVisibleText", () => {
     expect(sanitizeAssistantVisibleText(input)).toBe("Visible answer");
   });
 
+  it("strips incident-shaped doubled full-width DeepSeek DSML tool blocks", () => {
+    const input = [
+      "Checking now.",
+      '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="exec"><｜｜DSML｜｜parameter name="cmd">bird thread 123</｜｜DSML｜｜parameter></｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>',
+      "Visible answer.",
+    ].join("\n");
+
+    expect(sanitizeAssistantVisibleText(input)).toBe("Checking now.\n\nVisible answer.");
+  });
+
+  it.each([
+    '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜tool_call>{"cmd":"run"}</｜｜DSML｜｜tool_call>private tail</｜｜DSML｜｜tool_calls>',
+    '<｜｜DSML｜｜tool_calls>{"cmd":"</｜｜DSML｜｜tool_calls> private tail"}</｜｜DSML｜｜tool_calls>',
+  ])("does not leak DSML payload after an inner closing token", (payload) => {
+    expect(sanitizeAssistantVisibleText(`Before. ${payload} After.`)).toBe("Before.  After.");
+  });
+
+  it("preserves doubled full-width DeepSeek DSML examples inside fenced code", () => {
+    const input = [
+      "Example:",
+      "```xml",
+      "<｜｜DSML｜｜tool_calls>payload</｜｜DSML｜｜tool_calls>",
+      "```",
+    ].join("\n");
+
+    expect(sanitizeAssistantVisibleText(input)).toBe(input);
+  });
+
   it("strips adjacent plural function-call XML on the delivery path", () => {
     const input =
       '<function_calls><invoke name="exec">internal</invoke></function_calls><function_response>\nSearching for: "what skills matter most in the age of AI"\n</function_response>\nVisible answer';

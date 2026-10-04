@@ -8,8 +8,10 @@ import {
 } from "../../../packages/tool-call-repair/src/grammar.js";
 import { stripPlainTextToolCallBlocks } from "../../../packages/tool-call-repair/src/index.js";
 import { findCodeRegions, isInsideCode, stripLinesOutsideCode } from "./code-regions.js";
+import { stripDeepSeekDsmlToolCallBlocks } from "./deepseek-dsml-visible-text.js";
 import { downgradedToolCallTextFilter } from "./downgraded-tool-call-text.js";
 import { stripModelSpecialTokens } from "./model-special-tokens.js";
+import { createQuotedStringScanner } from "./quoted-string-scanner.js";
 import { stripReasoningTagsFromText } from "./reasoning-tags.js";
 import {
   applyTextFilters,
@@ -33,7 +35,6 @@ const INTERNAL_COMPACT_COMMAND_TRACE_LINE_RE =
   /^(?:>\s*)?🛠️\s*(?:(?:(?:elevated|pty)\b\s*(?:·|,)\s*)+)?(?:`{1,2}\s*\S|(?:run|check|fetch|pull|push|view|show|list|switch|create|merge|rebase|stage|restore|reset|stash|search|find|print|copy|move|remove|install|start|cd|git|pnpm|npm|yarn|bun|node|python|python3|bash|sh)\b)/i;
 const INTERNAL_CHANNEL_TRACE_LINE_RE =
   /^(?:>\s*)?(?:tool[-_ ]?call|tool[-_ ]?result|function[-_ ]?call)\s*[:=]/i;
-
 /**
  * Strip XML-style tool call tags that models sometimes emit as plain text.
  * This stateful pass hides content from an opening tag through the matching
@@ -59,30 +60,6 @@ const TOOL_CALL_XML_PAYLOAD_START_RE =
 const NESTED_JSON_TOOL_CALL_PAYLOAD_START_RE = /^\s*(?:\r?\n\s*)?<(?:function_call|tool_call)\b/i;
 
 type ToolCallPayloadKind = "json" | "xml" | null;
-
-function createQuotedStringScanner(text: string, start: number): (end: number) => boolean {
-  let quoteChar: "'" | '"' | null = null;
-  let isEscaped = false;
-  // Candidate closing tags share one monotonic scan through their payload.
-  let cursor = start;
-  return (end) => {
-    for (; cursor < end; cursor += 1) {
-      const char = text[cursor];
-      if (quoteChar === null) {
-        if (char === '"' || char === "'") {
-          quoteChar = char;
-        }
-      } else if (isEscaped) {
-        isEscaped = false;
-      } else if (char === "\\") {
-        isEscaped = true;
-      } else if (char === quoteChar) {
-        quoteChar = null;
-      }
-    }
-    return quoteChar !== null;
-  };
-}
 
 interface ParsedToolCallTag {
   contentStart: number;
@@ -691,6 +668,7 @@ export function assistantVisibleTextFilters(
   };
   const filters: TextFilter[] = [
     ...(!preserve ? [minimaxToolCallTextFilter] : []),
+    { transform: stripDeepSeekDsmlToolCallBlocks, activationTokens: ["<"] },
     { transform: stripModelSpecialTokens, activationTokens: ["<|", "<｜"] },
     {
       transform: stripRelevantMemoriesTags,
