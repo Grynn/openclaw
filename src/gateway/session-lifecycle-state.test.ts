@@ -41,6 +41,7 @@ import {
 } from "./session-lifecycle-state.js";
 import {
   persistLifecycleThroughMockedStore,
+  registerSessionLifecycleRecoveryTests,
   type LifecycleEvent,
   type UpdateSessionEntry,
 } from "./session-lifecycle-state.test-support.js";
@@ -568,6 +569,56 @@ describe("session lifecycle state", () => {
     expect(persisted.status).toBe("done");
   });
 
+  registerSessionLifecycleRecoveryTests({ persistLifecycle, loggerMocks });
+
+  it("settles a sealed running cron owner once and ignores its duplicate error", async () => {
+    const settled = await persistLifecycle(
+      {
+        ...cronSessionEntry("ready"),
+        lifecycleRunId: "initial-run",
+      },
+      {
+        ts: 2_000,
+        sessionId: "cron-session-id",
+        runId: "initial-run",
+        data: {
+          phase: "error",
+          startedAt: 1_300,
+          endedAt: 1_950,
+          error: "provider timed out",
+        },
+      },
+      exactCronSessionKey,
+    );
+
+    expect(settled).toMatchObject({
+      status: "failed",
+      startedAt: 1_300,
+      endedAt: 1_950,
+      runtimeMs: 650,
+      lastRunError: "provider timed out",
+    });
+    expect(settled.lifecycleRunId).toBeUndefined();
+
+    const replayed = await persistLifecycle(
+      settled,
+      {
+        ts: 2_000,
+        sessionId: "cron-session-id",
+        runId: "initial-run",
+        data: {
+          phase: "error",
+          startedAt: 1_400,
+          endedAt: 2_400,
+          error: "late duplicate error",
+        },
+      },
+      exactCronSessionKey,
+    );
+
+    expect(replayed).toEqual(settled);
+  });
+
   it.each([
     {
       name: "accepts the initial owner while running",
@@ -584,10 +635,40 @@ describe("session lifecycle state", () => {
       expectedStatus: "done",
     },
     {
-      name: "ignores events once ready",
+      name: "ignores unidentified events once ready",
       entry: cronSessionEntry("ready"),
       eventRunId: "continuation-run",
       eventSessionId: "cron-session-id",
+      expectedStatus: "running",
+    },
+    {
+      name: "accepts the sealed initial owner's end event while still running",
+      entry: {
+        ...cronSessionEntry("ready"),
+        lifecycleRunId: "initial-run",
+      },
+      eventRunId: "initial-run",
+      eventSessionId: "cron-session-id",
+      expectedStatus: "done",
+    },
+    {
+      name: "ignores a mismatched initial owner once ready",
+      entry: {
+        ...cronSessionEntry("ready"),
+        lifecycleRunId: "current-owner",
+      },
+      eventRunId: "stale-owner",
+      eventSessionId: "cron-session-id",
+      expectedStatus: "running",
+    },
+    {
+      name: "ignores the matching initial owner from a stale session id once ready",
+      entry: {
+        ...cronSessionEntry("ready"),
+        lifecycleRunId: "initial-run",
+      },
+      eventRunId: "initial-run",
+      eventSessionId: "stale-session-id",
       expectedStatus: "running",
     },
     {
