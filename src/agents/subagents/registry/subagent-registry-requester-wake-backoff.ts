@@ -2,12 +2,15 @@ import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state
 import type { SubagentLifecycleWakeContext } from "./subagent-registry-lifecycle-context.js";
 import { maskLifecycleIdentifier } from "./subagent-registry-lifecycle-delivery.js";
 import { SubagentRegistryWriteError } from "./subagent-registry-persistence.js";
-import { getPendingWakeCommit } from "./subagent-registry-requester-wake-commit.js";
+import {
+  getPendingWakeCommit,
+  REQUESTER_SETTLE_WAKE_MAX_BACKOFF_MS,
+} from "./subagent-registry-requester-wake-commit.js";
 import { persistSubagentRunsToDiskAsyncOrThrow } from "./subagent-registry-state.js";
 import { bindSubagentRunRecord } from "./subagent-registry.store.codec.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
-const FAILURE_DELAYS_MS = [60_000, 300_000, 3_600_000] as const;
+const FAILURE_DELAYS_MS = [30_000, 60_000, REQUESTER_SETTLE_WAKE_MAX_BACKOFF_MS] as const;
 
 /** Retain custody after a failed settlement, with a durable, capped retry deadline. */
 export async function deferFailedRequesterSettleWake(params: {
@@ -24,7 +27,9 @@ export async function deferFailedRequesterSettleWake(params: {
     FAILURE_DELAYS_MS.length,
     Math.max(...entries.map((entry) => entry.requesterSettleWake?.settleFailureCount ?? 0), 0) + 1,
   );
-  const nextAttemptAt = Date.now() + FAILURE_DELAYS_MS[failureCount - 1]!;
+  const now = Date.now();
+  const retryCeiling = now + REQUESTER_SETTLE_WAKE_MAX_BACKOFF_MS;
+  const nextAttemptAt = now + FAILURE_DELAYS_MS[failureCount - 1]!;
   const owners = entries.map((entry) => {
     const wake = entry.requesterSettleWake!;
     const expectedPayload = bindSubagentRunRecord(entry).payload_json;
@@ -39,7 +44,7 @@ export async function deferFailedRequesterSettleWake(params: {
     // Keep the wake reference: a retained commit still owns its captured outcome.
     Object.assign(wake, {
       settleFailureCount: failureCount,
-      nextAttemptAt: Math.max(wake.nextAttemptAt ?? 0, nextAttemptAt),
+      nextAttemptAt: Math.min(retryCeiling, Math.max(wake.nextAttemptAt ?? 0, nextAttemptAt)),
       lastError: reason,
     });
     return {
@@ -89,7 +94,10 @@ export async function deferFailedRequesterSettleWake(params: {
     if (entry.requesterSettleWake === wake) {
       const pending = getPendingWakeCommit(context, entry);
       if (pending) {
-        pending.nextAttemptAt = Math.max(pending.nextAttemptAt, wake.nextAttemptAt ?? 0);
+        pending.nextAttemptAt = Math.min(
+          retryCeiling,
+          Math.max(pending.nextAttemptAt, wake.nextAttemptAt ?? 0),
+        );
       }
     }
   }

@@ -39,6 +39,7 @@ describe("requester wake recovery after task expiry", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     subagentRuns.clear();
     resetTaskRegistryForTests({ persist: false });
     resetTaskFlowRegistryForTests({ persist: false });
@@ -248,13 +249,14 @@ describe("requester wake recovery after task expiry", () => {
   });
 
   it.each(["succeeded", "cancelled"] as const)(
-    "persists bounded backoff for a retryable %s settlement error without losing the wake",
+    "caps repeated %s settlement failures at the existing two-minute retry ceiling",
     async (status) => {
       const input =
         status === "succeeded"
           ? armRequesterWake(records())
           : failedRecords("cancelled", { status: "error" });
       input.subagent.delivery = { status: "pending", generation: 1 };
+      input.subagent.requesterSettleWake!.settleFailureCount = 2;
       persistOwner(input);
       database.db.exec(
         "CREATE TEMP TRIGGER reject_task_settlement BEFORE UPDATE ON task_runs " +
@@ -272,19 +274,20 @@ describe("requester wake recovery after task expiry", () => {
         await driver.run();
         await retryPersisted;
         const wake = input.subagent.requesterSettleWake;
-        expect(wake).toMatchObject({ status: "pending", settleFailureCount: 1 });
+        expect(wake).toMatchObject({ status: "pending", settleFailureCount: 3 });
         expect(wake?.nextAttemptAt).toBeGreaterThan(Date.now());
+        expect(wake!.nextAttemptAt! - Date.now()).toBeLessThanOrEqual(120_000);
         expect(input.subagent.delivery?.status).toBe("pending");
         expect(
           loadSubagentRegistryFromSqlite().get(input.subagent.runId)?.requesterSettleWake,
         ).toMatchObject({
-          settleFailureCount: 1,
+          settleFailureCount: 3,
           nextAttemptAt: wake?.nextAttemptAt,
         });
         reopenOwners();
         expect(subagentRuns.get(input.subagent.runId)?.requesterSettleWake).toMatchObject({
           status: "pending",
-          settleFailureCount: 1,
+          settleFailureCount: 3,
           nextAttemptAt: wake?.nextAttemptAt,
         });
         expect(getTaskById(input.task.taskId)).toMatchObject({
@@ -293,6 +296,61 @@ describe("requester wake recovery after task expiry", () => {
         });
       } finally {
         unsubscribe();
+        driver.controller.clearScheduledResumeTimers();
+      }
+    },
+  );
+
+  it.each(["settlement failure", "transport retry", "newer generation"] as const)(
+    "restores a long stored deadline for %s without rewriting the wake",
+    async (mode) => {
+      const settlementFailure = mode !== "transport retry";
+      const input = expiredTaskOrphan();
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      const start = Date.now();
+      const storedWake = {
+        ...input.subagent.requesterSettleWake!,
+        nextAttemptAt: start + 3_600_000,
+        ...(settlementFailure ? { settleFailureCount: 3 } : {}),
+      };
+      input.subagent.requesterSettleWake = storedWake;
+      upsertSubagentRunRowInDatabase(database, bindSubagentRunRecord(input.subagent));
+      reopenOwners();
+      input.subagent = subagentRuns.get(input.subagent.runId)!;
+      const driver = requesterWakeDriver([input]);
+      try {
+        driver.controller.resumeRequesterSettleWake(input.subagent.runId, input.subagent);
+        const firstTimer = driver.controller.getRequesterSettleWakeTimer(input.subagent.runId);
+        expect(firstTimer?.deadline).toBe(start + (settlementFailure ? 120_000 : 3_600_000));
+        expect(input.subagent.requesterSettleWake).toEqual(storedWake);
+        expect(
+          loadSubagentRegistryFromSqlite().get(input.subagent.runId)?.requesterSettleWake,
+        ).toEqual(storedWake);
+        await vi.advanceTimersByTimeAsync(60_000);
+        driver.controller.resumeRequesterSettleWake(input.subagent.runId, input.subagent);
+        expect(driver.controller.getRequesterSettleWakeTimer(input.subagent.runId)).toBe(
+          firstTimer,
+        );
+        expect(driver.wake).not.toHaveBeenCalled();
+        if (mode === "newer generation") {
+          input.subagent.requesterSettleWake!.rearmGeneration = 2;
+          upsertSubagentRunRowInDatabase(database, bindSubagentRunRecord(input.subagent));
+        }
+        await vi.advanceTimersByTimeAsync(settlementFailure ? 60_000 : 3_540_000);
+        if (mode === "newer generation") {
+          expect(driver.wake).not.toHaveBeenCalled();
+          expect(input.subagent.requesterSettleWake?.rearmGeneration).toBe(2);
+          expect(
+            driver.controller.getRequesterSettleWakeTimer(input.subagent.runId)?.deadline,
+          ).toBe(start + 240_000);
+          await vi.advanceTimersByTimeAsync(120_000);
+        }
+        expect(driver.wake).toHaveBeenCalledTimes(1);
+        expect(input.subagent.requesterSettleWake).toBeUndefined();
+        reopenOwners();
+        expect(subagentRuns.get(input.subagent.runId)?.requesterSettleWake).toBeUndefined();
+        expect(subagentRuns.get(input.subagent.runId)?.delivery?.status).toBe("failed");
+      } finally {
         driver.controller.clearScheduledResumeTimers();
       }
     },

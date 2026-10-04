@@ -4,6 +4,8 @@ import type {
 } from "./subagent-registry-lifecycle-context.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
+export const REQUESTER_SETTLE_WAKE_MAX_BACKOFF_MS = 120_000;
+
 function clearPendingWakeCommit(
   context: SubagentLifecycleWakeContext,
   pending: PendingRequesterSettleWakeCommit,
@@ -32,7 +34,8 @@ export function getPendingWakeCommit(
 function deferWakeCommit(pending: PendingRequesterSettleWakeCommit): void {
   pending.failures += 1;
   pending.nextAttemptAt =
-    Date.now() + Math.min(120_000, 30_000 * 2 ** Math.min(pending.failures - 1, 2));
+    Date.now() +
+    Math.min(REQUESTER_SETTLE_WAKE_MAX_BACKOFF_MS, 30_000 * 2 ** Math.min(pending.failures - 1, 2));
 }
 
 // Persistence failure cannot erase a transport result or its replay budget. Keep

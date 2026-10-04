@@ -35,6 +35,12 @@ import {
   getPendingWakeCommit,
   retryPendingWakeCommit,
 } from "./subagent-registry-requester-wake-commit.js";
+import {
+  isRequesterSettleWakeFailureRetryDue,
+  retainScheduledRequesterSettleWakeTimer,
+  scheduleRequesterSettleWakeRetry,
+  type RequesterSettleWakeFailureRetry,
+} from "./subagent-registry-requester-wake-retry.js";
 import { persistSubagentRunsToDiskAsyncOrThrow } from "./subagent-registry-state.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { hasSubagentRunEnded } from "./subagent-run-liveness.js";
@@ -333,69 +339,11 @@ const persistRequesterSettleWakePending = (
 // cleanup parent reserves the root synchronously, so restart or suspend
 // cannot reach quiescence between scheduling and the wake's gateway turn.
 // Terminal failures settle only the exact wake so a newer requester-yield rearm survives.
-function retainScheduledRequesterSettleWakeTimer(
-  context: SubagentLifecycleWakeContext,
-  entry: SubagentRunRecord,
-  deadline: number,
-): boolean {
-  const scheduled = context.getRequesterSettleWakeTimer(entry.runId);
-  if (!scheduled) {
-    return false;
-  }
-  const rearmGeneration = entry.requesterSettleWake?.rearmGeneration;
-  const hasNewerGeneration =
-    rearmGeneration !== undefined &&
-    (scheduled.rearmGeneration === undefined || rearmGeneration > scheduled.rearmGeneration);
-  // A restored owner must not inherit a timer whose callback still captures the old row.
-  if (scheduled.entry === entry && !hasNewerGeneration && deadline >= scheduled.deadline) {
-    return true;
-  }
-  clearTimeout(scheduled.timer);
-  context.deleteRequesterSettleWakeTimer(entry.runId);
-  return false;
-}
-
-function scheduleRequesterSettleWakeRetry(
-  context: SubagentLifecycleWakeContext,
-  runId: string,
-  entry: SubagentRunRecord,
-): void {
-  const params = context.options;
-  const nextAttemptAt =
-    getPendingWakeCommit(context, entry)?.nextAttemptAt ?? entry.requesterSettleWake?.nextAttemptAt;
-  if (nextAttemptAt === undefined || nextAttemptAt <= Date.now()) {
-    return;
-  }
-  const rearmGeneration = entry.requesterSettleWake?.rearmGeneration;
-  if (retainScheduledRequesterSettleWakeTimer(context, entry, nextAttemptAt)) {
-    return;
-  }
-  const timer = setTimeout(
-    () => {
-      if (context.getRequesterSettleWakeTimer(runId)?.timer !== timer) {
-        return;
-      }
-      context.deleteRequesterSettleWakeTimer(runId);
-      const current = params.runs.get(runId);
-      if (current === entry && current.requesterSettleWake) {
-        scheduleRequesterSettleWake(context, runId, current);
-      }
-    },
-    Math.max(0, nextAttemptAt - Date.now()),
-  );
-  timer.unref?.();
-  context.setRequesterSettleWakeTimer(runId, {
-    entry,
-    timer,
-    deadline: nextAttemptAt,
-    rearmGeneration,
-  });
-}
-
 export function scheduleRequesterSettleWake(
   context: SubagentLifecycleWakeContext,
   runId: string,
   entry: SubagentRunRecord,
+  expiredFailureRetry?: RequesterSettleWakeFailureRetry,
 ): void {
   const params = context.options;
   const admittedWake = entry.requesterSettleWake;
@@ -417,14 +365,22 @@ export function scheduleRequesterSettleWake(
     return;
   }
   const now = Date.now();
+  const failureRetryDue = isRequesterSettleWakeFailureRetryDue(
+    admittedWake,
+    expiredFailureRetry,
+    now,
+  );
   const nextAttemptAt =
-    getPendingWakeCommit(context, entry)?.nextAttemptAt ?? entry.requesterSettleWake?.nextAttemptAt;
+    getPendingWakeCommit(context, entry)?.nextAttemptAt ??
+    (failureRetryDue ? undefined : admittedWake.nextAttemptAt);
   const deadline = nextAttemptAt !== undefined && nextAttemptAt > now ? nextAttemptAt : now;
   if (retainScheduledRequesterSettleWakeTimer(context, entry, deadline)) {
     return;
   }
   if (nextAttemptAt !== undefined && nextAttemptAt > now) {
-    scheduleRequesterSettleWakeRetry(context, runId, entry);
+    scheduleRequesterSettleWakeRetry(context, runId, entry, (current, retry) =>
+      scheduleRequesterSettleWake(context, runId, current, retry),
+    );
     return;
   }
   const admittedBatch = (admittedWake?.batchRunIds ?? [runId]).flatMap((id) => {
@@ -554,7 +510,9 @@ export function scheduleRequesterSettleWake(
             // resolving its earlier no-wake decision. Admit that durable update now.
             scheduleRequesterSettleWake(context, runId, current);
           } else {
-            scheduleRequesterSettleWakeRetry(context, runId, current);
+            scheduleRequesterSettleWakeRetry(context, runId, current, (retryEntry, retry) =>
+              scheduleRequesterSettleWake(context, runId, retryEntry, retry),
+            );
           }
         }
       });
