@@ -22,6 +22,8 @@ import type { CronScheduledToolCallerOrigin } from "../cron/scheduled-tool-polic
 import type { AgentRunDelegatedAuthority } from "../infra/agent-run-registry.js";
 import type { ExecMode } from "../infra/exec-approvals.js";
 import type { PluginHookChannelContext } from "../plugins/hook-types.js";
+import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
+import type { PluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.types.js";
 import type { InputProvenance } from "../sessions/input-provenance.js";
 import { resolveGlobalMap } from "../shared/global-singleton.js";
 import type { SkillLibraryAuthoringCapability } from "../skills/library/authoring.js";
@@ -135,6 +137,8 @@ type StoredMcpLoopbackClientGrant = McpLoopbackClientGrant & {
   runtimeOwnerToken: string;
   /** Exact host admission retained outside the child-visible request context. */
   admittedRunContext?: AdmittedRunContext;
+  /** Minting run's Gateway request scope, never serialized to the CLI child. */
+  requestScope?: PluginRuntimeGatewayRequestScope;
   /** Live reply participants remain host-owned across CLI fallback and HTTP callbacks. */
   personalToolParticipants?: ReplyTurnParticipants;
   /** Trusted source-turn authority retained only by the host. */
@@ -147,6 +151,8 @@ type StoredMcpLoopbackClientGrant = McpLoopbackClientGrant & {
   ) => CronCreatorAuthorityGrant;
   /** Retained Cron permission, independent of this grant's other tool authority. */
   cronAuthorityCheck?: () => boolean;
+  /** Re-enter only the minting run's live Cron management scope at tool construction. */
+  constructCronManagementTools?: <T>(run: () => T) => T;
   abortSignal?: AbortSignal;
   assertCurrent?: () => void;
   /** Original CLI policy, rebound only to this stored row's exact lifetime. */
@@ -270,11 +276,13 @@ export function mintMcpLoopbackClientGrant(
   if (!runtimeOwnerToken) {
     throw new Error("mintMcpLoopbackClientGrant: runtimeOwnerToken is required");
   }
+  const requestScope = getPluginRuntimeGatewayRequestScope();
   const grant: StoredMcpLoopbackClientGrant = {
     token: crypto.randomBytes(32).toString("hex"),
     context: structuredClone({ ...params.context, sessionKey }),
     runtimeOwnerToken,
     ...(params.admittedRunContext ? { admittedRunContext: params.admittedRunContext } : {}),
+    ...(requestScope ? { requestScope } : {}),
     ...(params.personalToolParticipants
       ? { personalToolParticipants: params.personalToolParticipants }
       : {}),
@@ -285,6 +293,9 @@ export function mintMcpLoopbackClientGrant(
       ? { cronRequesterGrantIssuer: params.cronRequesterGrantIssuer }
       : {}),
     ...(params.cronAuthorityCheck ? { cronAuthorityCheck: params.cronAuthorityCheck } : {}),
+    ...(params.constructCronManagementTools
+      ? { constructCronManagementTools: params.constructCronManagementTools }
+      : {}),
     abortSignal: params.abortSignal,
     assertCurrent: params.assertCurrent,
     bindQuestionAnswerAuthority: params.bindQuestionAnswerAuthority,
@@ -481,10 +492,12 @@ export function resolveMcpLoopbackClientGrant(params: {
       context: McpLoopbackRequestContext;
       captureKey: string;
       admittedRunContext: AdmittedRunContext;
+      requestScope?: PluginRuntimeGatewayRequestScope;
       personalToolParticipants?: ReplyTurnParticipants;
       messageActionTurnCapability?: string;
       mintCronRequesterGrant?: (signal?: AbortSignal) => CronCreatorAuthorityGrant;
       cronAuthorityCheck?: () => boolean;
+      constructCronManagementTools?: <T>(run: () => T) => T;
       questionAnswerAuthority?: PreparedQuestionAnswerAuthority;
       skillLibraryAuthoring?: SkillLibraryAuthoringCapability;
       rootedExecution?: PreparedRootedExecutionCapability;
@@ -518,12 +531,14 @@ export function resolveMcpLoopbackClientGrant(params: {
     }
   });
   const issueCronRequesterGrant = grant.cronRequesterGrantIssuer;
+  const constructCronManagementTools = grant.constructCronManagementTools;
   // Cached tools and OAuth refreshes must share the prepared store for this
   // grant; cloning on each request would discard refreshed credentials.
   return {
     context: structuredClone(grant.context),
     captureKey: grant.activeCaptureKey,
     admittedRunContext,
+    ...(grant.requestScope ? { requestScope: grant.requestScope } : {}),
     ...(grant.personalToolParticipants
       ? { personalToolParticipants: grant.personalToolParticipants }
       : {}),
@@ -531,6 +546,16 @@ export function resolveMcpLoopbackClientGrant(params: {
       ? { messageActionTurnCapability: grant.messageActionTurnCapability }
       : {}),
     ...(grant.cronAuthorityCheck ? { cronAuthorityCheck: grant.cronAuthorityCheck } : {}),
+    ...(constructCronManagementTools
+      ? {
+          constructCronManagementTools: <T>(run: () => T): T => {
+            if (!isCurrent()) {
+              throw new Error("cron management MCP grant is no longer active");
+            }
+            return constructCronManagementTools(run);
+          },
+        }
+      : {}),
     ...(issueCronRequesterGrant
       ? {
           mintCronRequesterGrant: (signal?: AbortSignal) => {

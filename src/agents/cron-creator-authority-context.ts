@@ -63,12 +63,37 @@ const activeCronCreatorAuthority = new AsyncLocalStorage<CronCreatorAuthorityRun
 const activeCronCreatorAuthorityResolver =
   new AsyncLocalStorage<CronCreatorAuthorityResolverScope>();
 
+/** Process-owned listeners must not inherit the turn that happened to start them. */
+export function withoutCronCreatorAuthority<T>(run: () => T): T {
+  return activeCronCreatorAuthority.exit(() => activeCronCreatorAuthorityResolver.exit(run));
+}
+
 /** Retain the Cron-only fence when tools materialize outside their creator scope. */
 export function bindActiveCronAuthorityCurrentness(
   runId: string | undefined,
 ): (() => boolean) | undefined {
   const scope = activeCronCreatorAuthority.getStore();
   return scope?.active && scope.runId === runId?.trim() ? scope.isCurrent : undefined;
+}
+
+/** Retain a management turn's scope for CLI tools built by a later MCP request. */
+export function bindCronManagementToolConstruction(runId: string | undefined) {
+  const scope = activeCronCreatorAuthority.getStore();
+  if (!scope?.managementEntitlement || scope.runId !== runId?.trim()) {
+    return undefined;
+  }
+  return <T>(run: () => T): T => {
+    if (
+      !scope.active ||
+      scope.signal.aborted ||
+      scope.isCurrent?.() === false ||
+      (scope.managementEntitlement?.source === "channel-owner" &&
+        !scope.managementEntitlement.isCurrent())
+    ) {
+      return activeCronCreatorAuthority.exit(run);
+    }
+    return activeCronCreatorAuthority.run(scope, run);
+  };
 }
 
 /** Retain the exact scope for callbacks invoked outside their creation context. */

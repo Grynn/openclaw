@@ -239,6 +239,99 @@ async function createStoredJob(
 }
 
 describe("requester continuation persisted automation management", () => {
+  it("lets an admitted channel owner inspect an ownerless automation through CLI MCP", async () => {
+    const config: OpenClawConfig = {
+      ...cfg,
+      agents: { ...cfg.agents, defaults: { workspace: stateDir } },
+      commands: { ownerAllowFrom: ["discord:owner-1"] },
+      tools: { allow: [AUTOMATIONS_TOOL_NAME] },
+    };
+    setRuntimeConfigSnapshot(config);
+    const fixture = createCronFixture(undefined, config);
+    const legacyJob = await cron.add({
+      name: "Legacy reminder",
+      enabled: false,
+      schedule: { kind: "every", everyMs: 1_800_000 },
+      sessionTarget: "isolated",
+      agentId: "main",
+      wakeMode: "next-heartbeat",
+      payload: { kind: "agentTurn", message: "Check status" },
+      delivery: { mode: "none" },
+    });
+    expect((await fixture.read())[0]?.owner).toBeUndefined();
+    await ensureMcpLoopbackServer(0);
+    const runId = "fresh-channel-owner";
+    const isCurrent = () =>
+      isConfiguredCommandOwner(getRuntimeConfig(), { channel: "discord", senderId: "owner-1" });
+    try {
+      await inRun(
+        runId,
+        {
+          runId,
+          callerOrigin: { kind: "unknown" },
+          managementEntitlement: { source: "channel-owner", isCurrent },
+          isCurrent,
+        },
+        async (_identity, admitted, creator) => {
+          bindGatewayContextResolver(admitted, () => fixture.context);
+          let capture: CreatorTransportTools["mcpCapture"];
+          try {
+            const tools = await createCreatorTransportTools({
+              transport: "cli",
+              config,
+              admitted,
+              creator,
+              senderIsOwner: true,
+            });
+            capture = tools.mcpCapture;
+            const listed = await tools.invoke(AUTOMATIONS_TOOL_NAME, {
+              action: "list",
+              includeDisabled: true,
+            });
+            const listResult = listed as { content?: Array<{ text?: string }> };
+            const list = JSON.parse(listResult.content?.[0]?.text ?? "null") as {
+              scope?: string;
+              jobs?: Array<{ id: string }>;
+            };
+            expect(list.scope).toBe("gateway");
+            expect(list.jobs?.map((job) => job.id)).toContain(legacyJob.id);
+            await expect(
+              tools.invoke(AUTOMATIONS_TOOL_NAME, { action: "get", jobId: legacyJob.id }),
+            ).resolves.toMatchObject({
+              content: [{ text: expect.stringContaining(legacyJob.id) }],
+            });
+            await tools.invoke(AUTOMATIONS_TOOL_NAME, {
+              action: "update",
+              jobId: legacyJob.id,
+              job: { name: "Reviewed legacy reminder" },
+            });
+            expect((await fixture.read())[0]).toMatchObject({
+              id: legacyJob.id,
+              name: "Reviewed legacy reminder",
+            });
+            expect((await fixture.read())[0]).not.toHaveProperty("owner");
+            setRuntimeConfigSnapshot({ ...config, commands: { ownerAllowFrom: [] } });
+            await expect(
+              tools.invoke(AUTOMATIONS_TOOL_NAME, {
+                action: "update",
+                jobId: legacyJob.id,
+                job: { name: "Must not persist after owner removal" },
+              }),
+            ).rejects.toThrow(/Automation (caller authority is no longer active|admin grant)/i);
+            expect((await fixture.read())[0]?.name).toBe("Reviewed legacy reminder");
+          } finally {
+            if (capture) {
+              revokeMcpLoopbackClientGrant(capture.token);
+            }
+            clearGatewayContextResolver(admitted);
+          }
+        },
+      );
+    } finally {
+      await closeMcpLoopbackServer();
+    }
+  });
+
   it("rejects creation through the ordinary tool after a real requester handoff", async () => {
     const config: OpenClawConfig = { ...cfg, tools: { allow: [AUTOMATIONS_TOOL_NAME] } };
     setRuntimeConfigSnapshot(config);
