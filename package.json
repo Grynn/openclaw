@@ -104,6 +104,7 @@
     "!dist/plugin-sdk/claude-model-runtime.d.ts",
     "!dist/plugin-sdk/cli-runtime.d.ts",
     "!dist/plugin-sdk/codex-mcp-projection.d.ts",
+    "!dist/plugin-sdk/agent-bootstrap-runtime.d.ts",
     "!dist/plugin-sdk/codex-session-transcript-runtime.d.ts",
     "!dist/plugin-sdk/command-status-runtime.d.ts",
     "!dist/plugin-sdk/command-surface.d.ts",
@@ -900,6 +901,9 @@
     },
     "./plugin-sdk/native-hook-relay-runtime": {
       "default": "./dist/plugin-sdk/native-hook-relay-runtime.js"
+    },
+    "./plugin-sdk/agent-bootstrap-runtime": {
+      "default": "./dist/plugin-sdk/agent-bootstrap-runtime.js"
     },
     "./plugin-sdk/codex-session-transcript-runtime": {
       "default": "./dist/plugin-sdk/codex-session-transcript-runtime.js"

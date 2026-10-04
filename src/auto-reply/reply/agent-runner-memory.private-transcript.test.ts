@@ -336,7 +336,7 @@ it.each(["completed", "interrupted"] as const)(
         admission.release();
         admission = undefined;
         expect(requests).toHaveLength(1);
-        expect(runtimeBudgets).toEqual([128_000]);
+        expect(runtimeBudgets).toEqual([64_000]);
         expectRetiredRuntimes(
           firstPrivateSessionIds,
           "completed private memory run must retire its acquired MCP runtime",

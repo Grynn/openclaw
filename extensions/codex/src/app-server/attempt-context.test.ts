@@ -98,6 +98,7 @@ describe("Codex app-server attempt context", () => {
         contextFiles: [],
         inheritsAgentWorkspace: false,
         promptContextFiles: [],
+        shouldRecordCompletedBootstrapTurn: false,
       },
       skillsPrompt: "",
       tools,

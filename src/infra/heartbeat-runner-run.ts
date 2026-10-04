@@ -1,4 +1,5 @@
 import { appendCronStyleCurrentTimeLine } from "../agents/current-time.js";
+import { HEARTBEAT_RESPONSE_TOOL_NAME } from "../auto-reply/heartbeat-tool-response.js";
 import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
 import { prepareReplyConversation } from "../auto-reply/reply/prompt-session-context.js";
 import {
@@ -50,6 +51,13 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
     });
     return { status: "skipped", reason: "alerts-disabled" };
   }
+  // Forced response-tool turns must retain their response path under a heartbeat tool cap.
+  const heartbeatToolsAllow =
+    heartbeat?.tools === undefined
+      ? undefined
+      : prepared.usesHeartbeatResponseTool
+        ? [...new Set([...heartbeat.tools, HEARTBEAT_RESPONSE_TOOL_NAME])]
+        : heartbeat.tools;
   const policy = createHeartbeatDispatch(opts, wake, prepared);
   const state: ReplyOperationRunState = { heartbeat: policy };
   const signal = getHeartbeatWakeAbortSignal();
@@ -136,6 +144,8 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
             ? undefined
             : resolveHeartbeatTimeoutOverrideSeconds(cfg, heartbeat),
           bootstrapContextMode: heartbeat?.lightContext === true ? "lightweight" : undefined,
+          ...(heartbeat?.skills === undefined ? {} : { skillFilter: heartbeat.skills }),
+          ...(heartbeatToolsAllow === undefined ? {} : { toolsAllow: heartbeatToolsAllow }),
           disableBlockStreaming: true,
           suppressToolProgressMessages: true,
           suppressDefaultToolProgressMessages: true,

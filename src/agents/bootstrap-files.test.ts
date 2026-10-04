@@ -14,12 +14,17 @@ import {
   upsertSessionEntryCore,
   type SessionTranscriptRuntimeTarget,
 } from "../config/sessions/session-accessor.js";
+import {
+  resolveSqliteTranscriptReadScope,
+  toDatabaseOptions,
+} from "../config/sessions/session-accessor.sqlite-scope.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   clearInternalHooks,
   registerInternalHook,
   type AgentBootstrapHookContext,
 } from "../hooks/internal-hooks.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { makeTempWorkspace } from "../test-helpers/workspace.js";
 import { withEnvAsync } from "../test-utils/env.js";
@@ -33,6 +38,7 @@ import {
   FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE,
   hasCompletedBootstrapTurn,
   makeBootstrapWarn,
+  persistCompletedBootstrapTurn,
   resolveBootstrapContextForRun,
   resolveBootstrapFilesForRun,
   resolveContextInjectionMode,
@@ -861,6 +867,27 @@ describe("hasCompletedBootstrapTurn", () => {
     expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(false);
   });
 
+  it("persists completion through the admitted worker and rejects a stale writer", async () => {
+    await sessionManager.appendMessageAsync(makeUserMessage("hello", 1));
+    const hostExec = vi.spyOn(DatabaseSync.prototype, "exec");
+    try {
+      expect(
+        await persistCompletedBootstrapTurn({
+          sessionTarget: { ...sessionTarget, expectedWriterRunId: "retired-run" },
+          runId: "retired-run",
+        }),
+      ).toBe(false);
+      expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(false);
+      expect(await persistCompletedBootstrapTurn({ sessionTarget, runId: "current-run" })).toBe(
+        true,
+      );
+      expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(true);
+      expect(hostExec.mock.calls.filter(([sql]) => /^BEGIN\b/iu.test(sql))).toEqual([]);
+    } finally {
+      hostExec.mockRestore();
+    }
+  });
+
   it("invalidates a completion marker after compaction", async () => {
     const firstEntryId = sessionManager.appendMessage(makeUserMessage("hello", 1));
     sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, { timestamp: 2 });
@@ -897,6 +924,26 @@ describe("hasCompletedBootstrapTurn", () => {
     sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, { timestamp: 2 });
     sessionManager.appendResetBoundary("reset");
     sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, { timestamp: 3 });
+
+    expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(true);
+  });
+
+  it("finds a compressed completion marker beyond the last 500 active events", async () => {
+    sessionManager.appendCustomEntry(FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE, {
+      context: "same instruction ".repeat(1_000),
+    });
+    const database = openOpenClawAgentDatabase(
+      toDatabaseOptions(resolveSqliteTranscriptReadScope(sessionTarget)),
+    );
+    const stored = database.db
+      .prepare(
+        "SELECT event_zstd FROM transcript_events WHERE session_id = ? ORDER BY seq DESC LIMIT 1",
+      )
+      .get(sessionTarget.sessionId) as { event_zstd: Uint8Array | null } | undefined;
+    expect(stored?.event_zstd).toBeInstanceOf(Uint8Array);
+    for (let index = 0; index < 501; index++) {
+      sessionManager.appendMessage(makeUserMessage(`later ${index}`, index + 1));
+    }
 
     expect(await hasCompletedBootstrapTurn(sessionTarget)).toBe(true);
   });

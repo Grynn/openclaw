@@ -5,7 +5,11 @@ import { APPROVAL_FIELD_LABELS } from "./schema.labels.approvals.js";
 import { BROWSER_FIELD_LABELS } from "./schema.labels.browser.js";
 import { GITHUB_TOOL_FIELD_LABELS } from "./schema.labels.github.js";
 import { SESSION_FIELD_LABELS } from "./schema.labels.session.js";
-import { WORKSPACE_FIELD_LABELS } from "./schema.labels.workspace.js";
+import {
+  AGENT_CONTEXT_FIELD_LABELS,
+  DEFAULT_AGENT_CONTEXT_FIELD_LABELS,
+  WORKSPACE_FIELD_LABELS,
+} from "./schema.labels.workspace.js";
 import { META_FIELD_LABELS } from "./schema.meta.js";
 import { NODE_CAPABILITY_FIELD_LABELS } from "./schema.node-capabilities.js";
 import { CLOUD_WORKER_FIELD_LABELS } from "./zod-schema.cloud-workers.js";
@@ -98,15 +102,11 @@ export const FIELD_LABELS: Record<string, string> = {
   agents: "Agents",
   "agents.ownership": "Agent Ownership Generation",
   "agents.defaults": "Agent Defaults",
-  "agents.defaults.contextLimits": "Default Context Limits",
-  "agents.defaults.contextLimits.memoryGetMaxChars": "Default memory_get Max Chars",
-  "agents.defaults.contextLimits.postCompactionMaxChars": "Default Post-compaction Max Chars",
+  ...DEFAULT_AGENT_CONTEXT_FIELD_LABELS,
   "agents.entries": "Agent List",
   "agents.entries.*.skillsLimits": "Agent Skills Limits",
   "agents.entries.*.skillsLimits.maxSkillsPromptChars": "Agent Skills Prompt Max Chars",
-  "agents.entries.*.contextLimits": "Agent Context Limits",
-  "agents.entries.*.contextLimits.memoryGetMaxChars": "Agent memory_get Max Chars",
-  "agents.entries.*.contextLimits.postCompactionMaxChars": "Agent Post-compaction Max Chars",
+  ...AGENT_CONTEXT_FIELD_LABELS,
   cloudWorkers: "Cloud Workers",
   ...CLOUD_WORKER_FIELD_LABELS,
   ...STORAGE_FIELD_LABELS,

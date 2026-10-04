@@ -380,6 +380,7 @@ function openAgentDatabaseBackend(
     "session.archives.preparePublication": loadAgentArchiveOperations,
     "session.archives.recordPublication": loadAgentArchiveOperations,
     "session.transcript.initialize": loadAgentTranscriptOperations,
+    "session.transcript.bootstrapComplete": loadAgentTranscriptOperations,
     "session.entries.replace": loadAgentReplacementOperations,
     "session.restart.recover": loadAgentRestartRecoveryOperations,
     "session.entry.acp": loadAgentAcpOperations,

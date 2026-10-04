@@ -1,4 +1,5 @@
 import path from "node:path";
+import { openFileBackedSessionManagerForTest } from "openclaw/plugin-sdk/agent-runtime-test-contracts";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
 import {
@@ -20,6 +21,13 @@ import {
   turnStartResult,
   userMessage,
 } from "./run-attempt-test-harness.js";
+import {
+  createContextEngine,
+  createParams as createProjectionParams,
+  createStartedThreadHarness as createProjectionStartedThreadHarness,
+  getRequestInputText as getProjectionRequestInputText,
+  runCodexAppServerAttempt as runProjectionAttempt,
+} from "./run-attempt.context-engine.test-support.js";
 import {
   readCodexAppServerBinding,
   writeCodexAppServerBinding,
@@ -79,6 +87,95 @@ function appendToolPair(manager: SessionManager, index: number) {
 }
 
 describe("Codex bounded assistant continuity", () => {
+  it("caps assembled Codex context without reducing the engine token budget", async () => {
+    const sessionFile = path.join(tempDir, "session-projection-cap.jsonl");
+    const workspaceDir = path.join(tempDir, "workspace-projection-cap");
+    const contextEngine = createContextEngine({
+      assemble: vi.fn(async () => ({
+        messages: [
+          ...Array.from({ length: 6 }, (_, index) =>
+            assistantMessage(`older context ${index} ${"x".repeat(120_000)}`, index),
+          ),
+          assistantMessage("recent continuity anchor", 10),
+        ],
+        estimatedTokens: 200_000,
+      })),
+    });
+    const harness = createProjectionStartedThreadHarness();
+    const params = createProjectionParams(sessionFile, workspaceDir);
+    params.contextEngine = contextEngine;
+    params.contextTokenBudget = 258_400;
+    params.contextWindowInfo = {
+      tokens: 258_400,
+      referenceTokens: 272_000,
+      source: "agentContextTokens",
+    };
+    params.config = {
+      ...params.config,
+      agents: {
+        defaults: { contextLimits: { contextProjectionMaxChars: 400_000 } },
+        entries: {
+          main: { contextLimits: { contextProjectionMaxChars: 304_000 } },
+        },
+      },
+    };
+
+    const run = runProjectionAttempt(params);
+    await harness.waitForMethod("turn/start");
+    expect(contextEngine["assemble"]).toHaveBeenCalledWith(
+      expect.objectContaining({ tokenBudget: 258_400 }),
+    );
+    const inputText = getProjectionRequestInputText(harness);
+    const contextStart = inputText.indexOf("<conversation_context>\n");
+    const contextEnd = inputText.indexOf("\n</conversation_context>", contextStart);
+    expect(contextStart).toBeGreaterThanOrEqual(0);
+    expect(contextEnd - contextStart - "<conversation_context>\n".length).toBe(304_000);
+    expect(inputText).toContain("[truncated ");
+    expect(inputText).toContain("recent continuity anchor");
+
+    await harness.completeTurn();
+    await run;
+  });
+
+  it("applies the configured projection cap to fresh no-engine continuity", async () => {
+    const sessionFile = path.join(tempDir, "session-fresh-continuity.jsonl");
+    const workspaceDir = path.join(tempDir, "workspace-fresh-continuity");
+    const sessionManager = openFileBackedSessionManagerForTest(sessionFile, {
+      sessionId: "session-1",
+    });
+    for (let index = 0; index < 6; index += 1) {
+      sessionManager.appendMessage(
+        assistantMessage(`older continuity ${index} ${"x".repeat(120_000)}`, index),
+      );
+    }
+    sessionManager.appendMessage(userMessage("recent continuity anchor", 10));
+    const harness = createProjectionStartedThreadHarness();
+    const params = createProjectionParams(sessionFile, workspaceDir);
+    params.contextTokenBudget = 258_400;
+    params.config = {
+      ...params.config,
+      agents: {
+        defaults: { contextLimits: { contextProjectionMaxChars: 400_000 } },
+        entries: {
+          main: { contextLimits: { contextProjectionMaxChars: 304_000 } },
+        },
+      },
+    };
+
+    const run = runProjectionAttempt(params);
+    await harness.waitForMethod("turn/start");
+    const inputText = getProjectionRequestInputText(harness);
+    const contextStart = inputText.indexOf("<conversation_context>\n");
+    const contextEnd = inputText.indexOf("\n</conversation_context>", contextStart);
+    expect(contextStart).toBeGreaterThanOrEqual(0);
+    expect(contextEnd - contextStart - "<conversation_context>\n".length).toBe(304_000);
+    expect(inputText).toContain("[truncated ");
+    expect(inputText).toContain("recent continuity anchor");
+
+    await harness.completeTurn();
+    await run;
+  });
+
   it.each(["rotated", "resumed"] as const)(
     "retains an assistant-only bounded suffix on a %s native thread without replaying resumed history",
     async (mode) => {

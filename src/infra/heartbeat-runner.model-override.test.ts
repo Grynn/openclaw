@@ -25,6 +25,7 @@ async function replyOptions(
     perAgent?: HeartbeatConfig;
     wake?: Pick<RunOptions, "source" | "intent" | "tasks" | "heartbeat">;
     event?: { text: string; contextKey?: string; isolated?: boolean };
+    visibleReplies?: "automatic" | "message_tool";
   } = {},
 ) {
   return withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
@@ -46,6 +47,7 @@ async function replyOptions(
           : {}),
       },
       channels: { whatsapp: { allowFrom: ["*"] } },
+      ...(params.visibleReplies ? { messages: { visibleReplies: params.visibleReplies } } : {}),
       session: { store: storePath },
     };
     const baseKey = resolveAgentMainSessionKey({ cfg, agentId });
@@ -91,6 +93,27 @@ it("passes the trimmed per-agent model override after merging defaults", async (
     perAgent: { model: "  ollama/llama3.2:1b  " },
   });
   expect(options?.heartbeatModelOverride).toBe("ollama/llama3.2:1b");
+});
+
+it("narrows heartbeat skills and tools while preserving explicit per-agent empty skills", async () => {
+  const { options } = await replyOptions({
+    heartbeat: { skills: ["calendar"], tools: ["exec"] },
+    perAgent: { skills: [], tools: ["read"] },
+    visibleReplies: "automatic",
+  });
+  expect(options?.skillFilter).toEqual([]);
+  expect(options?.toolsAllow).toEqual(["read"]);
+  expect(options?.forceHeartbeatTool).toBeUndefined();
+});
+
+it("retains the required response tool inside a narrowed heartbeat tool catalog", async () => {
+  const { options } = await replyOptions({
+    heartbeat: { skills: ["calendar"], tools: ["exec"] },
+    visibleReplies: "message_tool",
+  });
+  expect(options?.skillFilter).toEqual(["calendar"]);
+  expect(options?.toolsAllow).toEqual(["exec", "heartbeat_respond"]);
+  expect(options?.forceHeartbeatTool).toBe(true);
 });
 
 it("retires the bundle MCP runtime only for isolated heartbeat runs", async () => {

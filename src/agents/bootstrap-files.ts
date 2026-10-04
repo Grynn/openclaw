@@ -1,11 +1,15 @@
 import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { ChatType } from "../channels/chat-type.js";
-import { prepareSessionTranscriptHydration } from "../config/sessions/session-transcript-hydration.js";
+import {
+  appendSessionBootstrapCompletionInWorker,
+  readSessionBootstrapCompletionInWorker,
+} from "../config/sessions/session-bootstrap-completion-store.js";
 import type { AgentContextInjection } from "../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isMemoryOriginEligibleForAutomaticInjection } from "../memory-host-sdk/host/types.js";
 import { classifyActiveMemoryWorkspacePaths } from "../plugins/memory-runtime.js";
+import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import { resolveUserPath } from "../utils.js";
 import { resolveAgentConfig, resolveDefaultAgentId } from "./agent-scope.js";
 import { getOrLoadBootstrapFiles } from "./bootstrap-cache.js";
@@ -31,7 +35,6 @@ import {
 
 export type BootstrapContextMode = "full" | "lightweight";
 
-const CONTINUATION_SCAN_MAX_RECORDS = 500;
 export const FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE = "openclaw:bootstrap-context:full";
 const BOOTSTRAP_WARNING_DEDUPE_LIMIT = 1024;
 const seenBootstrapWarnings = new Set<string>();
@@ -70,27 +73,41 @@ export async function hasCompletedBootstrapTurn(
   sessionTarget?: AgentRunSessionTarget,
 ): Promise<boolean> {
   const { agentId, sessionId, sessionKey, storePath } = sessionTarget ?? {};
-  if (!agentId || !sessionId || !sessionKey || !storePath) {
+  if (!agentId || !sessionId || !sessionKey || !storePath || isIncognitoSessionKey(sessionKey)) {
     return false;
   }
   try {
-    const reader = prepareSessionTranscriptHydration({ agentId, sessionId, sessionKey, storePath });
-    const records = await reader.readRecentActiveEvents(CONTINUATION_SCAN_MAX_RECORDS);
-    reader.assertCurrent();
-    for (const entry of records.toReversed()) {
-      const record = entry as { type?: string; customType?: string } | null | undefined;
-      // Context before compaction/reset is not reusable on the active branch.
-      if (record?.type === "compaction" || record?.type === "reset") {
-        return false;
-      }
-      if (record?.type === "custom" && record.customType === FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE) {
-        return true;
-      }
-    }
-    return false;
+    return await readSessionBootstrapCompletionInWorker({
+      customType: FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE,
+      sessionTarget: { agentId, sessionId, sessionKey, storePath },
+    });
   } catch {
     return false;
   }
+}
+
+/** Record a successful full bootstrap turn in the active transcript branch. */
+export async function persistCompletedBootstrapTurn(params: {
+  runId: string;
+  sessionTarget?: AgentRunSessionTarget;
+  assertCurrent?: () => void;
+}): Promise<boolean> {
+  const target = params.sessionTarget;
+  if (
+    !target?.agentId ||
+    !target.sessionId ||
+    !target.sessionKey ||
+    !target.storePath ||
+    isIncognitoSessionKey(target.sessionKey)
+  ) {
+    return false;
+  }
+  return await appendSessionBootstrapCompletionInWorker({
+    runId: params.runId,
+    customType: FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE,
+    sessionTarget: target,
+    ...(params.assertCurrent ? { assertCurrent: params.assertCurrent } : {}),
+  });
 }
 
 /** Builds a session-scoped warning sink that dedupes repeated bootstrap warnings. */

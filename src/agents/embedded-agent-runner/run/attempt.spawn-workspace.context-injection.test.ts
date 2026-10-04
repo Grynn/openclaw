@@ -60,6 +60,7 @@ describe("embedded attempt context injection", () => {
       bootstrapMode: testCase.bootstrap,
       bootstrapContextRunKind: testCase.runKind,
       bootstrapContextMode: testCase.runKind === "heartbeat" ? "lightweight" : "full",
+      isPrimaryRun: true,
       hasCompletedBootstrapTurn,
       resolveBootstrapContextForRun,
     });
@@ -70,6 +71,59 @@ describe("embedded attempt context injection", () => {
     });
     expect(hasCompletedBootstrapTurn).toHaveBeenCalledTimes(testCase.completedCalls);
     expect(resolveBootstrapContextForRun).toHaveBeenCalledTimes(Number(testCase.resolve));
+  });
+
+  it.each([
+    {
+      name: "established primary workspace",
+      mode: "continuation-skip",
+      bootstrap: "none",
+      runKind: "default",
+      primary: true,
+      files: 1,
+      record: true,
+    },
+    {
+      name: "subagent",
+      mode: "continuation-skip",
+      bootstrap: "full",
+      runKind: "default",
+      primary: false,
+      files: 1,
+      record: false,
+    },
+    {
+      name: "cron",
+      mode: "continuation-skip",
+      bootstrap: "full",
+      runKind: "cron",
+      primary: true,
+      files: 1,
+      record: false,
+    },
+    {
+      name: "empty injection",
+      mode: "continuation-skip",
+      bootstrap: "full",
+      runKind: "default",
+      primary: true,
+      files: 0,
+      record: false,
+    },
+  ] as const)("records bootstrap completion only for $name", async (testCase) => {
+    const result = await resolveAttemptBootstrapContext({
+      contextInjectionMode: testCase.mode,
+      bootstrapMode: testCase.bootstrap,
+      bootstrapContextRunKind: testCase.runKind,
+      bootstrapContextMode: "full",
+      isPrimaryRun: testCase.primary,
+      hasCompletedBootstrapTurn: async () => false,
+      resolveBootstrapContextForRun: async () => ({
+        bootstrapFiles: [],
+        contextFiles: Array.from({ length: testCase.files }, () => ({ path: "AGENTS.md" })),
+      }),
+    });
+    expect(result.shouldRecordCompletedBootstrapTurn).toBe(testCase.record);
   });
 
   it("filters no-op heartbeat pairs before history limiting and context-engine assembly", async () => {

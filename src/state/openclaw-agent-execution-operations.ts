@@ -30,7 +30,21 @@ export function prepareAgentTranscript() {
 
 export async function loadAgentTranscriptOperations() {
   await prepareAgentTranscript();
+  const bootstrap = await import("../config/sessions/session-bootstrap-completion-store.worker.js");
   return {
+    "session.transcript.bootstrapComplete": (
+      input: import("../config/sessions/session-bootstrap-completion-store.worker.js").SessionBootstrapCompletionInput,
+      { writeTransaction, admit },
+    ) =>
+      writeTransaction(
+        "session.transcript.bootstrap-complete",
+        "Bootstrap completion",
+        (current) => {
+          const result = bootstrap.appendSessionBootstrapCompletionInTransaction(current, input);
+          admit("commit");
+          return result;
+        },
+      ),
     "session.transcript.initialize": (input: TranscriptInitialization, context) => {
       if (!transcript) {
         throw new Error("Session transcript initialization was not prepared");

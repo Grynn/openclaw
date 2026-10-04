@@ -341,6 +341,8 @@ describe("Codex native configuration", () => {
       configuredProvider = nativeProvider,
       modelPolicyAction,
     }) => {
+      const boundedSupervisionCase =
+        transport === "stdio" && !hasAnswer && nativeProvider === "openai" && !modelPolicyAction;
       const nativeSearchEnabled =
         nativeProvider === "copilot" || configuredProvider !== nativeProvider;
       const approvalsReviewer =
@@ -379,7 +381,9 @@ describe("Codex native configuration", () => {
       await writeCodexAppServerBinding(sessionFile, {
         threadId: "thread-existing",
         cwd: workspaceDir,
-        historyCoveredThrough: new Date().toISOString(),
+        historyCoveredThrough: boundedSupervisionCase
+          ? new Date(0).toISOString()
+          : new Date().toISOString(),
         webSearchThreadConfigFingerprint: JSON.stringify({
           "features.standalone_web_search": false,
           web_search: "disabled",
@@ -487,12 +491,18 @@ describe("Codex native configuration", () => {
       params.modelId = "claude-opus-4-6";
       params.model = createCodexTestModel("anthropic");
       params.fastMode = true;
+      if (boundedSupervisionCase) {
+        params.contextTokenBudget = 50_000;
+      }
       await attachSqliteSessionTarget(
         params,
         path.join(tempDir, "supervised-settlement.sqlite"),
         params.sessionId,
       );
       await appendSqliteHistoryMessage(params, userMessage("Preserve the prior conversation.", 1));
+      if (boundedSupervisionCase) {
+        await appendSqliteHistoryMessage(params, userMessage("x".repeat(120_000), 2));
+      }
       const priorTranscript = await readTranscriptMessagesByIdentity(params);
       const capture = vi.spyOn(settledTurnContext, "captureCodexSettledTurnFinalizationContext");
       const warn = vi.spyOn(embeddedAgentLog, "warn");
@@ -667,6 +677,20 @@ describe("Codex native configuration", () => {
       expect(turnParams).not.toHaveProperty("modelProvider");
       expect(turnParams?.approvalsReviewer).toBe(approvalsReviewer);
       expect(turnParams?.serviceTier).toBe("priority");
+      if (boundedSupervisionCase) {
+        const input = Array.isArray(turnParams?.input) ? turnParams.input : [];
+        const turnText = input
+          .map((item) =>
+            isJsonObject(item) && item.type === "text" && typeof item.text === "string"
+              ? item.text
+              : "",
+          )
+          .join("\n");
+        const projectedContext =
+          /<conversation_context>\n([\s\S]*?)\n<\/conversation_context>/u.exec(turnText)?.[1];
+        expect(projectedContext?.length).toBeGreaterThan(24_000);
+        expect(projectedContext?.length).toBeLessThanOrEqual(75_000);
+      }
     },
   );
 });

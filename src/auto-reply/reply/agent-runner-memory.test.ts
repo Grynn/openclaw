@@ -3,6 +3,7 @@ import fsCore from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import {
   afterAll,
   afterEach,
@@ -238,28 +239,19 @@ function modelRoutingProvenance(
 
 function requireModelFallbackCall(index = 0) {
   const call = runWithModelFallbackMock.mock.calls[index]?.[0] as ModelFallbackParams | undefined;
-  if (!call) {
-    throw new Error(`runWithModelFallback call ${index} missing`);
-  }
-  return call;
+  return expectDefined(call, `runWithModelFallback call ${index}`);
 }
 
 function requireEmbeddedAgentCall(index = 0) {
   const call = runEmbeddedAgentMock.mock.calls[index]?.[0] as EmbeddedAgentParams | undefined;
-  if (!call) {
-    throw new Error(`runEmbeddedAgent call ${index} missing`);
-  }
-  return call;
+  return expectDefined(call, `runEmbeddedAgent call ${index}`);
 }
 
 function requireCompactEmbeddedAgentSessionCall(index = 0) {
   const call = compactEmbeddedAgentSessionMock.mock.calls[index]?.[0] as
     | CompactEmbeddedAgentSessionParams
     | undefined;
-  if (!call) {
-    throw new Error(`compactEmbeddedAgentSession call ${index} missing`);
-  }
-  return call;
+  return expectDefined(call, `compactEmbeddedAgentSession call ${index}`);
 }
 
 async function commitSourceCompaction(params: { sessionKey: string; storePath: string }) {
@@ -931,6 +923,7 @@ describe("runMemoryFlushIfNeeded", () => {
       sessionPersistence: "detached",
       sandboxSessionKey: runtimePolicySessionKey,
       memoryFlushWritePath: "memory/2023-11-14.md",
+      bootstrapContextMode: "lightweight",
     });
     expect(runEmbeddedAgentEntryMock).toHaveBeenCalledWith(
       expect.objectContaining({

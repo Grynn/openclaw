@@ -18,6 +18,22 @@ export type SessionTranscriptMatchWorkerInput = {
   request: SessionTranscriptEventMatchRequest;
 };
 
+export type SessionBootstrapControlWorkerInput = {
+  kind: "bootstrap-control";
+  database: { agentId: string; path: string };
+  target: ResolvedTranscriptReadScope;
+  customType: string;
+};
+
+export type SessionBootstrapControlWorkerValue = {
+  kind: "bootstrap-control";
+  result: "custom" | "compaction" | "reset" | undefined;
+};
+
+export type SessionBootstrapControlReader = (
+  input: Omit<SessionBootstrapControlWorkerInput, "kind" | "database">,
+) => Promise<SessionBootstrapControlWorkerValue["result"]>;
+
 export type SessionTranscriptSearchWorkerInput = {
   kind: "transcript-search";
   database: { agentId: string; path: string };

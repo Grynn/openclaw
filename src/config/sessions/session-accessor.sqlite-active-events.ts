@@ -35,6 +35,7 @@ import {
   resolveVisibleMessagePositions,
   resolveTranscriptBoundaryWindow,
 } from "./session-accessor.sqlite-reset-window.js";
+import type { ResolvedTranscriptReadScope } from "./session-accessor.sqlite-scope.js";
 import {
   DEFAULT_VISIBLE_MESSAGE_MAX_BYTES,
   DEFAULT_VISIBLE_MESSAGE_MAX_MESSAGES,
@@ -56,6 +57,60 @@ export {
   SessionTranscriptProjectionUnavailableError,
 } from "./session-transcript-projection-error.js";
 export type { SessionTranscriptMessageEvent } from "./session-accessor.sqlite-projection-read.js";
+
+/** Latest active bootstrap control, without an arbitrary message-tail cutoff. */
+export function readLatestSessionTranscriptControlEvent(
+  scope: ResolvedTranscriptReadScope,
+  customType: string,
+): "custom" | "compaction" | "reset" | undefined {
+  return withCurrentProjectionSnapshot(
+    scope,
+    (projection) => {
+      const db = getActiveTranscriptKysely(projection.database);
+      const eventCustomType =
+        /* kysely-allow-raw: custom control identity uses the canonical navigation projection. */
+        sql<string | null>`json_extract(${transcriptEventNavigationSql("event")}, '$.customType')`;
+      const latest = (type: "custom" | "compaction" | "reset") => {
+        const query = db
+          .selectFrom("transcript_event_identities as identity")
+          .innerJoin("session_transcript_active_events as active", (join) =>
+            join
+              .onRef("active.session_id", "=", "identity.session_id")
+              .onRef("active.event_seq", "=", "identity.seq"),
+          )
+          .innerJoin("transcript_events as event", (join) =>
+            join
+              .onRef("event.session_id", "=", "identity.session_id")
+              .onRef("event.seq", "=", "identity.seq"),
+          )
+          .select("active.active_position")
+          .where("identity.session_id", "=", projection.resolved.sessionId)
+          .where("identity.event_type", "=", type)
+          .orderBy("active.active_position", "desc")
+          .limit(1);
+        return executeSqliteQueryTakeFirstSync(
+          projection.database.db,
+          type === "custom" ? query.where(eventCustomType, "=", customType) : query,
+        )?.active_position;
+      };
+      const custom = latest("custom");
+      const compaction = latest("compaction");
+      const reset = latest("reset");
+      if (
+        custom !== undefined &&
+        (compaction === undefined || custom > compaction) &&
+        (reset === undefined || custom > reset)
+      ) {
+        return "custom";
+      }
+      if (reset !== undefined && (compaction === undefined || reset > compaction)) {
+        return "reset";
+      }
+      return compaction === undefined ? undefined : "compaction";
+    },
+    { readOnly: true, resolvedScope: scope },
+  );
+}
 
 /** Reads every message event on the active path. Full callers remain intentionally O(output). */
 export function readSessionTranscriptMessageEvents(

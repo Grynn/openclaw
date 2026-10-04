@@ -1,4 +1,5 @@
 import { isActiveHarnessContextEngine } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { resolveAgentConfig } from "openclaw/plugin-sdk/agent-runtime";
 import type { AgentHarnessSessionRuntimeParamsV1 } from "openclaw/plugin-sdk/codex-mcp-projection";
 import { resolveCodexContextEngineProjectionMaxChars } from "./context-engine-projection.js";
 import type {
@@ -14,6 +15,7 @@ export type CodexContextEngineThreadBootstrapProjection = Pick<
 export function buildContextEngineBinding(
   params: AgentHarnessSessionRuntimeParamsV1,
   projection?: CodexContextEngineThreadBootstrapProjection,
+  agentId?: string,
 ): CodexAppServerContextEngineBinding | undefined {
   const contextEngine = isActiveHarnessContextEngine(params.contextEngine)
     ? params.contextEngine
@@ -33,9 +35,7 @@ export function buildContextEngineBinding(
       turnMaintenanceMode: contextEngine.info.turnMaintenanceMode,
       citationsMode: params.config?.memory?.citations,
       contextTokenBudget: params.contextTokenBudget,
-      projectionMaxChars: resolveCodexContextEngineProjectionMaxChars({
-        contextTokenBudget: params.contextTokenBudget,
-      }),
+      projectionMaxChars: resolveCodexContextEngineProjectionMaxCharsForAttempt(params, agentId),
     }),
     projection: projection
       ? {
@@ -46,6 +46,20 @@ export function buildContextEngineBinding(
         }
       : undefined,
   };
+}
+
+export function resolveCodexContextEngineProjectionMaxCharsForAttempt(
+  params: AgentHarnessSessionRuntimeParamsV1,
+  agentId?: string,
+): number {
+  const defaults = params.config?.agents?.defaults?.contextLimits;
+  const contextLimits = agentId
+    ? (resolveAgentConfig(params.config ?? {}, agentId)?.contextLimits ?? defaults)
+    : defaults;
+  return resolveCodexContextEngineProjectionMaxChars({
+    contextTokenBudget: params.contextTokenBudget,
+    contextProjectionMaxChars: contextLimits?.contextProjectionMaxChars,
+  });
 }
 
 export function isContextEngineBindingCompatible(

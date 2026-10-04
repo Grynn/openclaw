@@ -153,6 +153,8 @@ Outside heartbeats, stray `HEARTBEAT_OK` at the start/end of a message is stripp
         model: "anthropic/claude-opus-4-6",
         lightContext: false, // default: false; true skips workspace bootstrap files for heartbeat runs
         isolatedSession: false, // default: false; true runs each heartbeat in a fresh session (no conversation history)
+        skills: ["calendar"], // optional: narrow the skills in heartbeat turns; [] provides none
+        tools: ["read"], // optional: narrow heartbeat tools; required heartbeat_respond remains available
         target: "owner", // default | options: last | none | <channel id>
         accountId: "ops-bot", // optional multi-account channel id
         prompt: "Follow the heartbeat monitor scratch context when provided. Recurring tasks are automations; create or change their schedules with the automations tool, not heartbeat scratch. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply NO_REPLY.",
@@ -166,6 +168,7 @@ Outside heartbeats, stray `HEARTBEAT_OK` at the start/end of a message is stripp
 
 - `agents.defaults.heartbeat` sets global heartbeat behavior.
 - `agents.entries.*.heartbeat` merges on top. If any agent has a `heartbeat` block, **only those agents** run heartbeats.
+- `heartbeat.skills` and `heartbeat.tools` narrow heartbeat-only skills and tools. Per-agent lists replace the matching default lists; an empty skill list disables skills. The required `heartbeat_respond` tool remains available for structured responses.
 - Ambient ownership resolves through `agents.defaults.heartbeat.agentId`, `agents.defaults.systemAgent.agentId`, then the sole agent. When no per-agent or default heartbeat block applies and that chain leaves a multi-agent roster ownerless, heartbeats stay disabled and emit validation and Gateway warnings.
 - `channels.defaults.heartbeatVisibility` sets visibility defaults for all channels.
 - `channels.<channel>.heartbeatVisibility` overrides channel defaults.

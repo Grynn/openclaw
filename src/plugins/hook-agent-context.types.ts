@@ -3,7 +3,12 @@ import type { InputProvenance } from "../sessions/input-provenance.js";
 import type { PluginHookChannelContext } from "./hook-channel-context.types.js";
 import type { MemoryAudience } from "./memory-provider-types.js";
 
-type PluginHookContextWindowSource = "model" | "modelsConfig" | "agentContextTokens" | "default";
+type PluginHookContextWindowSource =
+  | "model"
+  | "modelsConfig"
+  | "agentContextTokens"
+  | "runContextTokenBudget"
+  | "default";
 
 export type PluginHookContextWindow = {
   /** Resolved effective context-token budget after model/config/agent caps. */

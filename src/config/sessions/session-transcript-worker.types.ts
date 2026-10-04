@@ -135,6 +135,9 @@ import type { SessionTranscriptSearchResult } from "./session-transcript-search.
 import type { SessionTranscriptWorkerReadError } from "./session-transcript-worker-error.types.js";
 import type {
   SessionTranscriptMatchWorkerInput,
+  SessionBootstrapControlWorkerInput,
+  SessionBootstrapControlWorkerValue,
+  SessionBootstrapControlReader,
   SessionTranscriptSearchWorkerInput,
   SessionTranscriptAnchorsWorkerInput,
   SessionProgressCardWorkerInput,
@@ -476,6 +479,7 @@ export type SessionHistoryWorkerInput =
   | SessionIdentityEvidenceWorkerInput
   | SessionUsageCacheWorkerInput
   | SessionTranscriptSearchWorkerInput
+  | SessionBootstrapControlWorkerInput
   | SessionTranscriptMatchWorkerInput;
 
 export type SessionTranscriptWorkerInput =
@@ -509,6 +513,7 @@ export type SessionTranscriptWorkerValues = SessionTranscriptInventoryWorkerValu
   };
   "transcript-search": { kind: "transcript-search"; result: SessionTranscriptSearchResult };
   "transcript-match": { kind: "transcript-match"; result: { event: TranscriptEvent } | undefined };
+  "bootstrap-control": SessionBootstrapControlWorkerValue;
   "cold-metadata": SessionColdMetadataWorkerResult;
   "cold-storage-inventory": {
     kind: "cold-storage-inventory";
@@ -633,6 +638,7 @@ export type SessionHistoryWorkerDatabase = SessionTranscriptInventoryReaders & {
   findTranscriptEvent: (
     request: SessionTranscriptMatchWorkerInput["request"],
   ) => Promise<{ event: TranscriptEvent } | undefined>;
+  readBootstrapControl: SessionBootstrapControlReader;
   readHistoricalEvictionCandidates: SessionHistoryReader<
     SessionHistoricalEvictionCandidatesWorkerInput,
     string[]

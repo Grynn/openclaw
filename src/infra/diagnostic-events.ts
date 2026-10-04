@@ -641,7 +641,7 @@ type DiagnosticModelCallBaseEvent = DiagnosticSessionEvent & {
   /** Defaults to request for emitters created before turn-level CLI diagnostics. */
   observationUnit?: "request" | "turn";
   contextTokenBudget?: number;
-  contextWindowSource?: "model" | "modelsConfig" | "agentContextTokens" | "default";
+  contextWindowSource?: import("../agents/context-window-guard.js").ContextWindowInfo["source"];
   contextWindowReferenceTokens?: number;
   upstreamRequestIdHash?: string;
   promptStats?: DiagnosticModelCallPromptStats;

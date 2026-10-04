@@ -1149,11 +1149,11 @@ export async function runMemoryFlushIfNeeded(params: {
     memoryAudience: flushMemoryAudience,
     memoryFlushTools,
   } = preparedAttempt;
-  const sourcePolicySessionKey =
+  const runtimePolicySessionKey =
     params.runtimePolicySessionKey ??
     params.followupRun.run.runtimePolicySessionKey ??
-    params.sessionKey ??
-    params.followupRun.run.sessionKey;
+    params.sessionKey;
+  const sourcePolicySessionKey = runtimePolicySessionKey ?? params.followupRun.run.sessionKey;
   const maintenanceRun = createSessionMaintenanceFollowup({
     run: params.followupRun.run,
     sessionEntry: { sessionId: memorySession.sessionId, updatedAt: Date.now() },
@@ -1230,10 +1230,7 @@ export async function runMemoryFlushIfNeeded(params: {
       },
       harness: {
         workspaceDir: params.followupRun.run.workspaceDir,
-        sessionKey:
-          params.runtimePolicySessionKey ??
-          params.followupRun.run.runtimePolicySessionKey ??
-          params.sessionKey,
+        sessionKey: runtimePolicySessionKey,
         preparation: { kind: "direct" },
         resolveRuntimeOverride: (provider) =>
           resolveSessionRuntimeOverrideForProvider({
@@ -1254,10 +1251,7 @@ export async function runMemoryFlushIfNeeded(params: {
           run: params.followupRun.run,
           catalog: params.followupRun.run.thinkingCatalog,
           agentId: params.followupRun.run.agentId,
-          sessionKey:
-            params.runtimePolicySessionKey ??
-            params.followupRun.run.runtimePolicySessionKey ??
-            params.sessionKey,
+          sessionKey: runtimePolicySessionKey,
           sessionEntry: activeSessionEntry,
           agentRuntime: sessionRuntimeOverride,
         });
@@ -1291,7 +1285,8 @@ export async function runMemoryFlushIfNeeded(params: {
           allowEmptyAssistantReplyAsSilent: true,
           terminalReplyExpectation: "optional",
           trigger: "memory",
-          contextTokenBudget: contextWindowTokens,
+          contextTokenBudget: Math.min(contextWindowTokens, 64_000),
+          bootstrapContextMode: "lightweight",
           memoryFlushWritePath,
           memoryFlushTools,
           initialTurnTainted:

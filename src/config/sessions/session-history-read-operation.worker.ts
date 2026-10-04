@@ -11,6 +11,7 @@ type DurableHistoryReadOperationRequest = Extract<
   {
     kind:
       | "transcript-match"
+      | "bootstrap-control"
       | "transcript-search"
       | "branch-summaries"
       | "session-title-fields"
@@ -38,6 +39,7 @@ export function isSessionHistoryReadOperation(
 ): request is DurableHistoryReadOperationRequest {
   switch (request.kind) {
     case "transcript-match":
+    case "bootstrap-control":
     case "transcript-search":
     case "branch-summaries":
     case "session-title-fields":
@@ -65,6 +67,14 @@ export async function prepareSessionHistoryReadOperation(
   retainedDatabase?: OpenClawAgentReadOnlyDatabase,
 ): Promise<() => SessionTranscriptWorkerValues[SessionHistoryReadOperationRequest["kind"]]> {
   switch (request.kind) {
+    case "bootstrap-control": {
+      const { readLatestSessionTranscriptControlEvent } =
+        await import("./session-accessor.sqlite-active-events.js");
+      return () => ({
+        kind: request.kind,
+        result: readLatestSessionTranscriptControlEvent(request.target, request.customType),
+      });
+    }
     case "transcript-anchors": {
       const [
         { withOpenClawAgentDatabaseReadOnly },

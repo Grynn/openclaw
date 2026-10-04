@@ -1,4 +1,7 @@
-import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
+import {
+  asFiniteNumber,
+  asPositiveSafeInteger,
+} from "@openclaw/normalization-core/number-coercion";
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { withGuardedFetchRequestAuthority } from "../../../infra/net/fetch-request-authority.js";
@@ -160,8 +163,41 @@ export function resolveEmbeddedRuntimeModelPolicy(params: {
   contextTokenBudget?: number;
   effectiveModel: ProviderRuntimeModel;
 } {
+  const requestedBudget = asPositiveSafeInteger(Math.floor(params.contextTokenBudget ?? 0));
+  const applyRequestedBudget = (resolved: {
+    contextWindowInfo?: ContextWindowInfo;
+    contextTokenBudget?: number;
+    effectiveModel: ProviderRuntimeModel;
+  }) => {
+    if (requestedBudget === undefined) {
+      return resolved;
+    }
+    const ownedBudget =
+      resolved.contextTokenBudget ??
+      asPositiveSafeInteger(params.runtimeModel.contextTokens) ??
+      params.runtimeModel.contextWindow;
+    const contextTokenBudget = Math.min(requestedBudget, ownedBudget ?? Infinity);
+    const contextWindowInfo =
+      contextTokenBudget < (ownedBudget ?? Infinity)
+        ? {
+            tokens: contextTokenBudget,
+            ...(resolved.contextWindowInfo
+              ? {
+                  referenceTokens:
+                    resolved.contextWindowInfo.referenceTokens ?? resolved.contextWindowInfo.tokens,
+                }
+              : {}),
+            source: "runContextTokenBudget" as const,
+          }
+        : resolved.contextWindowInfo;
+    const effectiveModel =
+      contextTokenBudget < (resolved.effectiveModel.contextWindow ?? Infinity)
+        ? { ...resolved.effectiveModel, contextWindow: contextTokenBudget }
+        : resolved.effectiveModel;
+    return { ...resolved, contextWindowInfo, contextTokenBudget, effectiveModel };
+  };
   if (params.nativeModelOwned) {
-    return { effectiveModel: params.runtimeModel };
+    return applyRequestedBudget({ effectiveModel: params.runtimeModel });
   }
   // The session-selected context-window option caps native runs too; the CLI
   // backend maps the option id to argv/env separately, but budget and payload
@@ -216,22 +252,12 @@ export function resolveEmbeddedRuntimeModelPolicy(params: {
     });
   }
 
-  const contextTokenBudget = Math.min(ctxInfo.tokens, params.contextTokenBudget ?? ctxInfo.tokens);
-  const contextWindowInfo =
-    contextTokenBudget < ctxInfo.tokens
-      ? {
-          ...ctxInfo,
-          tokens: contextTokenBudget,
-          referenceTokens: ctxInfo.referenceTokens ?? ctxInfo.tokens,
-        }
-      : ctxInfo;
-  const effectiveModel =
-    contextTokenBudget < (params.runtimeModel.contextWindow ?? Infinity)
-      ? { ...params.runtimeModel, contextWindow: contextTokenBudget }
-      : params.runtimeModel;
-  return {
-    contextWindowInfo,
-    contextTokenBudget,
-    effectiveModel,
-  };
+  return applyRequestedBudget({
+    contextWindowInfo: ctxInfo,
+    contextTokenBudget: ctxInfo.tokens,
+    effectiveModel:
+      ctxInfo.tokens < (params.runtimeModel.contextWindow ?? Infinity)
+        ? { ...params.runtimeModel, contextWindow: ctxInfo.tokens }
+        : params.runtimeModel,
+  });
 }

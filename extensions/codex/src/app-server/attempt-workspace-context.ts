@@ -1,5 +1,13 @@
 import path from "node:path";
 import {
+  hasCompletedBootstrapTurn,
+  isPrimaryBootstrapRun,
+  isWorkspaceBootstrapPending,
+  resolveAttemptBootstrapContext,
+  resolveContextInjectionMode,
+  resolveWorkspaceBootstrapRouting,
+} from "openclaw/plugin-sdk/agent-bootstrap-runtime";
+import {
   resolveAgentWorkspaceMemoryRouting,
   shouldIncludeAgentHarnessRuntimeContext,
 } from "openclaw/plugin-sdk/agent-harness-attempt-runtime";
@@ -31,6 +39,7 @@ export type CodexBootstrapFile = Awaited<
   ReturnType<typeof prepareAgentWorkspaceContext>
 >["bootstrapFiles"][number];
 export type CodexWorkspaceBootstrapContext = {
+  shouldRecordCompletedBootstrapTurn?: boolean;
   bootstrapFiles: CodexBootstrapFile[];
   contextFiles: EmbeddedContextFile[];
   inheritsAgentWorkspace: boolean;
@@ -78,6 +87,7 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
   sessionAgentId: string;
   tools: readonly CodexDynamicToolSpec[];
   ringZeroActive: boolean;
+  hasBootstrapFileAccess?: boolean;
   sandboxed?: boolean;
 }): Promise<CodexWorkspaceBootstrapContext> {
   const availableToolNames = new Set(
@@ -139,21 +149,54 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
       contextFileOrder: CODEX_BOOTSTRAP_CONTEXT_ORDER,
       promptMemoryWorkspaceDir: params.effectiveWorkspace,
     });
-    const {
-      bootstrapFiles,
-      contextFiles,
-      promptContextFiles,
-      memoryReferenceFiles,
-      memoryToolRoutedBootstrapFiles,
-    } = prepared;
+    const bootstrapRouting = await resolveWorkspaceBootstrapRouting({
+      isWorkspaceBootstrapPending,
+      bootstrapFiles: prepared.bootstrapFiles,
+      bootstrapFilesProvideAccess: false,
+      bootstrapContextRunKind: params.params.bootstrapContextRunKind,
+      trigger: params.params.trigger,
+      sessionKey: params.sessionKey,
+      isPrimaryRun: isPrimaryBootstrapRun(params.sessionKey),
+      isCanonicalWorkspace: params.params.isCanonicalWorkspace,
+      effectiveWorkspace: params.effectiveWorkspace,
+      resolvedWorkspace: params.resolvedWorkspace,
+      hasBootstrapFileAccess: params.hasBootstrapFileAccess === true,
+    });
+    const contextInjectionMode = resolveContextInjectionMode(
+      params.params.config,
+      params.params.agentId ?? params.sessionAgentId,
+    );
+    const selected = await resolveAttemptBootstrapContext({
+      contextInjectionMode,
+      bootstrapContextMode: params.params.bootstrapContextMode,
+      bootstrapContextRunKind: params.params.bootstrapContextRunKind,
+      bootstrapMode: bootstrapRouting.bootstrapMode,
+      isPrimaryRun: isPrimaryBootstrapRun(params.sessionKey),
+      hasCompletedBootstrapTurn: async () =>
+        await hasCompletedBootstrapTurn(params.params.sessionTarget),
+      resolveBootstrapContextForRun: async () => ({
+        bootstrapFiles: prepared.bootstrapFiles,
+        contextFiles: prepared.contextFiles,
+      }),
+    });
+    const skipBootstrap = selected.isContinuationTurn || contextInjectionMode === "never";
+    const { bootstrapFiles, contextFiles } = selected;
+    const promptContextFiles = skipBootstrap ? [] : prepared.promptContextFiles;
+    const memoryReferenceFiles = skipBootstrap ? [] : prepared.memoryReferenceFiles;
+    const memoryToolRoutedBootstrapFiles = skipBootstrap
+      ? []
+      : prepared.memoryToolRoutedBootstrapFiles;
     const threadDeveloperInstructionFiles = includeAgentWorkspaceInstructions
-      ? prepared.instructionSnapshot.files
+      ? skipBootstrap
+        ? []
+        : prepared.instructionSnapshot.files
       : [];
-    const personaFiles = injectOpenClawContext ? prepared.personaFiles : [];
+    const personaFiles = injectOpenClawContext && !skipBootstrap ? prepared.personaFiles : [];
     return {
       bootstrapFiles,
       contextFiles,
       inheritsAgentWorkspace,
+      shouldRecordCompletedBootstrapTurn: selected.shouldRecordCompletedBootstrapTurn,
       promptContextFiles,
       threadDeveloperInstructionFiles,
       personaFiles,
@@ -166,17 +209,18 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
       threadDeveloperInstructions: includeAgentWorkspaceInstructions
         ? (params.agentWorkspaceDeveloperInstructions ?? prepared.instructionSnapshot.instructions)
         : undefined,
-      personaInstructions: injectOpenClawContext ? prepared.personaInstructions : undefined,
-      sharedPersonaInstructions: injectOpenClawContext
-        ? prepared.sharedPersonaInstructions
-        : undefined,
-      memoryInstructions: injectOpenClawContext
-        ? renderCodexWorkspaceMemoryInstructions({
-            files: memoryReferenceFiles,
-            toolNames: memoryToolNames,
-            memoryRecallInstructions: prepared.memoryRecallInstructions,
-          })
-        : undefined,
+      personaInstructions:
+        injectOpenClawContext && !skipBootstrap ? prepared.personaInstructions : undefined,
+      sharedPersonaInstructions:
+        injectOpenClawContext && !skipBootstrap ? prepared.sharedPersonaInstructions : undefined,
+      memoryInstructions:
+        injectOpenClawContext && !skipBootstrap
+          ? renderCodexWorkspaceMemoryInstructions({
+              files: memoryReferenceFiles,
+              toolNames: memoryToolNames,
+              memoryRecallInstructions: prepared.memoryRecallInstructions,
+            })
+          : undefined,
     };
   } catch (error) {
     embeddedAgentLog.warn("failed to load codex workspace bootstrap instructions", { error });
@@ -184,6 +228,7 @@ export async function buildCodexWorkspaceBootstrapContext(params: {
       bootstrapFiles: [],
       contextFiles: [],
       inheritsAgentWorkspace,
+      shouldRecordCompletedBootstrapTurn: false,
       threadDeveloperInstructions: includeAgentWorkspaceInstructions
         ? params.agentWorkspaceDeveloperInstructions
         : undefined,
