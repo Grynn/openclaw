@@ -59,6 +59,8 @@
     ".openclaw-lifecycle-pending",
     "!dist/.buildstamp",
     "!dist/.runtime-postbuildstamp",
+    "!dist/cli-process-tree.test-support.cjs",
+    "!dist/cli-process-diagnostics.test-support.cjs",
     "!dist/**/*.app",
     "!dist/control-ui.build-*",
     "!dist/**/*.map",

@@ -2,6 +2,12 @@
 import fs from "node:fs";
 import { dirname } from "node:path";
 
+// These authored child-process assets are relative to the bundled private test-env chunk.
+export const PRIVATE_QA_CLI_COMPANION_NAMES = [
+  "cli-process-tree.test-support.cjs",
+  "cli-process-diagnostics.test-support.cjs",
+];
+
 /**
  * Writes text only when contents changed and returns whether a write happened.
  */

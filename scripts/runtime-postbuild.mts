@@ -33,7 +33,10 @@ import {
   writeUpdateCompatibilityChunks,
 } from "./lib/update-compat-chunks.mts";
 import { buildUpdateConfigRuntimeAlias } from "./lib/update-config-runtime-compat.mts";
-import { writeTextFileIfChanged } from "./runtime-postbuild-shared.mjs";
+import {
+  PRIVATE_QA_CLI_COMPANION_NAMES,
+  writeTextFileIfChanged,
+} from "./runtime-postbuild-shared.mjs";
 import { stageBundledPluginRuntime } from "./stage-bundled-plugin-runtime.mts";
 import { writeBuildInfo } from "./write-build-info.ts";
 import { writeOfficialChannelCatalog } from "./write-official-channel-catalog.mts";
@@ -231,6 +234,7 @@ export function listCoreRuntimePostBuildOutputs(params: RuntimeFsParams = {}) {
     ...listHookMetadataOutputs(params),
     OFFICIAL_CHANNEL_CATALOG_OUTPUT,
     ...listExportHtmlTemplateOutputs(params),
+    ...listPrivateQaCliCompanionOutputs(params),
     ...listStableRootRuntimeAliasOutputs(params),
     ...listLegacyRootRuntimeCompatOutputs(params),
     ...LEGACY_CLI_EXIT_COMPAT_CHUNKS.map(({ dest }) => dest),
@@ -239,6 +243,28 @@ export function listCoreRuntimePostBuildOutputs(params: RuntimeFsParams = {}) {
       readUpdateCompatibilityInventory(UPDATE_COMPATIBILITY_INVENTORY),
     ).map((fileName) => `dist/${fileName}`),
   ].toSorted((left, right) => left.localeCompare(right));
+}
+
+function listPrivateQaCliCompanionOutputs(params: RuntimeFsParams = {}) {
+  const rootDir = params.rootDir ?? ROOT;
+  const fsImpl = params.fs ?? fs;
+  // Artifact presence survives later source-CLI postbuild calls without the build selector.
+  return fsImpl.existsSync(path.join(rootDir, "dist/plugin-sdk/test-env.js"))
+    ? PRIVATE_QA_CLI_COMPANION_NAMES.map((name) => `dist/${name}`)
+    : [];
+}
+
+function copyPrivateQaCliCompanions(params: RuntimeFsParams) {
+  const rootDir = params.rootDir ?? ROOT;
+  const fsImpl = params.fs ?? fs;
+  // Read the complete authored set before publishing; missing inputs must fail the build.
+  const assets = listPrivateQaCliCompanionOutputs(params).map((output) => ({
+    output,
+    bytes: fsImpl.readFileSync(path.join(rootDir, "src/cli", path.basename(output))),
+  }));
+  for (const { output, bytes } of assets) {
+    fsImpl.writeFileSync(path.join(rootDir, output), bytes);
+  }
 }
 
 /** Builds deterministic browser globals from the pinned workspace packages. */
@@ -569,6 +595,7 @@ export function runRuntimePostBuild(params: RuntimePostBuildParams = {}) {
   runPhase("bundled hook metadata", () => copyHookMetadata(phaseParams));
   runPhase("official channel catalog", () => writeOfficialChannelCatalog(phaseParams));
   runPhase("export HTML assets", () => copyExportHtmlTemplates(phaseParams));
+  runPhase("private QA CLI companions", () => copyPrivateQaCliCompanions(phaseParams));
   runPhase("bundled plugin runtime overlay", () => stageBundledPluginRuntime(phaseParams));
   runPhase("static extension assets", () => {
     if (!shouldCopyStaticExtensionAssets(phaseParams)) {

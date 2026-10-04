@@ -11,6 +11,7 @@ import {
   normalizeRunNodePath as normalizePath,
   runNodeWatchedPaths,
 } from "../run-node-watch-paths.mts";
+import { PRIVATE_QA_CLI_COMPANION_NAMES } from "../runtime-postbuild-shared.mjs";
 import {
   BUNDLED_PLUGIN_BUILD_ENV_NAMES,
   collectSourceCheckoutPluginBuildEntries,
@@ -41,6 +42,7 @@ export type BundledPluginBuildEntry = ReturnType<
   hasManifest: boolean;
 };
 export const runtimePostBuildWatchedPaths = [
+  ...PRIVATE_QA_CLI_COMPANION_NAMES.map((name) => `src/cli/${name}`),
   "scripts/check-built-plugin-control-plane-modules.mts",
   "scripts/copy-bundled-plugin-metadata.mjs",
   "scripts/copy-bundled-plugin-metadata.mts",
@@ -64,7 +66,10 @@ export const runtimePostBuildWatchedPaths = [
 const runtimePostBuildScriptPaths = new Set(
   runtimePostBuildWatchedPaths.filter((entry) => entry.startsWith("scripts/")),
 );
-const runtimePostBuildStaticAssetPaths = new Set(listStaticExtensionAssetSources());
+const runtimePostBuildStaticAssetPaths = new Set([
+  ...listStaticExtensionAssetSources(),
+  ...PRIVATE_QA_CLI_COMPANION_NAMES.map((name) => `src/cli/${name}`),
+]);
 
 const readGitStatus = (
   deps: RunNodeInputDeps,
