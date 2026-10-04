@@ -105,6 +105,8 @@ type SessionFactsRequest = {
 export type SessionFactsRead<Facts extends PreparedSessionMutationFacts> = {
   readonly storageTarget: Pick<GatewaySessionStoreTarget, "agentId" | "canonicalKey" | "storePath">;
   bindCreation(this: void, operation: SessionEntryCreationOperation): void;
+  /** Source continuity only; does not authorize a row or a requester. */
+  assertSourceCurrent(this: void, cfg: OpenClawConfig): void;
   readCurrent(this: void, cfg: OpenClawConfig): Facts;
   release(this: void): void;
 };
@@ -132,7 +134,12 @@ export async function prepareSessionMutationFacts(
   let assertRegistryPublication: (() => void) | undefined;
   let creation: SessionEntryCreationOperation | undefined;
   let expectedPlaceholder: SessionEntryPlaceholder | undefined;
-  let assertSource: () => void;
+  let assertPhysicalSource: () => void;
+  let assertRetainedRowsCurrent = () => {};
+  const assertSource = () => {
+    assertPhysicalSource();
+    assertRetainedRowsCurrent();
+  };
   const selectedPaths = new Set<string>();
   let selectedDatabaseIdentity: string | undefined;
   const acquiringPaths = new Set<string>();
@@ -360,7 +367,7 @@ export async function prepareSessionMutationFacts(
           close: async () => release(),
         }),
       );
-      assertSource = () => {
+      assertPhysicalSource = () => {
         const current = getOpenIncognitoAgentDatabase(agentId, storePath);
         // The original registered resource survives first namespace creation;
         // retirement revokes it before any replacement can be adopted.
@@ -629,12 +636,14 @@ export async function prepareSessionMutationFacts(
           };
         };
       }
-      assertSource = () => {
+      assertPhysicalSource = () => {
         inventoryRead.assertRegistryCurrent();
         assertPaths();
         for (const source of preparedSources) {
           assertExistingDatabaseIdentity(source.path, source.identity, source.birthtime);
         }
+      };
+      assertRetainedRowsCurrent = () => {
         for (const read of retainedReads.values()) {
           if (!read.readCurrent()) {
             throw new SessionMutationFactsUnavailableError();
@@ -642,15 +651,28 @@ export async function prepareSessionMutationFacts(
         }
       };
     }
-    const readCurrent = (cfg: OpenClawConfig) => {
+    const assertSourceCurrent = (cfg: OpenClawConfig) => {
       try {
-        assertActive();
+        if (!active) {
+          throw new SessionMutationFactsUnavailableError();
+        }
         assertRoutingCurrent(cfg);
         const currentIdentity = resolveSessionStoreIdentity({ ...params, cfg });
         if (currentIdentity.agentId !== agentId || currentIdentity.canonicalKey !== canonicalKey) {
           throw new SessionMutationFactsUnavailableError();
         }
-        assertSource();
+        assertPhysicalSource();
+      } catch (error) {
+        throw error instanceof SessionMutationFactsUnavailableError
+          ? error
+          : new SessionMutationFactsUnavailableError({ cause: error });
+      }
+    };
+    const readCurrent = (cfg: OpenClawConfig) => {
+      try {
+        assertActive();
+        assertSourceCurrent(cfg);
+        assertRetainedRowsCurrent();
         if (creation) {
           assertSessionEntryCreationPublication(creation, {
             agentId,
@@ -680,7 +702,7 @@ export async function prepareSessionMutationFacts(
       });
       creation = operation;
     };
-    return { storageTarget, bindCreation, readCurrent, release };
+    return { storageTarget, bindCreation, assertSourceCurrent, readCurrent, release };
   } catch (error) {
     release();
     throw waitingForStorage || error instanceof SessionMutationFactsUnavailableError

@@ -24,44 +24,72 @@ import { createModelVisibilityPolicy } from "../../agents/model-visibility-polic
 import { resolveOperatorModelDefault } from "../../agents/operator-model-policy.js";
 import { resolveSessionModelRef } from "../../agents/session-model-ref.js";
 import { persistStickyModelSelectionBestEffort } from "../../agents/sticky-model-selection.js";
+import { isSubagentSessionFromEntry } from "../../agents/subagents/spawn/subagent-depth-policy.js";
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import { applyModelRuntimeDirective } from "../../auto-reply/reply/directive-handling.model-runtime.js";
 import { prepareModelSelectionRuntime } from "../../auto-reply/reply/model-runtime-normalization.js";
 import { refreshQueuedFollowupSession } from "../../auto-reply/reply/queue.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth-profile-override-provenance.js";
+import type { SessionAcpMeta } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { isSessionStatusModelPatchOrigin } from "../session-model-patch-origin.js";
+import {
+  isAgentSessionModelPatchOrigin,
+  isSessionStatusModelPatchOrigin,
+} from "../session-model-patch-origin.js";
 import { SessionMutationAuthorizationChangedError } from "../session-sharing.js";
 import type { SessionWorkerPlacementContext } from "../worker-environments/session-placement-lifecycle.js";
 import { resolveGatewayModelSelectionPolicy } from "./session-model-selection-policy.js";
 import { resolveSessionWorkerPlacementPatchError } from "./sessions-shared.js";
 
-export function persistSessionPatchModelSelection(params: {
+type SessionPatchModelSelection = {
   callerScopes: readonly string[];
   cfg: OpenClawConfig;
   entry: SessionEntry;
   patch: SessionsPatchParams;
   sessionKey: string;
   targetAgentId: string;
-}): void {
+  acpMeta?: SessionAcpMeta | null;
+};
+
+function resolveSessionPatchStickyPolicy(params: SessionPatchModelSelection) {
   // Combined execution-policy recovery is explicitly scoped to this chat, even
   // when ordinary model selections normally update agent/global defaults.
+  // Agent/delegated selections stay local; a navigation parent or ACP route alone
+  // does not turn an operator root into a delegated child.
   if (
     isSessionStatusModelPatchOrigin() ||
     typeof params.patch.model !== "string" ||
     params.patch.sandboxMode !== undefined ||
     params.patch.nativeRuntimeConsent !== undefined ||
-    params.entry.nativeRuntimeConsent !== undefined
+    params.entry.nativeRuntimeConsent !== undefined ||
+    isAgentSessionModelPatchOrigin() ||
+    isSubagentSessionFromEntry(params.sessionKey, params.entry, params.acpMeta)
   ) {
-    return;
+    return undefined;
   }
   const policy = resolveGatewayModelSelectionPolicy({
     callerScopes: params.callerScopes,
     cfg: params.cfg,
   });
   if (policy.target === "session") {
+    return undefined;
+  }
+  return policy;
+}
+
+/** Only unresolved parent-linked selections need canonical ACP metadata. */
+export function needsSessionPatchAcpModelSelectionMetadata(params: SessionPatchModelSelection) {
+  return (
+    Boolean(params.entry.parentSessionKey?.trim() || params.entry.spawnedBy?.trim()) &&
+    resolveSessionPatchStickyPolicy(params) !== undefined
+  );
+}
+
+export function persistSessionPatchModelSelection(params: SessionPatchModelSelection): void {
+  const policy = resolveSessionPatchStickyPolicy(params);
+  if (!policy) {
     return;
   }
   const agentId = resolveSessionAgentId({

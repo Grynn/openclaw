@@ -79,6 +79,7 @@ import { createGatewaySession } from "../session-create-service.js";
 import { TerminalSessionManager } from "../terminal/session-manager.js";
 import { flushPendingSessionsChangedEvents } from "./session-change-event.js";
 import { sessionMutationHandlers } from "./sessions-mutations.js";
+import { registerSessionModelScopeTests } from "./sessions-mutations.model-scope.test-support.js";
 import { registerSessionNativeRuntimeConsentTests } from "./sessions-mutations.native-consent.test-support.js";
 import { registerSessionOperatorPreparationTests } from "./sessions-mutations.operator-preparation.test-support.js";
 import { registerSessionRuntimeWindowTests } from "./sessions-mutations.runtime-windows.test-support.js";
@@ -169,14 +170,16 @@ async function patchSession(
   scopes = ["operator.admin"],
   requestContext: GatewayRequestContext = context(),
   requestClient: GatewayClient = client(scopes),
+  method: "sessions.patch" | "sessions.patchMany" = "sessions.patch",
 ) {
   const responses: Parameters<RespondFn>[] = [];
-  await sessionMutationHandlers["sessions.patch"]?.({
-    req: { type: "req", id: "sticky-model-patch", method: "sessions.patch", params },
+  await sessionMutationHandlers[method]?.({
+    req: { type: "req", id: "sticky-model-patch", method, params },
     params,
     client: requestClient,
     context: requestContext,
     isWebchatConnect: () => true,
+    hasCurrentClientAuthority: () => requestClient.invalidated !== true,
     respond: (...response: Parameters<RespondFn>) => responses.push(response),
   });
   expect(responses).toHaveLength(1);
@@ -415,6 +418,20 @@ describe("sessions.patch sticky model persistence", () => {
       expect(effects.mutateConfigFileWithRetry).not.toHaveBeenCalled();
     },
   );
+
+  registerSessionModelScopeTests({
+    getConfig: () => cfg,
+    getPersistedConfig: () => persistedConfig,
+    configMutation: effects.mutateConfigFileWithRetry,
+    catalogSnapshot,
+    patchSession,
+    createRequest: () => {
+      const caller = client(["operator.admin"]);
+      return { client: caller, context: context(new Set([caller])) };
+    },
+    patchManySessions: (params, request) =>
+      patchSession(params, undefined, request?.context, request?.client, "sessions.patchMany"),
+  });
 
   it("returns session success and warns when the sticky config write fails", async () => {
     cfg.agents!.defaults!.modelSelectionScope = "global";

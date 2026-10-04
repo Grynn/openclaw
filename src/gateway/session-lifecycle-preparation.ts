@@ -102,15 +102,24 @@ export function prepareGatewaySessionLifecycleTargets(params: {
       }
     }
     return {
-      matchesCurrent(currentConfig: OpenClawConfig) {
+      // Source continuity is insufficient for mutation; post-commit callers must
+      // reacquire row facts and retain their original requester authority too.
+      assertSourceCurrent(currentConfig: OpenClawConfig) {
+        preparedStorage?.assertCurrent();
+        facts.assertSourceCurrent(currentConfig);
+      },
+      matchesCurrent(
+        currentConfig: OpenClawConfig,
+        expectedIdentity = { sessionId, lifecycleRevision },
+      ) {
         preparedStorage?.assertCurrent();
         const current = facts.readCurrent(currentConfig).target;
         return (
           facts.storageTarget.agentId === selected.agentId &&
           facts.storageTarget.storePath === selected.storePath &&
           facts.storageTarget.canonicalKey === selected.canonicalKey &&
-          current?.entry.sessionId === sessionId &&
-          current?.entry.lifecycleRevision === lifecycleRevision &&
+          current?.entry.sessionId === expectedIdentity.sessionId &&
+          current?.entry.lifecycleRevision === expectedIdentity.lifecycleRevision &&
           (!current ||
             (current.agentId === selected.agentId &&
               current.storePath === selected.storePath &&

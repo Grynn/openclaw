@@ -128,6 +128,7 @@ export async function executeSessionPatchMutations(params: {
 
   const outcomes = Array.from<MutationOutcome | undefined>({ length: params.targets.length });
   const permissionErrors = new Map<number, ErrorShape>();
+  let committedEffects: Awaited<ReturnType<typeof patchEffects.prepareSessionPatchEffects>> = [];
   const prepared: PreparedPatchTarget[] = [];
   const preparedByIndex = Array.from<PreparedPatchTarget | undefined>({
     length: params.targets.length,
@@ -702,6 +703,13 @@ export async function executeSessionPatchMutations(params: {
                 permissionErrors.set(target.index, error);
               }
             }
+            committedEffects = await patchEffects.prepareSessionPatchEffects({
+              cfg,
+              callerScopes,
+              prepared: activePrepared,
+              outcomes,
+              prepareCommittedGuard: preparation.prepareCommittedGuard,
+            });
           } finally {
             timing?.mark("lifecycleFinalize");
           }
@@ -722,24 +730,14 @@ export async function executeSessionPatchMutations(params: {
     context: params.context,
     callerScopes,
     callerCanManageCron: callerIsAdmin,
-    targets: activePrepared.flatMap((target) => {
-      const outcome = outcomes[target.index];
-      return outcome?.ok && outcome.applied
-        ? [{ target, entry: outcome.entry, accessChanged: outcome.accessChanged }]
-        : [];
-    }),
+    targets: committedEffects,
   });
   timing?.finish();
 
-  // Runtime application can fail after commit. Publish every saved field's
-  // normal effects before returning the application error to the caller.
-  for (const [index, error] of permissionErrors) {
-    outcomes[index] = { ok: false, error };
-  }
   return {
     ok: true,
     cfg,
-    outcomes: outcomes as MutationOutcome[],
+    outcomes: patchEffects.finalizeSessionPatchOutcomes(outcomes, permissionErrors),
     preparedByIndex,
     catalogs,
   };

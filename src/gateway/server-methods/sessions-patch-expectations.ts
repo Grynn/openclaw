@@ -179,6 +179,10 @@ export async function prepareSessionPatchTargets(params: {
   );
   type PreparedStorage = Awaited<(typeof databaseCustody.preparations)[number]>;
   const storage = new Map<number, PreparedStorage>();
+  const committedGuardFactories = new Map<
+    number,
+    (entry: SessionEntry) => Promise<() => ErrorShape | undefined>
+  >();
   const storagePreparations = new Map(
     durableTargets.map(
       (target, index) =>
@@ -192,12 +196,15 @@ export async function prepareSessionPatchTargets(params: {
     ),
   );
   let targetCustody: ReturnType<typeof prepareGatewaySessionLifecycleTargets> | undefined;
+  const committedCustodies: Array<ReturnType<typeof prepareGatewaySessionLifecycleTargets>> = [];
   const release = async () => {
     const errors: unknown[] = [];
-    try {
-      await targetCustody?.[Symbol.asyncDispose]();
-    } catch (error) {
-      errors.push(error);
+    for (const custody of [...committedCustodies.toReversed(), targetCustody]) {
+      try {
+        await custody?.[Symbol.asyncDispose]();
+      } catch (error) {
+        errors.push(error);
+      }
     }
     try {
       await databaseCustody[Symbol.asyncDispose]();
@@ -244,6 +251,68 @@ export async function prepareSessionPatchTargets(params: {
         preparation: result,
         getCurrentConfig: params.getCurrentConfig,
       });
+      if ("facts" in result) {
+        committedGuardFactories.set(target.index, async (entry) => {
+          // Capture the successful write, never mutable public expectations or
+          // the pre-commit missing identity of a newly created operator root.
+          const identity = {
+            sessionId: entry.sessionId,
+            lifecycleRevision: entry.lifecycleRevision,
+          };
+          const binding = {
+            key: target.key,
+            originalGuard: params.originalCommitGuards[target.index]!,
+            operatorAuthority,
+            personalModelSelection: params.personalModelSelection,
+            getCurrentConfig: params.getCurrentConfig,
+          };
+          let committedPreparation: Parameters<
+            typeof bindPreparedSessionPatchTarget
+          >[0]["preparation"] = {
+            facts: { matchesCurrent: (cfg) => result.facts.matchesCurrent(cfg, identity) },
+          };
+          if (!target.initialEntry) {
+            // Negative facts deliberately cannot adopt a newly published row.
+            // Reacquire only that row under the original physical source custody.
+            const assertCurrent = () => {
+              assertSessionPatchCommitAllowed({
+                personalModelSelection: params.personalModelSelection,
+                guards: [binding.originalGuard],
+                archiveTransitions: [],
+              });
+              operatorAuthority?.assertCurrent();
+              result.facts.assertSourceCurrent(params.getCurrentConfig());
+            };
+            try {
+              assertCurrent();
+              const custody = prepareGatewaySessionLifecycleTargets({
+                cfg: params.cfg,
+                getCurrentConfig: params.getCurrentConfig,
+                targets: [
+                  {
+                    target: {
+                      agentId: target.targetAgentId,
+                      canonicalKey: target.canonicalKey,
+                      storePath: target.storePath,
+                    },
+                    entry: identity,
+                    storageReady: Promise.resolve({ assertCurrent }),
+                  },
+                ],
+              });
+              committedCustodies.push(custody);
+              committedPreparation = { facts: await custody.preparations[0]! };
+              assertCurrent();
+            } catch (error) {
+              committedPreparation = { error };
+            }
+          }
+          return bindPreparedSessionPatchTarget({
+            ...binding,
+            preparation: committedPreparation,
+          });
+        });
+      }
       params.mutationTargets[target.index]!.commitGuard = guard;
       if ("error" in result) {
         // Original caller errors retain precedence; failed preparation never reaches a fallback open.
@@ -257,6 +326,9 @@ export async function prepareSessionPatchTargets(params: {
       operatorAuthority,
       prepared: params.prepared.filter((target) => params.outcomes[target.index] === undefined),
       storage,
+      prepareCommittedGuard: async (index: number, entry: SessionEntry) =>
+        (await committedGuardFactories.get(index)?.(entry)) ??
+        params.mutationTargets[index]!.commitGuard,
       [Symbol.asyncDispose]: release,
     };
   } catch (error) {
