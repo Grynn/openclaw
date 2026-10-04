@@ -463,7 +463,8 @@ export const CORE_GATEWAY_METHOD_SPECS = [
     "2026.7",
     CONTROL_PLANE_WRITE,
   ],
-  ["memory.search", "memory-search", "operator.read", "2026.7"],
+  // Search is read-only unless the caller explicitly records durable recall signals.
+  ["memory.search", "memory-search", "dynamic", "2026.7"],
   ["skills.proposals.events.list", "skills", "operator.read", "2026.7"],
   ["skills.proposals.evaluate", "skills", "operator.admin", "2026.7", CONTROL_PLANE_WRITE],
   ["hooks.status", "hooks-status", "operator.read", "2026.7"],

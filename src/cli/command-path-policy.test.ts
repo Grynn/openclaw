@@ -470,6 +470,8 @@ describe("command-path-policy", () => {
     expectResolvedPolicy(["skills", "search"], {
       configGuard: "skip",
     });
+    // Gateway routing may decline, so the fallback retains the memory plugin
+    // registry and its normal provider-network policy.
     expectResolvedPolicy(["memory", "search"], {
       configGuard: "skip",
       loadPlugins: "always",

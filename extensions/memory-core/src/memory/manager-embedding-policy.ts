@@ -4,6 +4,8 @@ import {
   estimateUtf8Bytes,
   type EmbeddingInput,
 } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
+import type { MemorySearchDeadlineControl } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import { resolveTimerTimeoutMs } from "openclaw/plugin-sdk/number-runtime";
 import { retryAsync } from "openclaw/plugin-sdk/retry-runtime";
 import {
   asOptionalRecord,
@@ -14,6 +16,82 @@ type MemoryEmbeddingChunk = {
   text: string;
   embeddingInput?: EmbeddingInput;
 };
+
+export async function runEmbeddingOperationWithTimeout<T>(params: {
+  timeoutMs: number;
+  message: string;
+  /** Caller-owned cancellation, merged with the per-call watchdog abort. */
+  signal?: AbortSignal;
+  /** Managed readiness pauses this watchdog, while caller cancellation stays active. */
+  deadlineControl?: MemorySearchDeadlineControl;
+  run: (signal: AbortSignal) => Promise<T>;
+}): Promise<T> {
+  const controller = new AbortController();
+  const signal = params.signal
+    ? AbortSignal.any([params.signal, controller.signal])
+    : controller.signal;
+  if (!Number.isFinite(params.timeoutMs) || params.timeoutMs <= 0) {
+    return await params.run(signal);
+  }
+  const timeoutMs = resolveTimerTimeoutMs(params.timeoutMs, 1);
+  const timeoutError = new Error(params.message);
+  let remainingMs = timeoutMs;
+  let segmentStartedAt = Date.now();
+  let paused = false;
+  let timer: NodeJS.Timeout | null = null;
+  let rejectTimeout!: (error: Error) => void;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    rejectTimeout = reject;
+  });
+  const armWatchdog = () => {
+    segmentStartedAt = Date.now();
+    timer = setTimeout(() => {
+      timer = null;
+      rejectTimeout(timeoutError);
+      controller.abort(timeoutError);
+    }, remainingMs);
+  };
+  const unsubscribe = params.deadlineControl?.subscribe((action) => {
+    if (action === "pause") {
+      paused = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      remainingMs = Math.max(0, remainingMs - (Date.now() - segmentStartedAt));
+      if (remainingMs === 0) {
+        // Budget already consumed before the owned phase; do not let the
+        // exemption extend work that had no time left.
+        rejectTimeout(timeoutError);
+        controller.abort(timeoutError);
+      }
+      return;
+    }
+    paused = false;
+    if (!signal.aborted) {
+      armWatchdog();
+    }
+  });
+  if (!paused) {
+    armWatchdog();
+  }
+  try {
+    const operation = params.run(signal);
+    const result = await Promise.race([operation, timeoutPromise]);
+    params.signal?.throwIfAborted();
+    // An overdue watchdog can run after provider success following an event-loop stall.
+    if (!paused && Date.now() - segmentStartedAt >= remainingMs) {
+      controller.abort(timeoutError);
+      throw timeoutError;
+    }
+    return result;
+  } finally {
+    unsubscribe?.();
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
 
 export function buildMemoryEmbeddingBatches<T extends MemoryEmbeddingChunk>(
   chunks: T[],

@@ -26,8 +26,35 @@ import {
   consumeGatewayFastPathRootOptionToken,
   consumeGatewayRunOptionToken,
 } from "./gateway-run-argv.js";
-import { getCoreCliParentDefaultHelpCommands } from "./program/core-command-descriptors.js";
-import { getSubCliParentDefaultHelpCommands } from "./program/subcli-descriptors.js";
+import {
+  getCoreCliCommandNamesCore,
+  getCoreCliParentDefaultHelpCommands,
+} from "./program/core-command-descriptors.js";
+import {
+  getSubCliEntriesCore,
+  getSubCliParentDefaultHelpCommands,
+} from "./program/subcli-descriptors.js";
+
+export function isKnownBuiltInCommandRoot(primary: string): boolean {
+  return (
+    getCoreCliCommandNamesCore().includes(primary) ||
+    getSubCliEntriesCore().some((entry) => entry.name === primary)
+  );
+}
+
+/** One invocation probes route ownership lazily and reuses the same result. */
+export function createRouteFirstOwnershipProbe({
+  commandPath,
+  argv,
+}: Pick<ReturnType<typeof resolveCliArgvInvocation>, "commandPath" | "argv">) {
+  let ownership: Promise<boolean> | null = null;
+  return (): Promise<boolean> => {
+    ownership ??= import("./program/routes.js").then(({ findRoutedCommand }) =>
+      Boolean(findRoutedCommand(commandPath, argv)),
+    );
+    return ownership;
+  };
+}
 
 const ROOT_HELP_ALIASES = new Set(["tools", "help"]);
 const SETUP_ONBOARD_CONFIGURE_HELP_COMMANDS = new Set(["setup", "onboard", "configure"]);

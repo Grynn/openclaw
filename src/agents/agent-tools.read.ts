@@ -33,6 +33,12 @@ import { sniffMimeFromBase64 } from "../media/sniff-mime-from-base64.js";
 import { clampNumber } from "../utils.js";
 import { captureAgentToolSourceExecutionGuard } from "./agent-tool-source-execution-guard.js";
 import {
+  appendMemoryFlushContent,
+  readOptionalUtf8File,
+  resolveNovelMemoryFlushContent,
+  type MemoryFlushFileSandbox,
+} from "./agent-tools.memory-flush-content.js";
+import {
   REQUIRED_PARAM_GROUPS,
   assertRequiredParams,
   getToolParamsRecord,
@@ -623,91 +629,8 @@ type MemoryFlushAppendOnlyWriteOptions = {
   relativePath: string;
   memoryWriteProvenance?: MemoryWriteProvenanceObserver;
   containerWorkdir?: string;
-  sandbox?: {
-    root: string;
-    bridge: SandboxFsBridge;
-  };
+  sandbox?: MemoryFlushFileSandbox;
 };
-
-async function readOptionalUtf8File(params: {
-  absolutePath: string;
-  relativePath: string;
-  sandbox?: MemoryFlushAppendOnlyWriteOptions["sandbox"];
-  signal?: AbortSignal;
-}): Promise<string> {
-  try {
-    if (params.sandbox) {
-      const stat = await params.sandbox.bridge.stat({
-        filePath: params.relativePath,
-        cwd: params.sandbox.root,
-        signal: params.signal,
-      });
-      if (!stat) {
-        return "";
-      }
-      const buffer = await params.sandbox.bridge.readFile({
-        filePath: params.relativePath,
-        cwd: params.sandbox.root,
-        signal: params.signal,
-      });
-      return buffer.toString("utf-8");
-    }
-    return await fs.readFile(params.absolutePath, "utf-8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
-      return "";
-    }
-    throw error;
-  }
-}
-
-async function appendMemoryFlushContent(params: {
-  absolutePath: string;
-  root: string;
-  relativePath: string;
-  content: string;
-  sandbox?: MemoryFlushAppendOnlyWriteOptions["sandbox"];
-  signal?: AbortSignal;
-  assertCurrent: () => void;
-}) {
-  if (!params.sandbox) {
-    const root = await fsRoot(params.root);
-    params.assertCurrent();
-    await root.append(params.relativePath, params.content, {
-      mkdir: true,
-      prependNewlineIfNeeded: true,
-      assertBeforeMutation: params.assertCurrent,
-    });
-    return;
-  }
-
-  const existing = await readOptionalUtf8File({
-    absolutePath: params.absolutePath,
-    relativePath: params.relativePath,
-    sandbox: params.sandbox,
-    signal: params.signal,
-  });
-  const separator =
-    existing.length > 0 && !existing.endsWith("\n") && !params.content.startsWith("\n") ? "\n" : "";
-  const next = `${existing}${separator}${params.content}`;
-  const parent = path.posix.dirname(params.relativePath);
-  params.assertCurrent();
-  if (parent && parent !== ".") {
-    await params.sandbox.bridge.mkdirp({
-      filePath: parent,
-      cwd: params.sandbox.root,
-      signal: params.signal,
-    });
-  }
-  params.assertCurrent();
-  await params.sandbox.bridge.writeFile({
-    filePath: params.relativePath,
-    cwd: params.sandbox.root,
-    data: next,
-    mkdir: true,
-    signal: params.signal,
-  });
-}
 
 /** Restrict a write tool to appending memory-flush content to one path. */
 export function wrapToolMemoryFlushAppendOnlyWrite(
@@ -756,26 +679,42 @@ export function wrapToolMemoryFlushAppendOnlyWrite(
         sandbox: options.sandbox,
         signal,
       });
+      const novelContent = resolveNovelMemoryFlushContent(contentBefore, content);
+      if (!novelContent) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `No new content to append to ${options.relativePath}.`,
+            },
+          ],
+          details: { changed: false },
+        };
+      }
       const separator =
-        contentBefore.length > 0 && !contentBefore.endsWith("\n") && !content.startsWith("\n")
+        contentBefore.length > 0 &&
+        !contentBefore.endsWith("\n") &&
+        !novelContent.startsWith("\n") &&
+        !novelContent.startsWith("\r")
           ? "\n"
           : "";
-      const commit = () =>
-        appendMemoryFlushContent({
+      const commit = async () => {
+        await appendMemoryFlushContent({
           absolutePath: allowedAbsolutePath,
           root: options.root,
           relativePath: options.relativePath,
-          content,
+          content: novelContent,
           sandbox: options.sandbox,
           signal,
           assertCurrent,
         });
+      };
       const memoryWriteProvenance = options.memoryWriteProvenance;
       if (memoryWriteProvenance && (await memoryWriteProvenance.classifies(allowedAbsolutePath))) {
         await memoryWriteProvenance.write({
           absolutePath: allowedAbsolutePath,
           contentBefore,
-          contentAfter: `${contentBefore}${separator}${content}`,
+          contentAfter: `${contentBefore}${separator}${novelContent}`,
           commit,
         });
       } else {
@@ -785,7 +724,12 @@ export function wrapToolMemoryFlushAppendOnlyWrite(
       // This wrapper inherits the write tool's output schema, so report only
       // the authoritative `changed`; deriving `created` before append is racy.
       return {
-        content: [{ type: "text", text: `Appended content to ${options.relativePath}.` }],
+        content: [
+          {
+            type: "text",
+            text: `Appended content to ${options.relativePath}.`,
+          },
+        ],
         details: { changed: true },
       };
     },

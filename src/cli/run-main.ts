@@ -52,16 +52,15 @@ import { isMachineOutputStdoutTTY } from "./machine-output-argv.js";
 import { requestExitAfterOneShotOutput } from "./one-shot-exit.js";
 import { tryOutputPrecomputedCommandHelp } from "./precomputed-help.js";
 import { applyCliProfileEnv, parseCliProfileArgs } from "./profile.js";
-import {
-  getCoreCliCommandDescriptors,
-  getCoreCliCommandNamesCore,
-} from "./program/core-command-descriptors.js";
+import { getCoreCliCommandDescriptors } from "./program/core-command-descriptors.js";
 import { getSubCliEntriesCore } from "./program/subcli-descriptors.js";
 import { withCliPluginInvocation } from "./run-main-plugin-cache.js";
 import {
+  createRouteFirstOwnershipProbe,
   isAgentExecInvocation,
   isDebugProxyCaptureEnvEnabled,
   isGatewayRunFastPathArgv,
+  isKnownBuiltInCommandRoot,
   isRemoteAgentDispatchInvocation,
   resolveMissingPluginCommandMessage,
   rewriteUpdateFlagArgv,
@@ -572,13 +571,6 @@ async function ensureCliEnvProxyDispatcher(): Promise<void> {
   }
 }
 
-function isKnownBuiltInCommandRoot(primary: string): boolean {
-  return (
-    getCoreCliCommandNamesCore().includes(primary) ||
-    getSubCliEntriesCore().some((entry) => entry.name === primary)
-  );
-}
-
 function resolvesMachineOutput(
   descriptor: {
     machineOutput?: (params: { argv: readonly string[]; stdoutIsTTY: boolean }) => boolean;
@@ -932,6 +924,8 @@ async function runCliWithPreparedOutputMode(
   const loadGlobalEnv = !isGatewayRunInvocation;
   startupTrace.mark("argv");
 
+  const isRouteFirstOwnedInvocation = createRouteFirstOwnershipProbe(normalizedInvocation);
+
   // Enforce the minimum supported runtime before gateway selection can read or recover config.
   const { assertSupportedRuntime, isCurrentRuntimeSupported } =
     await import("../infra/runtime-guard.js");
@@ -1144,7 +1138,8 @@ async function runCliWithPreparedOutputMode(
       !isHelpOrVersionInvocation &&
       !bareSessionInvocation &&
       normalizedInvocation.primary &&
-      !isKnownBuiltInCommandRoot(normalizedInvocation.primary)
+      !isKnownBuiltInCommandRoot(normalizedInvocation.primary) &&
+      !(await isRouteFirstOwnedInvocation())
     ) {
       const config = await withConsoleLogsRoutedToStderr(readBestEffortCliConfig);
       if (
@@ -1158,7 +1153,7 @@ async function runCliWithPreparedOutputMode(
     }
     if (!isHelpOrVersionInvocation && shouldStartProxyForCli(normalizedArgv)) {
       const config = await withConsoleLogsRoutedToStderr(readBestEffortCliConfig);
-      if (!bareSessionInvocation) {
+      if (!bareSessionInvocation && !(await isRouteFirstOwnedInvocation())) {
         await assertCliPrimaryOwned({
           argv: normalizedArgv,
           config,
@@ -1227,7 +1222,10 @@ async function runCliWithPreparedOutputMode(
     // `openclaw <typo>` instead of silently showing generic top-level help.
     // Runs after legitimate precomputed help fast paths so known help commands
     // still dispatch normally. See #81077.
-    if (resolveUnownedCliPrimaryCandidate(normalizedArgv)) {
+    if (
+      resolveUnownedCliPrimaryCandidate(normalizedArgv) &&
+      !(await isRouteFirstOwnedInvocation())
+    ) {
       const config = await readBestEffortCliConfig();
       await assertCliPrimaryOwned({
         argv: normalizedArgv,

@@ -38,6 +38,15 @@ type MemorySearchAuthorization = Parameters<
 type WorkspaceMemoryPathClassification = Parameters<
   NonNullable<MemoryPluginRuntime["classifyWorkspaceMemoryPaths"]>
 >[0];
+type MemorySearchRecall = Parameters<NonNullable<MemoryPluginRuntime["recordSearchRecalls"]>>[0];
+type ActiveMemorySearchManagerResult = Omit<
+  Awaited<ReturnType<MemoryPluginRuntime["getMemorySearchManager"]>>,
+  "manager"
+> & {
+  manager: MemorySearchManager | null;
+  searchRuntimeRegistered?: boolean;
+  recordSearchRecalls?: (recall: MemorySearchRecall) => Promise<void>;
+};
 type MemoryRuntimeOwner = {
   runtime?: MemoryPluginRuntime;
   providerRuntime?: MemoryProviderRuntime;
@@ -250,7 +259,7 @@ export async function getActiveMemorySearchManagerCore(params: {
   agentId: string;
   purpose?: "default" | "status" | "cli";
   inspectSources?: boolean;
-}) {
+}): Promise<ActiveMemorySearchManagerResult> {
   const owner = ensureMemoryRuntime(params);
   if (!owner?.runtime) {
     return {
@@ -262,11 +271,23 @@ export async function getActiveMemorySearchManagerCore(params: {
   if (owner.standalone) {
     setStandaloneMemoryManagerActive(true);
   }
-  const result = await owner.runtime.getMemorySearchManager(params);
+  const runtime = owner.runtime;
+  const result = await runtime.getMemorySearchManager(params);
+  const recordSearchRecalls = runtime.recordSearchRecalls
+    ? async (recall: MemorySearchRecall): Promise<void> => {
+        // Search may await across a config reload. Old hits must never be written
+        // through a replacement runtime with different ownership or policy.
+        if (ensureMemoryRuntime(params)?.runtime !== runtime) {
+          return;
+        }
+        await runtime.recordSearchRecalls?.(recall);
+      }
+    : undefined;
   return {
     ...result,
     manager: result.manager ? normalizeRegisteredMemoryManager(result.manager) : null,
     searchRuntimeRegistered: true,
+    ...(recordSearchRecalls ? { recordSearchRecalls } : {}),
   };
 }
 

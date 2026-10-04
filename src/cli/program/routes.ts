@@ -3,7 +3,12 @@ import { matchesCommandPath } from "../command-path-matches.js";
 import { routedCommandDefinitions } from "./routed-command-definitions.js";
 
 /** Bind validated arguments before startup; defer command imports and execution until afterward. */
-export function findRoutedCommand(path: string[], argv: string[]): (() => Promise<void>) | null {
+export function findRoutedCommand(
+  path: string[],
+  argv: string[],
+  // A routed command may decline at execution time (for example a memory search that
+  // finds no usable Gateway); `false` hands the invocation back to Commander.
+): (() => Promise<void | boolean>) | null {
   for (const entry of cliCommandCatalog) {
     if (!entry.route || !matchesCommandPath(path, entry.commandPath, { exact: entry.exact })) {
       continue;

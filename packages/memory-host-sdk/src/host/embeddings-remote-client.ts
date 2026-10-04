@@ -120,6 +120,7 @@ export async function resolveRemoteEmbeddingBearerClient(params: {
               modelBaseUrl: baseUrl,
               cfg: params.options.config,
               agentDir: params.options.agentDir,
+              modelApi: params.provider === "openai" ? "openai-embeddings" : undefined,
             }),
             params.provider,
           )

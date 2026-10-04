@@ -142,7 +142,7 @@ describe("memory.search gateway method", () => {
       undefined,
       expect.objectContaining({ message: expect.stringContaining(notice.warning) }),
     );
-    expect(manager.close).toHaveBeenCalledOnce();
+    expect(manager.close).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -159,7 +159,7 @@ describe("memory.search gateway method", () => {
       maxResults: expected,
       minScore: 0.42,
     });
-    expect(manager.close).toHaveBeenCalledOnce();
+    expect(manager.close).not.toHaveBeenCalled();
   });
 
   it("rejects an unknown agentId without acquiring a manager", async () => {
@@ -267,7 +267,6 @@ describe("memory.search gateway method", () => {
     expect(getActiveMemorySearchManagerCore).toHaveBeenCalledWith({
       cfg,
       agentId: configured,
-      purpose: "cli",
     });
     expect(resolveDefaultAgentId).not.toHaveBeenCalled();
     expect(respond).toHaveBeenCalledWith(
@@ -316,6 +315,33 @@ describe("memory.search gateway method", () => {
     expect(isActiveMemoryProviderNative).toHaveBeenCalledWith({ cfg: {}, agentId: "main" });
     expect(resolveActiveMemoryBackendConfig).not.toHaveBeenCalled();
     expect(getActiveMemorySearchManagerCore).toHaveBeenCalledOnce();
+  });
+
+  it("records recall signals only when the caller requests it", async () => {
+    const cfg = createConfig(testState.workspaceDir);
+    const manager = createStubManager();
+    const results = [
+      {
+        path: "memory/2026-08-12.md",
+        startLine: 1,
+        endLine: 1,
+        score: 0.8,
+        snippet: "Remember the shared search.",
+        source: "memory" as const,
+      },
+    ];
+    manager.search.mockResolvedValue(results);
+    const recordSearchRecalls = vi.fn(async () => undefined);
+    getActiveMemorySearchManagerCore.mockResolvedValue({ manager, recordSearchRecalls });
+
+    await invokeMemorySearch({ query: "shared search", recordRecall: true }, cfg);
+
+    expect(recordSearchRecalls).toHaveBeenCalledWith({
+      cfg,
+      agentId: "main",
+      query: "shared search",
+      results,
+    });
   });
 
   it("does not qualify routine pending index work as a search failure", async () => {
@@ -413,7 +439,7 @@ describe("memory.search gateway method", () => {
     );
   });
 
-  it("shares one format repair across concurrent transient Gateway searches", async () => {
+  it("shares one format repair across concurrent Gateway-owned searches", async () => {
     const { memoryRuntime, configureMemoryCoreDreamingState } = await vi.importActual<{
       memoryRuntime: MemoryPluginRuntime;
       configureMemoryCoreDreamingState: (
@@ -513,7 +539,7 @@ describe("memory.search gateway method", () => {
         invokeMemorySearch({ query: "Juniper", agentId: "main" }, cfg),
       ]);
       expect(acquired).toHaveLength(2);
-      expect(acquired[0]).not.toBe(acquired[1]);
+      expect(acquired[0]).toBe(acquired[1]);
       responses.forEach(expectRecall);
       expect(readRevision() - beforeConcurrent).toBe(singleRepairWrites);
     } finally {

@@ -449,8 +449,11 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
           try {
             // Keep one native publication connection for this generation, then
             // release its broker capacity even when the manager stays cached.
-            await this.runSync(params).then(
-              () => this.publishedDatabase.closePublicationWorker(),
+            return await this.runSync(params).then(
+              async (outcome) => {
+                await this.publishedDatabase.closePublicationWorker();
+                return outcome;
+              },
               async (error: unknown) => {
                 const [cleanup] = await Promise.allSettled([
                   this.publishedDatabase.closePublicationWorker(),
@@ -472,8 +475,9 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
           await lock.release();
         }
       };
+      let syncOutcome;
       try {
-        await runGeneration(forceFtsOnly);
+        syncOutcome = await runGeneration(forceFtsOnly);
       } catch (err) {
         const canDegrade =
           this.providerRequirement.mode === "optional" &&
@@ -488,7 +492,7 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
           provider: failedProvider,
         });
         forceFtsOnly = true;
-        await runGeneration(true);
+        syncOutcome = await runGeneration(true);
       }
 
       if (
@@ -500,6 +504,7 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
       ) {
         this.clearEmbeddingBootstrapFailureAfterRecovery();
       }
+      return syncOutcome;
     };
     this.syncing = this.syncOutcomes.track(run, true).finally(() => {
       this.syncing = null;

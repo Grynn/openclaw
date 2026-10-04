@@ -1,8 +1,21 @@
 // Memory Host SDK tests cover embeddings remote client behavior.
 import "openclaw/plugin-sdk/compiled-subprocess-testing";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveRemoteEmbeddingBearerClient } from "./embeddings-remote-client.js";
 import type { EmbeddingProviderOptions } from "./embeddings.types.js";
+
+const { resolveApiKeyForProviderMock } = vi.hoisted(() => ({
+  resolveApiKeyForProviderMock: vi.fn(async () => ({
+    apiKey: "provider-key",
+    source: "test provider config",
+    mode: "api-key" as const,
+  })),
+}));
+
+vi.mock("./openclaw-runtime-auth.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./openclaw-runtime-auth.js")>()),
+  resolveApiKeyForProvider: resolveApiKeyForProviderMock,
+}));
 
 const configuredProvider = {
   baseUrl: "https://provider.example.test/v1",
@@ -16,6 +29,10 @@ afterEach(() => {
 });
 
 describe("resolveRemoteEmbeddingBearerClient", () => {
+  beforeEach(() => {
+    resolveApiKeyForProviderMock.mockClear();
+  });
+
   it.each<{
     name: string;
     remote?: EmbeddingProviderOptions["remote"];
@@ -64,6 +81,11 @@ describe("resolveRemoteEmbeddingBearerClient", () => {
     expect(client.headers[remote ? "X-Remote-Tenant" : "X-Provider-Tenant"]).toBe(tenant);
     if (remote) {
       expect(client.headers).not.toHaveProperty("X-Provider-Tenant");
+      expect(resolveApiKeyForProviderMock).not.toHaveBeenCalled();
+    } else {
+      expect(resolveApiKeyForProviderMock).toHaveBeenCalledWith(
+        expect.objectContaining({ modelApi: "openai-embeddings" }),
+      );
     }
   });
 

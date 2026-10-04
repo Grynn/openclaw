@@ -1,3 +1,4 @@
+import type { DatabaseSync } from "node:sqlite";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
   createSubsystemLogger,
@@ -22,6 +23,10 @@ import {
   type EmbeddingProvider,
   type EmbeddingProviderRuntime,
 } from "./embeddings.js";
+import {
+  seedMemoryEmbeddingCache,
+  seedMemoryEmbeddingCacheFromChunks,
+} from "./manager-cache-seed.js";
 import { MemoryManagerDatabaseContext } from "./manager-database-context.js";
 import type { MemoryIndexEntry } from "./manager-index-preparation.js";
 import {
@@ -73,15 +78,24 @@ export type MemorySourceSyncPlan = {
 export type MemoryReindexRetryState = {
   dirty: boolean;
   memoryFullRetryDirty: boolean;
+  fullReindexRetryBackoff: MemoryFullReindexRetryBackoff;
   sessionsDirty: boolean;
   sessionsFullRetryDirty: boolean;
   sessionsReconcileDirty: boolean;
   sessionsDirtyFiles: Set<string>;
 };
 
+type MemoryFullReindexRetryBackoff = {
+  attempts: number;
+  retryAt: number;
+};
+
 const LEGACY_VECTOR_TABLE = "chunks_vec";
 const VECTOR_LOAD_TIMEOUT_MS = 30_000;
+const FULL_REINDEX_RETRY_INITIAL_DELAY_MS = 30_000;
+const FULL_REINDEX_RETRY_MAX_DELAY_MS = 30 * 60_000;
 const log = createSubsystemLogger("memory");
+const embeddingCacheChunkSeeds = new WeakMap<DatabaseSync, Promise<void>>();
 
 export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext {
   protected readonly memoryFiles?: MemoryWorkspaceFiles;
@@ -120,6 +134,13 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
   // Failed full memory reindexes must retry as full rebuilds, not incremental
   // dirty syncs that can skip unchanged files against the still-live index.
   protected memoryFullRetryDirty = false;
+  // Search maintenance hands this object to a transient manager. Keeping the
+  // state shared lets a failed detached rebuild update its serving owner.
+  protected fullReindexRetryBackoff: MemoryFullReindexRetryBackoff = {
+    attempts: 0,
+    retryAt: 0,
+  };
+  protected fullReindexRetryWasDeferred = false;
   protected sessionsDirty = false;
   // Failed full reindexes can start with no per-file dirty set. Keep a
   // one-shot all-sessions retry marker so the next non-force sync cannot skip.
@@ -194,6 +215,7 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
     return {
       dirty: this.dirty,
       memoryFullRetryDirty: this.memoryFullRetryDirty,
+      fullReindexRetryBackoff: this.fullReindexRetryBackoff,
       sessionsDirty: this.sessionsDirty,
       sessionsFullRetryDirty: this.sessionsFullRetryDirty,
       sessionsReconcileDirty: this.sessionsReconcileDirty,
@@ -213,6 +235,9 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
   adoptReindexRetryState(snapshot: MemoryReindexRetryState): void {
     this.dirty = snapshot.dirty || this.dirty;
     this.memoryFullRetryDirty = snapshot.memoryFullRetryDirty || this.memoryFullRetryDirty;
+    if (snapshot.fullReindexRetryBackoff.retryAt >= this.fullReindexRetryBackoff.retryAt) {
+      this.fullReindexRetryBackoff = snapshot.fullReindexRetryBackoff;
+    }
     this.sessionsFullRetryDirty = snapshot.sessionsFullRetryDirty || this.sessionsFullRetryDirty;
     this.sessionsReconcileDirty = snapshot.sessionsReconcileDirty || this.sessionsReconcileDirty;
     this.sessionsDirtyFiles = new Set([...snapshot.sessionsDirtyFiles, ...this.sessionsDirtyFiles]);
@@ -233,6 +258,30 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
       this.sessionsDirty = true;
       this.sessionsFullRetryDirty = true;
     }
+    const now = Date.now();
+    if (this.fullReindexRetryBackoff.retryAt > now) {
+      return;
+    }
+    this.fullReindexRetryBackoff.attempts += 1;
+    const delay = Math.min(
+      FULL_REINDEX_RETRY_INITIAL_DELAY_MS *
+        2 ** Math.min(this.fullReindexRetryBackoff.attempts - 1, 30),
+      FULL_REINDEX_RETRY_MAX_DELAY_MS,
+    );
+    this.fullReindexRetryBackoff.retryAt = now + delay;
+  }
+
+  protected canRetryFailedFullReindex(): boolean {
+    return Date.now() >= this.fullReindexRetryBackoff.retryAt;
+  }
+
+  protected clearFullReindexRetryBackoff(): void {
+    this.fullReindexRetryBackoff.attempts = 0;
+    this.fullReindexRetryBackoff.retryAt = 0;
+  }
+
+  wasFullReindexRetryDeferred(): boolean {
+    return this.fullReindexRetryWasDeferred;
   }
 
   protected clearSessionRetryState(): void {
@@ -591,6 +640,49 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
   ): { sql: string; params: MemorySource[] } {
     const sources = sourcesOverride ?? Array.from(this.sources);
     return buildMemorySourceFilter(alias, sources);
+  }
+
+  protected async seedEmbeddingCache(sourceDb: DatabaseSync): Promise<void> {
+    await seedMemoryEmbeddingCache({
+      sourceDb,
+      targetDb: this.db,
+      enabled: this.cache.enabled,
+    });
+  }
+
+  protected async seedEmbeddingCacheFromChunks(
+    sourceDb: DatabaseSync,
+    sourceMeta?: MemoryIndexMeta | null,
+  ): Promise<void> {
+    if (!this.cache.enabled) {
+      return;
+    }
+    if (sourceDb !== this.db) {
+      await seedMemoryEmbeddingCacheFromChunks({
+        sourceDb,
+        targetDb: this.db,
+        enabled: true,
+        sourceMeta,
+      });
+      return;
+    }
+
+    let seed = embeddingCacheChunkSeeds.get(this.db);
+    if (!seed) {
+      // Managers can share one live database. Cache the in-flight seed at the database owner;
+      // a failed seed is removed so the next manager can repair the missing cache rows.
+      seed = seedMemoryEmbeddingCacheFromChunks({
+        sourceDb,
+        targetDb: this.db,
+        enabled: true,
+        sourceMeta,
+      }).catch((error: unknown) => {
+        embeddingCacheChunkSeeds.delete(this.db);
+        throw error;
+      });
+      embeddingCacheChunkSeeds.set(this.db, seed);
+    }
+    await seed;
   }
 
   protected ensureSchema() {

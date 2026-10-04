@@ -169,6 +169,7 @@ export function registerMemoryCli(program: Command, hostOptions?: MemoryCoreRunt
       "Minimum score",
       memoryCliNumberOption("--min-score", "finite number"),
     )
+    .option("--local", "Bypass a running Gateway and search with a local manager", false)
     .option("--json", "Print JSON")
     .action(async (queryArg: string | undefined, opts: MemorySearchCommandOptions) => {
       const query = opts.query ?? queryArg;

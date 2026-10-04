@@ -555,6 +555,7 @@ export const cliCommandCatalog: readonly CliCommandCatalogEntry[] = [
     commandPath: ["memory", "search"],
     exact: true,
     policy: { configGuard: "skip" },
+    route: { id: "memory-search" },
   },
   {
     commandPath: ["memory", "status"],

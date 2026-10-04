@@ -148,6 +148,13 @@ function resolveDynamicLeastPrivilegeOperatorScopesForMethod(
     // Match the handler: every nonempty runtime ID needs command eligibility access.
     return typeof runtimeId === "string" && runtimeId ? [WRITE_SCOPE] : [READ_SCOPE];
   }
+  if (method === "memory.search") {
+    const recordRecall =
+      params && typeof params === "object" && !Array.isArray(params)
+        ? (params as { recordRecall?: unknown }).recordRecall
+        : undefined;
+    return [recordRecall === true ? WRITE_SCOPE : READ_SCOPE];
+  }
   if (method === "channels.pairing.approve") {
     return record?.bootstrapCommandOwner === true ? [PAIRING_SCOPE, ADMIN_SCOPE] : [PAIRING_SCOPE];
   }

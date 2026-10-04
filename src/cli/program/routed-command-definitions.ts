@@ -11,6 +11,7 @@ import {
   parseHealthRouteArgs,
   parseModelsListRouteArgs,
   parseModelsStatusRouteArgs,
+  parseMemorySearchRouteArgs,
   parsePluginsListRouteArgs,
   parseSessionsRouteArgs,
   parseStatusRouteArgs,
@@ -18,7 +19,7 @@ import {
 
 function defineRoutedCommand<TArgs>(
   parseArgs: (argv: string[]) => TArgs | null,
-  runParsedArgs: (args: TArgs) => Promise<void>,
+  runParsedArgs: (args: TArgs) => Promise<void | boolean>,
 ) {
   return (argv: string[]) => {
     const args = parseArgs(argv);
@@ -81,6 +82,10 @@ export const routedCommandDefinitions = {
   "models-status": defineRoutedCommand(parseModelsStatusRouteArgs, async (args) => {
     const { modelsStatusCommand } = await import("../../commands/models/list.status-command.js");
     await modelsStatusCommand(args, defaultRuntime);
+  }),
+  "memory-search": defineRoutedCommand(parseMemorySearchRouteArgs, async (args) => {
+    const { memorySearchGatewayCommand } = await import("../../commands/memory-search-gateway.js");
+    return await memorySearchGatewayCommand(args, defaultRuntime);
   }),
   "channels-list": defineRoutedCommand(parseChannelsListRouteArgs, async (args) => {
     const { channelsListCommand } = await import("../../commands/channels/list.js");

@@ -9,6 +9,7 @@ import {
 } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
 import type { SessionTranscriptCorpusEntry } from "openclaw/plugin-sdk/memory-core-host-engine-sessions";
 import {
+  encodeMemoryEmbedding,
   ensureMemoryIndexSchema,
   requireNodeSqlite,
   type MemorySource,
@@ -198,6 +199,29 @@ class SessionSyncYieldHarness extends MemorySyncTestHarness {
   }
 }
 
+function countCacheRows(db: DatabaseSync): number {
+  const row = db.prepare("SELECT count(*) AS count FROM memory_embedding_cache").get() as {
+    count: number;
+  };
+  return row.count;
+}
+
+class EmbeddingCacheSeedHarness extends SessionSyncYieldHarness {
+  protected override readonly cache = { enabled: true };
+
+  constructor(db: DatabaseSync) {
+    super(db, () => {}, 1);
+  }
+
+  async seedCache(sourceDb: DatabaseSync): Promise<void> {
+    await this.seedEmbeddingCache(sourceDb);
+  }
+
+  async seedCacheFromChunks(sourceDb: DatabaseSync): Promise<void> {
+    await this.seedEmbeddingCacheFromChunks(sourceDb);
+  }
+}
+
 describe("session sync responsiveness", () => {
   beforeEach(() => {
     setSyncYieldStateDir();
@@ -266,4 +290,308 @@ describe("session sync responsiveness", () => {
       }
     },
   );
+
+  it("commits each materialized page before yielding", async () => {
+    const sourceDb = createDb();
+    const targetDb = createDb();
+    const { StatementSync } = requireNodeSqlite();
+    const prepare = vi.spyOn(targetDb, "prepare");
+    const columns = vi.spyOn(StatementSync.prototype, "columns");
+    try {
+      const insert = sourceDb.prepare(
+        `INSERT INTO memory_embedding_cache
+           (provider, model, provider_key, hash, embedding, dims, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const rawLargeEmbedding = encodeMemoryEmbedding(
+        Array.from({ length: 4096 }, () => 0.1234567890123456),
+      );
+      const smallEmbedding = encodeMemoryEmbedding([0.5]);
+      sourceDb.exec("BEGIN");
+      for (let index = 0; index < 101; index += 1) {
+        insert.run(
+          "test",
+          "model",
+          "key",
+          `hash-${index}`,
+          index === 0
+            ? new Uint8Array([1, 2, 3])
+            : index === 1
+              ? rawLargeEmbedding
+              : smallEmbedding,
+          index === 0 ? null : index === 1 ? 4096 : 1,
+          index - 1,
+        );
+      }
+      sourceDb.exec("COMMIT");
+
+      let duringYield: {
+        sourceInTransaction: boolean;
+        targetInTransaction: boolean;
+        rows: number;
+      } | null = null;
+      const observedYield = new Promise<void>((resolve, reject) => {
+        setImmediate(() => {
+          try {
+            duringYield = {
+              sourceInTransaction: sourceDb.isTransaction,
+              targetInTransaction: targetDb.isTransaction,
+              rows: countCacheRows(targetDb),
+            };
+            resolve();
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error(String(error)));
+          }
+        });
+      });
+
+      await new EmbeddingCacheSeedHarness(targetDb).seedCache(sourceDb);
+      await observedYield;
+
+      expect(duringYield).toEqual({
+        sourceInTransaction: false,
+        targetInTransaction: false,
+        rows: 100,
+      });
+      expect(countCacheRows(targetDb)).toBe(101);
+      expect(prepare.mock.calls.filter(([sql]) => /^insert/i.test(sql))).toHaveLength(1);
+      expect(columns).not.toHaveBeenCalled();
+      const readCache = (db: DatabaseSync) =>
+        db.prepare("SELECT * FROM memory_embedding_cache ORDER BY hash").all();
+      expect(readCache(targetDb)).toEqual(readCache(sourceDb));
+    } finally {
+      prepare.mockRestore();
+      columns.mockRestore();
+      sourceDb.close();
+      targetDb.close();
+    }
+  });
+
+  it("seeds a newly enabled cache from canonical chunk embeddings", async () => {
+    const sourceDb = createDb();
+    const targetDb = createDb();
+    const embedding = encodeMemoryEmbedding([0.25, 0.75]);
+    try {
+      sourceDb.prepare("INSERT INTO memory_index_meta (key, value) VALUES (?, ?)").run(
+        "memory_index_meta_v1",
+        JSON.stringify({
+          provider: "openai",
+          model: "text-embedding-3-small",
+          providerKey: "provider-key",
+          chunkTokens: 400,
+          chunkOverlap: 80,
+          vectorDims: 2,
+        }),
+      );
+      sourceDb
+        .prepare(
+          `INSERT INTO memory_index_chunks
+             (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
+           VALUES (?, ?, 'memory', 1, 1, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "chunk-1",
+          "memory/example.md",
+          "hash-1",
+          "text-embedding-3-small",
+          "example",
+          embedding,
+          123,
+        );
+      sourceDb
+        .prepare(
+          `INSERT INTO memory_index_chunks
+             (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
+           VALUES (?, ?, 'memory', 1, 1, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "chunk-empty",
+          "memory/empty.md",
+          "hash-empty",
+          "text-embedding-3-small",
+          "empty",
+          encodeMemoryEmbedding([]),
+          123,
+        );
+
+      await new EmbeddingCacheSeedHarness(targetDb).seedCache(sourceDb);
+      expect(countCacheRows(targetDb)).toBe(1);
+
+      expect(
+        targetDb
+          .prepare(
+            `SELECT provider, model, provider_key, hash, embedding, dims, updated_at
+             FROM memory_embedding_cache`,
+          )
+          .get(),
+      ).toEqual({
+        provider: "openai",
+        model: "text-embedding-3-small",
+        provider_key: "provider-key",
+        hash: "hash-1",
+        embedding,
+        dims: 2,
+        updated_at: 123,
+      });
+    } finally {
+      sourceDb.close();
+      targetDb.close();
+    }
+  });
+
+  it("backfills the live database when caching is enabled later", async () => {
+    const db = createDb();
+    try {
+      db.prepare("INSERT INTO memory_index_meta (key, value) VALUES (?, ?)").run(
+        "memory_index_meta_v1",
+        JSON.stringify({
+          provider: "openai",
+          model: "text-embedding-3-small",
+          providerKey: "provider-key",
+          chunkTokens: 400,
+          chunkOverlap: 80,
+          vectorDims: 2,
+        }),
+      );
+      db.prepare(
+        `INSERT INTO memory_index_chunks
+           (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
+         VALUES ('chunk-1', 'memory/example.md', 'memory', 1, 1, 'hash-1',
+                 'text-embedding-3-small', 'example', ?, 123)`,
+      ).run(encodeMemoryEmbedding([0.25, 0.75]));
+      const harness = new EmbeddingCacheSeedHarness(db);
+
+      await harness.seedCache(db);
+      await harness.seedCache(db);
+
+      expect(countCacheRows(db)).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("shares one live-database chunk seed across concurrent managers", async () => {
+    const db = createDb();
+    try {
+      db.prepare("INSERT INTO memory_index_meta (key, value) VALUES (?, ?)").run(
+        "memory_index_meta_v1",
+        JSON.stringify({
+          provider: "openai",
+          model: "text-embedding-3-small",
+          providerKey: "provider-key",
+          chunkTokens: 400,
+          chunkOverlap: 80,
+          vectorDims: 1,
+        }),
+      );
+      const insert = db.prepare(
+        `INSERT INTO memory_index_chunks
+           (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
+         VALUES (?, ?, 'memory', 1, 1, ?, 'text-embedding-3-small', 'example', ?, ?)`,
+      );
+      for (let index = 0; index < 101; index += 1) {
+        insert.run(
+          `chunk-${index}`,
+          `memory/${index}.md`,
+          `hash-${index}`,
+          encodeMemoryEmbedding([0.5]),
+          index,
+        );
+      }
+      const prepare = vi.spyOn(db, "prepare");
+
+      await Promise.all([
+        new EmbeddingCacheSeedHarness(db).seedCacheFromChunks(db),
+        new EmbeddingCacheSeedHarness(db).seedCacheFromChunks(db),
+      ]);
+
+      // Typed SQLite execution prepares one statement per page. Both managers
+      // share this one 100+1-row traversal instead of each scanning two pages.
+      expect(
+        prepare.mock.calls.filter(([sql]) =>
+          sql
+            .replaceAll('"', "")
+            .toLowerCase()
+            .includes(
+              "select rowid as rowid, hash, embedding, updated_at from memory_index_chunks",
+            ),
+        ),
+      ).toHaveLength(2);
+      expect(countCacheRows(db)).toBe(101);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("retries a failed live-database chunk seed", async () => {
+    const db = createDb();
+    try {
+      db.prepare("INSERT INTO memory_index_meta (key, value) VALUES (?, ?)").run(
+        "memory_index_meta_v1",
+        JSON.stringify({
+          provider: "openai",
+          model: "text-embedding-3-small",
+          providerKey: "provider-key",
+          chunkTokens: 400,
+          chunkOverlap: 80,
+          vectorDims: 1,
+        }),
+      );
+      db.prepare(
+        `INSERT INTO memory_index_chunks
+           (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
+         VALUES ('chunk-1', 'memory/example.md', 'memory', 1, 1, 'hash-1',
+                 'text-embedding-3-small', 'example', ?, 1)`,
+      ).run(encodeMemoryEmbedding([0.5]));
+      const prepare = vi.spyOn(db, "prepare").mockImplementationOnce(() => {
+        throw new Error("seed read failed");
+      });
+      const first = new EmbeddingCacheSeedHarness(db);
+
+      await expect(first.seedCacheFromChunks(db)).rejects.toThrow("seed read failed");
+      prepare.mockRestore();
+      await new EmbeddingCacheSeedHarness(db).seedCacheFromChunks(db);
+
+      expect(countCacheRows(db)).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reruns cross-database chunk seeds for each shadow target", async () => {
+    const sourceDb = createDb();
+    const firstTargetDb = createDb();
+    const secondTargetDb = createDb();
+    try {
+      sourceDb.prepare("INSERT INTO memory_index_meta (key, value) VALUES (?, ?)").run(
+        "memory_index_meta_v1",
+        JSON.stringify({
+          provider: "openai",
+          model: "text-embedding-3-small",
+          providerKey: "provider-key",
+          chunkTokens: 400,
+          chunkOverlap: 80,
+          vectorDims: 1,
+        }),
+      );
+      sourceDb
+        .prepare(
+          `INSERT INTO memory_index_chunks
+             (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
+           VALUES ('chunk-1', 'memory/example.md', 'memory', 1, 1, 'hash-1',
+                   'text-embedding-3-small', 'example', ?, 1)`,
+        )
+        .run(encodeMemoryEmbedding([0.5]));
+
+      await new EmbeddingCacheSeedHarness(firstTargetDb).seedCacheFromChunks(sourceDb);
+      await new EmbeddingCacheSeedHarness(secondTargetDb).seedCacheFromChunks(sourceDb);
+
+      expect(countCacheRows(firstTargetDb)).toBe(1);
+      expect(countCacheRows(secondTargetDb)).toBe(1);
+    } finally {
+      sourceDb.close();
+      firstTargetDb.close();
+      secondTargetDb.close();
+    }
+  });
 });

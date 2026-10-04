@@ -33,6 +33,7 @@ import {
 } from "./manager-embedding-cache-ops.js";
 import { createMemoryEmbeddingOperationError } from "./manager-embedding-errors.js";
 import {
+  runEmbeddingOperationWithTimeout,
   runMemoryEmbeddingBatchRetryWithSplit,
   runMemoryEmbeddingRetryLoop,
 } from "./manager-embedding-policy.js";
@@ -57,6 +58,7 @@ const EMBEDDING_TIMEOUTS_MS = {
   query: { remote: 60_000, local: 5 * 60_000 },
   batch: { remote: 2 * 60_000, local: 10 * 60_000 },
 };
+const EMBEDDING_QUERY_CACHE_MAX_ENTRIES = 256;
 const SOURCE_WIDE_BATCH_MAX_FILES = 2048;
 const SOURCE_WIDE_BATCH_MAX_REQUESTS = 50000;
 
@@ -94,82 +96,6 @@ function formatBatchSourceCounts(counts: Record<string, number>): string {
   );
 }
 
-async function runEmbeddingOperationWithTimeout<T>(params: {
-  timeoutMs: number;
-  message: string;
-  /** Caller-owned cancellation, merged with the per-call watchdog abort. */
-  signal?: AbortSignal;
-  /** Managed readiness pauses this watchdog, while caller cancellation stays active. */
-  deadlineControl?: MemorySearchDeadlineControl;
-  run: (signal: AbortSignal) => Promise<T>;
-}): Promise<T> {
-  const controller = new AbortController();
-  const signal = params.signal
-    ? AbortSignal.any([params.signal, controller.signal])
-    : controller.signal;
-  if (!Number.isFinite(params.timeoutMs) || params.timeoutMs <= 0) {
-    return await params.run(signal);
-  }
-  const timeoutMs = resolveTimerTimeoutMs(params.timeoutMs, 1);
-  const timeoutError = new Error(params.message);
-  let remainingMs = timeoutMs;
-  let segmentStartedAt = Date.now();
-  let paused = false;
-  let timer: NodeJS.Timeout | null = null;
-  let rejectTimeout!: (error: Error) => void;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    rejectTimeout = reject;
-  });
-  const armWatchdog = () => {
-    segmentStartedAt = Date.now();
-    timer = setTimeout(() => {
-      timer = null;
-      rejectTimeout(timeoutError);
-      controller.abort(timeoutError);
-    }, remainingMs);
-  };
-  const unsubscribe = params.deadlineControl?.subscribe((action) => {
-    if (action === "pause") {
-      paused = true;
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      remainingMs = Math.max(0, remainingMs - (Date.now() - segmentStartedAt));
-      if (remainingMs === 0) {
-        // Budget already consumed before the owned phase; do not let the
-        // exemption extend work that had no time left.
-        rejectTimeout(timeoutError);
-        controller.abort(timeoutError);
-      }
-      return;
-    }
-    paused = false;
-    if (!signal.aborted) {
-      armWatchdog();
-    }
-  });
-  if (!paused) {
-    armWatchdog();
-  }
-  try {
-    const operation = params.run(signal);
-    const result = await Promise.race([operation, timeoutPromise]);
-    params.signal?.throwIfAborted();
-    // An overdue watchdog can run after provider success following an event-loop stall.
-    if (!paused && Date.now() - segmentStartedAt >= remainingMs) {
-      controller.abort(timeoutError);
-      throw timeoutError;
-    }
-    return result;
-  } finally {
-    unsubscribe?.();
-    if (timer) {
-      clearTimeout(timer);
-    }
-  }
-}
-
 export abstract class MemoryManagerEmbeddingOps extends MemoryManagerEmbeddingCacheOps {
   protected readonly batchFailureLimit = 2;
   protected batchFailure: { count: number; lastError?: string; lastProvider?: string } = {
@@ -178,6 +104,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerEmbeddingCa
   protected abstract markLocalEmbeddingProviderDegraded(err: unknown): void;
   private activeProviderUses = new Map<EmbeddingProvider, number>();
   private providerIdleWaiters = new Map<EmbeddingProvider, Set<() => void>>();
+  private queryEmbeddingCache?: WeakMap<EmbeddingProvider, Map<string, number[]>>;
   private syncProviderGenerationRelease: (() => void) | null = null;
   private syncProviderGenerationOwners = 0;
 
@@ -471,7 +398,18 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerEmbeddingCa
       throw new Error("Cannot embed query in FTS-only mode (no embedding provider)");
     }
     try {
-      return await this.withProviderUse(
+      signal?.throwIfAborted();
+      this.queryEmbeddingCache ??= new WeakMap();
+      const providerCache = this.queryEmbeddingCache.get(provider) ?? new Map<string, number[]>();
+      this.queryEmbeddingCache.set(provider, providerCache);
+      const cached = providerCache.get(text);
+      if (cached) {
+        // Refresh insertion order so frequently repeated recalls stay resident.
+        providerCache.delete(text);
+        providerCache.set(text, cached);
+        return cached.slice();
+      }
+      const embedding = await this.withProviderUse(
         provider,
         async () =>
           await runMemoryEmbeddingRetryLoop({
@@ -501,6 +439,16 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerEmbeddingCa
             },
           }),
       );
+      signal?.throwIfAborted();
+      providerCache.set(text, embedding.slice());
+      while (providerCache.size > EMBEDDING_QUERY_CACHE_MAX_ENTRIES) {
+        const oldest = providerCache.keys().next().value;
+        if (oldest === undefined) {
+          break;
+        }
+        providerCache.delete(oldest);
+      }
+      return embedding;
     } catch (err) {
       throw createMemoryEmbeddingOperationError({
         operation: "query",

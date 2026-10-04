@@ -33,6 +33,7 @@ type CliRoutedCommandId =
   | "config-unset"
   | "models-list"
   | "models-status"
+  | "memory-search"
   | "channels-list"
   | "channels-status"
   | "plugins-list";

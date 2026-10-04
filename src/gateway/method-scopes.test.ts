@@ -9,31 +9,13 @@ import {
   isGatewayMethodClassified,
   resolveLeastPrivilegeOperatorScopesForMethod,
 } from "./method-scopes.js";
+import { pluginHandler, setPluginGatewayMethodScope } from "./method-scopes.test-support.js";
 import { createPluginGatewayMethodDescriptor } from "./methods/descriptor.js";
 import { createExpectedBroadOperatorScopes } from "./scope-expectations.test-support.js";
 import { listGatewayMethods } from "./server-methods-list.js";
 import { coreGatewayHandlers } from "./server-methods.js";
-import type { GatewayRequestHandler } from "./server-methods/types.js";
 
 const RESERVED_ADMIN_PLUGIN_METHOD = "config.plugin.inspect";
-const pluginHandler: GatewayRequestHandler = ({ respond }) => respond(true, {});
-
-function setPluginGatewayMethodScope(
-  method: string,
-  scope: "operator.read" | "operator.write" | "operator.admin",
-) {
-  const registry = createEmptyPluginRegistry();
-  registry.gatewayHandlers[method] = pluginHandler;
-  registry.gatewayMethodDescriptors.push(
-    createPluginGatewayMethodDescriptor({
-      pluginId: "test",
-      name: method,
-      handler: pluginHandler,
-      scope,
-    }),
-  );
-  setActivePluginRegistry(registry);
-}
 
 afterEach(() => {
   setActivePluginRegistry(createEmptyPluginRegistry());
@@ -241,6 +223,25 @@ describe("method scope resolution", () => {
     expect(
       authorizeOperatorScopesForMethod("talk.config", ["operator.read", "operator.talk.secrets"], {
         includeSecrets: true,
+      }),
+    ).toEqual({ allowed: true });
+  });
+
+  it("requires write scope only when memory search records recall state", () => {
+    expect(resolveLeastPrivilegeOperatorScopesForMethod("memory.search", {})).toEqual([
+      "operator.read",
+    ]);
+    expect(
+      resolveLeastPrivilegeOperatorScopesForMethod("memory.search", { recordRecall: true }),
+    ).toEqual(["operator.write"]);
+    expect(
+      authorizeOperatorScopesForMethod("memory.search", ["operator.read"], {
+        recordRecall: true,
+      }),
+    ).toEqual({ allowed: false, missingScope: "operator.write" });
+    expect(
+      authorizeOperatorScopesForMethod("memory.search", ["operator.write"], {
+        recordRecall: true,
       }),
     ).toEqual({ allowed: true });
   });

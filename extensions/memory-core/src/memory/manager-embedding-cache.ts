@@ -13,7 +13,7 @@ import {
 } from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import type { MemoryIndexProviderIdentity } from "./manager-reindex-state.js";
 
-type MemoryEmbeddingCacheRow = {
+export type MemoryEmbeddingCacheRow = {
   provider: string;
   model: string;
   provider_key: string;
@@ -147,7 +147,7 @@ export function clearMemoryEmbeddingCacheIdentities(
   }
 }
 
-function prepareMemoryEmbeddingCacheUpsert(db: DatabaseSync) {
+function prepareMemoryEmbeddingCacheWrite(db: DatabaseSync, mode: "ignore" | "upsert") {
   const { compiled, bind } = compileSqliteQueryBindings<MemoryEmbeddingCacheRow>((parameter) =>
     getNodeSqliteKysely<EmbeddingCacheDatabase>(db)
       .insertInto("memory_embedding_cache")
@@ -160,18 +160,29 @@ function prepareMemoryEmbeddingCacheUpsert(db: DatabaseSync) {
         dims: parameter((row) => row.dims),
         updated_at: parameter((row) => row.updated_at),
       })
-      .onConflict((conflict) =>
-        conflict.columns(["provider", "model", "provider_key", "hash"]).doUpdateSet((eb) => ({
-          embedding: eb.ref("excluded.embedding"),
-          dims: eb.ref("excluded.dims"),
-          updated_at: eb.ref("excluded.updated_at"),
-        })),
-      ),
+      .onConflict((conflict) => {
+        const keyed = conflict.columns(["provider", "model", "provider_key", "hash"]);
+        return mode === "ignore"
+          ? keyed.doNothing()
+          : keyed.doUpdateSet((eb) => ({
+              embedding: eb.ref("excluded.embedding"),
+              dims: eb.ref("excluded.dims"),
+              updated_at: eb.ref("excluded.updated_at"),
+            }));
+      }),
   );
   // The caller owns this statement for its write loop, including large embedding bindings.
   const statement = db.prepare(compiled.sql);
   statement.setReadBigInts(true);
   return (row: MemoryEmbeddingCacheRow) => statement.run(...bind(row));
+}
+
+export function prepareMemoryEmbeddingCacheUpsert(db: DatabaseSync) {
+  return prepareMemoryEmbeddingCacheWrite(db, "upsert");
+}
+
+export function prepareMemoryEmbeddingCacheInsertIgnore(db: DatabaseSync) {
+  return prepareMemoryEmbeddingCacheWrite(db, "ignore");
 }
 
 export function upsertMemoryEmbeddingCache(params: {
