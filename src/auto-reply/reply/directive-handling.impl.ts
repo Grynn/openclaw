@@ -1,12 +1,6 @@
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { renderExecTargetLabel } from "../../agents/bash-tools.exec-runtime.js";
 import { resolveExecDefaults } from "../../agents/exec-defaults.js";
-import {
-  formatFastModeCommandOptions,
-  formatFastModeCurrentStatus,
-  formatFastModeValue,
-  resolveFastModeState,
-} from "../../agents/fast-mode.js";
+import { formatFastModeValue, resolveFastModeState } from "../../agents/fast-mode.js";
 import { persistStickyModelSelectionBestEffort } from "../../agents/sticky-model-selection.js";
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth-profile-override-provenance.js";
@@ -29,6 +23,7 @@ import {
 } from "../thinking.js";
 import type { ReplyPayload } from "../types.js";
 import {
+  maybeHandleFastDirective,
   maybeHandleUnexpectedDirectiveArguments,
   resolveInvalidExecDirectiveMessage,
 } from "./directive-handling.arguments.js";
@@ -222,10 +217,6 @@ export async function handleDirectiveOnly(
     agentId: activeAgentId,
     sessionEntry: directives.clearFastMode ? undefined : sessionEntry,
   });
-  const effectiveFastMode =
-    directives.fastMode ??
-    (directives.clearFastMode ? fastModeState.mode : currentFastMode) ??
-    fastModeState.mode;
 
   if (directives.hasThinkDirective && !directives.thinkLevel && !directives.clearThinkLevel) {
     if (!directives.rawThinkLevel) {
@@ -273,38 +264,9 @@ export async function handleDirectiveOnly(
       "hasTraceDirective",
     );
   }
-  if (
-    directives.hasFastDirective &&
-    directives.fastMode === undefined &&
-    !directives.clearFastMode
-  ) {
-    const isFastStatus = normalizeLowercaseStringOrEmpty(directives.rawFastMode) === "status";
-    if (!directives.rawFastMode || isFastStatus) {
-      const statusText = formatFastModeCurrentStatus({
-        mode: effectiveFastMode,
-        source: fastModeState.source,
-        fastAutoOnSeconds: fastModeState.fastAutoOnSeconds,
-      });
-      return acknowledgeIgnoredDirective(
-        {
-          text: isFastStatus
-            ? statusText
-            : withOptions(
-                statusText,
-                formatFastModeCommandOptions({
-                  fastAutoOnSeconds: fastModeState.fastAutoOnSeconds,
-                }),
-              ),
-        },
-        "hasFastDirective",
-      );
-    }
-    return acknowledgeIgnoredDirective(
-      {
-        text: `Unrecognized fast mode "${directives.rawFastMode}". Valid levels: on, off, ultrafast, auto, default, status.`,
-      },
-      "hasFastDirective",
-    );
+  const fastAck = maybeHandleFastDirective({ directives, fastModeState, currentFastMode });
+  if (fastAck) {
+    return acknowledgeIgnoredDirective(fastAck, "hasFastDirective");
   }
   if (directives.hasReasoningDirective && !directives.reasoningLevel) {
     return acknowledgeIgnoredDirective(

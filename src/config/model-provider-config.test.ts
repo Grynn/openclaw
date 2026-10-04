@@ -377,4 +377,37 @@ describe("createModelProviderRouteOverrideResolver", () => {
       ).toBe(expected);
     },
   );
+
+  it.each([
+    {
+      label: "provider",
+      provider: { params: { fastModeAllowed: false } },
+    },
+    {
+      label: "model",
+      provider: { models: [{ id: "gpt-5.5", params: { fastModeAllowed: false } }] },
+    },
+  ])("does not treat a valid $label fast-mode policy as request behavior", ({ provider }) => {
+    expect(
+      createModelProviderRouteOverrideResolver({
+        provider: "openai",
+        authoredConfig: { models: { providers: { openai: provider } } } as never,
+      })("gpt-5.5"),
+    ).toBe("none");
+  });
+
+  it("keeps other provider params classified as authored request behavior", () => {
+    expect(
+      createModelProviderRouteOverrideResolver({
+        provider: "openai",
+        authoredConfig: {
+          models: {
+            providers: {
+              openai: { params: { fastModeAllowed: false, serviceTier: "default" } },
+            },
+          },
+        } as never,
+      })("gpt-5.5"),
+    ).toBe("present");
+  });
 });

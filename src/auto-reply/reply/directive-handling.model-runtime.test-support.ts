@@ -4,6 +4,9 @@ import { preparePublishedModelRuntimeChoice } from "../../agents/model-runtime-c
 import type { ModelAliasIndex } from "../../agents/model-selection.js";
 import type { InternalSessionEntry, SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { enqueueSystemEvent as EnqueueSystemEvent } from "../../infra/system-events.js";
+import type { handleDirectiveOnly } from "./directive-handling.impl.js";
+import type { HandleDirectiveOnlyParams } from "./directive-handling.params.js";
 import type { applyInlineDirectiveOverrides } from "./get-reply-directives-apply.js";
 
 type RuntimeDirectiveTestHarness = {
@@ -165,4 +168,73 @@ export function registerModelRuntimeDirectiveTests(harness: RuntimeDirectiveTest
       });
     },
   );
+}
+
+export function registerFastModeDirectiveTests({
+  createSessionEntry,
+  runHandleCommand,
+  enqueueSystemEvent,
+}: {
+  createSessionEntry: RuntimeDirectiveTestHarness["createSessionEntry"];
+  runHandleCommand: (
+    command: string,
+    overrides?: Partial<HandleDirectiveOnlyParams>,
+  ) => ReturnType<typeof handleDirectiveOnly>;
+  enqueueSystemEvent: typeof EnqueueSystemEvent;
+}): void {
+  it("persists and reports fast-mode directives", async () => {
+    const sessionEntry = createSessionEntry();
+
+    const onReply = await runHandleCommand("/fast on", { sessionEntry });
+    expect(onReply?.text).toContain("Fast mode enabled");
+    expect(sessionEntry.fastMode).toBe(true);
+
+    const statusReply = await runHandleCommand("/fast", {
+      sessionEntry,
+      currentFastMode: sessionEntry.fastMode,
+    });
+    expect(statusReply?.text).toContain("Current fast mode: on");
+
+    const ultrafastReply = await runHandleCommand("/fast ultrafast", { sessionEntry });
+    expect(ultrafastReply?.text).toContain("Ultrafast mode enabled.");
+    expect(sessionEntry.fastMode).toBe("ultrafast");
+    expect(enqueueSystemEvent).toHaveBeenCalledWith(
+      "Ultrafast mode enabled.",
+      expect.objectContaining({ contextKey: "fast:ultrafast" }),
+    );
+
+    const offReply = await runHandleCommand("/fast off", {
+      sessionEntry,
+      currentFastMode: sessionEntry.fastMode,
+    });
+    expect(offReply?.text).toContain("Fast mode disabled");
+    expect(sessionEntry.fastMode).toBe(false);
+
+    const defaultReply = await runHandleCommand("/fast default", {
+      sessionEntry,
+      currentFastMode: sessionEntry.fastMode,
+    });
+    expect(defaultReply?.text).toContain("Fast mode reset to default");
+    expect(sessionEntry.fastMode).toBeUndefined();
+  });
+
+  it("rejects a fast-mode directive when the selected model forbids fast mode", async () => {
+    const sessionEntry = createSessionEntry();
+    const result = await runHandleCommand("/fast on", {
+      cfg: {
+        commands: { text: true },
+        agents: {
+          defaults: {
+            models: {
+              "anthropic/claude-opus-4-6": { params: { fastModeAllowed: false } },
+            },
+          },
+        },
+      },
+      sessionEntry,
+    });
+
+    expect(result?.text).toBe("Fast mode is disabled by policy for the current model.");
+    expect(sessionEntry.fastMode).toBeUndefined();
+  });
 }

@@ -36,6 +36,7 @@ const {
   buildEmbeddedRunExecutionParams,
   mintReplyMessageActionTurnCapability,
   resolveModelFallbackOptions,
+  resolveRunFastModeForFallbackCandidate,
 } = await import("./agent-runner-utils.js");
 const {
   resolveMessageActionTurnAuthorization,
@@ -244,6 +245,52 @@ describe("agent-runner-utils", () => {
       modelSelectionLocked: true,
     });
     expect(resolved.fallbacksOverride).toEqual([]);
+  });
+
+  it("passes through missing agentId for helper-based fallback resolution", () => {
+    hoisted.resolveModelFallbackAvailabilityMock.mockReturnValue({
+      kind: "active",
+      models: ["fallback-model"],
+    });
+    const run = makeRun({ agentId: undefined });
+
+    const resolved = resolveModelFallbackOptions(run);
+
+    expect(hoisted.resolveModelFallbackAvailabilityMock).toHaveBeenCalledWith({
+      cfg: run.config,
+      agentId: undefined,
+      sessionKey: run.sessionKey,
+      hasSessionModelOverride: false,
+      modelOverrideSource: undefined,
+      hasAutoFallbackProvenance: false,
+    });
+    expect(resolved.fallbacksOverride).toEqual(["fallback-model"]);
+  });
+
+  it("hard-disables a fast override when a fallback model forbids fast mode", () => {
+    const run = makeRun({
+      fastMode: true,
+      fastModeOverride: true,
+      config: {
+        agents: {
+          defaults: {
+            models: {
+              "anthropic/claude-sonnet-5": { params: { fastModeAllowed: false } },
+            },
+          },
+        },
+      },
+    });
+
+    expect(
+      resolveRunFastModeForFallbackCandidate({
+        run,
+        config: run.config,
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        sessionEntry: { fastMode: true },
+      }),
+    ).toEqual({ fastMode: false, fastModeAutoOnSeconds: 60 });
   });
 
   it("builds embedded run base params with auth profile and run metadata", async () => {

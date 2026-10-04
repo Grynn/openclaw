@@ -1,6 +1,8 @@
 import type { InternalSessionEntry } from "../config/sessions.js";
 import { normalizeLegacySessionEntryDelivery } from "../infra/state-migrations.legacy-session-store.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
+import type { FailoverReason } from "./failover/signal.js";
+import type { ModelFallbackRunOptions } from "./model-fallback-attempt.js";
 
 export function makeSuccessResult(provider: string, model: string) {
   return {
@@ -358,4 +360,51 @@ export function createTestModelSelection(params: {
     resolveDefaultModelForAgent: resolveTestDefaultModelForAgent,
     resolveThinkingDefault: (args: unknown) => params.resolveThinkingDefaultMock(args),
   };
+}
+
+export type FallbackRunnerParams = {
+  provider: string;
+  model: string;
+  sessionId?: string;
+  fallbacksOverride?: string[];
+  resolveAgentHarnessRuntimeOverride?: (provider: string, model: string) => string | undefined;
+  run: (provider: string, model: string, options: ModelFallbackRunOptions) => Promise<unknown>;
+  onFallbackStep?: (step: Record<string, unknown>) => void | Promise<void>;
+  classifyResult?: (params: {
+    provider: string;
+    model: string;
+    result: unknown;
+    attempt: number;
+    total: number;
+  }) => unknown;
+};
+
+export function runInitialFallbackAttempt(
+  params: FallbackRunnerParams,
+  provider = params.provider,
+  model = params.model,
+) {
+  return params.run(provider, model, {
+    modelRoutingProvenance: {
+      requestedProvider: params.provider,
+      requestedModel: params.model,
+      stage: "initial",
+    },
+  });
+}
+
+export function runSubsequentFallbackAttempt(
+  params: FallbackRunnerParams,
+  provider: string,
+  model: string,
+  fallbackReason: FailoverReason,
+) {
+  return params.run(provider, model, {
+    modelRoutingProvenance: {
+      requestedProvider: params.provider,
+      requestedModel: params.model,
+      stage: "fallback",
+      fallbackReason,
+    },
+  });
 }

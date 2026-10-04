@@ -122,7 +122,10 @@ import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import type { ElevatedLevel } from "../thinking.js";
-import { registerModelRuntimeDirectiveTests } from "./directive-handling.model-runtime.test-support.js";
+import {
+  registerFastModeDirectiveTests,
+  registerModelRuntimeDirectiveTests,
+} from "./directive-handling.model-runtime.test-support.js";
 import { registerModelStatusDirectiveTests } from "./directive-handling.model-status.test-support.js";
 import { createModelSelectionStateFixture } from "./model-selection.test-support.js";
 
@@ -1989,40 +1992,10 @@ describe("handleDirectiveOnly model persist behavior (fixes #1435)", () => {
     expect(sessionEntry.verboseLevel).toBe("off");
   });
 
-  it("persists and reports fast-mode directives", async () => {
-    const sessionEntry = createSessionEntry();
-
-    const onReply = await runHandleCommand("/fast on", { sessionEntry });
-    expect(onReply?.text).toContain("Fast mode enabled");
-    expect(sessionEntry.fastMode).toBe(true);
-
-    const statusReply = await runHandleCommand("/fast", {
-      sessionEntry,
-      currentFastMode: sessionEntry.fastMode,
-    });
-    expect(statusReply?.text).toContain("Current fast mode: on");
-
-    const ultrafastReply = await runHandleCommand("/fast ultrafast", { sessionEntry });
-    expect(ultrafastReply?.text).toContain("Ultrafast mode enabled.");
-    expect(sessionEntry.fastMode).toBe("ultrafast");
-    expect(enqueueSystemEvent).toHaveBeenCalledWith(
-      "Ultrafast mode enabled.",
-      expect.objectContaining({ contextKey: "fast:ultrafast" }),
-    );
-
-    const offReply = await runHandleCommand("/fast off", {
-      sessionEntry,
-      currentFastMode: sessionEntry.fastMode,
-    });
-    expect(offReply?.text).toContain("Fast mode disabled");
-    expect(sessionEntry.fastMode).toBe(false);
-
-    const defaultReply = await runHandleCommand("/fast default", {
-      sessionEntry,
-      currentFastMode: sessionEntry.fastMode,
-    });
-    expect(defaultReply?.text).toContain("Fast mode reset to default");
-    expect(sessionEntry.fastMode).toBeUndefined();
+  registerFastModeDirectiveTests({
+    createSessionEntry,
+    runHandleCommand,
+    enqueueSystemEvent,
   });
 
   it("persists and reports elevated-mode directives when allowed", async () => {

@@ -29,6 +29,7 @@ import {
   type AdmittedRunContext,
   type PreparedAgentRunAdmission,
 } from "./admitted-run-context.js";
+import { registerAgentCommandFastModeCases } from "./agent-command.fast-mode.test-support.js";
 import {
   type CommandSessionEntryFixture,
   createChannelModelRuntimeConfig,
@@ -39,6 +40,9 @@ import {
   createTestModelSelection,
   createTestModelVisibilityPolicy,
   makeSuccessResult,
+  runInitialFallbackAttempt,
+  runSubsequentFallbackAttempt,
+  type FallbackRunnerParams,
 } from "./agent-command.live-model-switch.test-helpers.js";
 import { registerAgentCommandPreparedConfigCases } from "./agent-command.prepared-config.test-support.js";
 import {
@@ -47,7 +51,6 @@ import {
 } from "./agent-command.restart-recovery.test-harness.js";
 import { createApiKeyCredential } from "./auth-profiles/credential-fixtures.test-support.js";
 import { FailoverError } from "./failover/error.js";
-import type { FailoverReason } from "./failover/signal.js";
 import { formatAgentInternalEventsForPrompt, type AgentInternalEvent } from "./internal-events.js";
 import {
   INTERNAL_RUNTIME_CONTEXT_BEGIN,
@@ -55,7 +58,6 @@ import {
 } from "./internal-runtime-context.js";
 import { LiveSessionModelSwitchError } from "./live-model-switch-error.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
-import type { ModelFallbackRunOptions } from "./model-fallback-attempt.js";
 import type { ModelFallbackStepFields } from "./model-fallback-observation.js";
 import { resetPreparedModelRuntimeSnapshotsForTest } from "./prepared-model-runtime.test-support.js";
 import {
@@ -773,53 +775,6 @@ beforeAll(async () => {
   agentCommandFromSystem ??= mod.agentCommandFromSystem;
   ({ prepareAgentCommandExecution } = await import("./command/prepare.js"));
 });
-
-type FallbackRunnerParams = {
-  provider: string;
-  model: string;
-  sessionId?: string;
-  fallbacksOverride?: string[];
-  resolveAgentHarnessRuntimeOverride?: (provider: string, model: string) => string | undefined;
-  run: (provider: string, model: string, options: ModelFallbackRunOptions) => Promise<unknown>;
-  onFallbackStep?: (step: Record<string, unknown>) => void | Promise<void>;
-  classifyResult?: (params: {
-    provider: string;
-    model: string;
-    result: unknown;
-    attempt: number;
-    total: number;
-  }) => unknown;
-};
-
-function runInitialFallbackAttempt(
-  params: FallbackRunnerParams,
-  provider = params.provider,
-  model = params.model,
-) {
-  return params.run(provider, model, {
-    modelRoutingProvenance: {
-      requestedProvider: params.provider,
-      requestedModel: params.model,
-      stage: "initial",
-    },
-  });
-}
-
-function runSubsequentFallbackAttempt(
-  params: FallbackRunnerParams,
-  provider: string,
-  model: string,
-  fallbackReason: FailoverReason,
-) {
-  return params.run(provider, model, {
-    modelRoutingProvenance: {
-      requestedProvider: params.provider,
-      requestedModel: params.model,
-      stage: "fallback",
-      fallbackReason,
-    },
-  });
-}
 
 type ModelSwitchOptions = ConstructorParameters<typeof LiveSessionModelSwitchError>[0];
 
@@ -1631,6 +1586,15 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
         modelOverrideSource: "auto",
       }),
     });
+  });
+
+  registerAgentCommandFastModeCases({
+    state,
+    agentCommand: (...args) => agentCommand(...args),
+    runBasicAgentCommand,
+    setupSingleAttemptFallback,
+    mockCallArg,
+    expectRecordFields,
   });
 
   it("reuses durable user-turn proof across live model switch retries", async () => {
