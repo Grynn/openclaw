@@ -33,6 +33,8 @@ import {
 } from "./session-binding-record-codec.js";
 
 export {
+  codexTranscriptCoverageSchema,
+  type CodexTranscriptCoverage,
   matchesPendingSupervisionBranch,
   readCodexAppServerThreadBinding,
   readCodexBindingTimestamp,

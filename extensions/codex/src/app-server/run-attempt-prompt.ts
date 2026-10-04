@@ -36,18 +36,22 @@ import {
   codexDynamicToolsFingerprint,
   codexLegacyDynamicToolsFingerprint,
 } from "./thread-lifecycle.js";
-import { hasCodexMirrorOrigin } from "./transcript-mirror-attestation.js";
+import {
+  selectCodexHistoryAfterExactCoverage,
+  selectCodexHistoryAfterInvalidExactCoverage,
+  selectCodexHistoryAfterLegacyTimestamp,
+} from "./transcript-coverage.js";
 import {
   buildCodexHistoryProvenancePrefix,
   buildCodexParentLocalInstructions,
 } from "./turn-params.js";
-import { readMirrorIdentity } from "./upstream-prompt-provenance.js";
 
 export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
   const {
     runtime,
     attemptTools,
     historyState,
+    transcriptReadFence,
     hookContext,
     workspaceBootstrapContext,
     buildActiveContextEngineRuntimeContext,
@@ -457,42 +461,40 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     };
     turnState.codexTurnPromptText = decorateCodexTurnPromptText(nextPromptBuild);
   };
-  const selectNewerVisibleHistoryAfterBinding = (
+  const selectNewerVisibleHistoryAfterBinding = async (
     binding: NonNullable<typeof mutable.startupBinding>,
   ) => {
-    const cutoff = Date.parse(binding.historyCoveredThrough ?? "");
-    return historyState.messages.filter((message) => {
-      if (
-        message.role !== "user" &&
-        message.role !== "assistant" &&
-        !isCodexDurableCustomMessage(message)
-      ) {
-        return false;
-      }
-      const mirrorIdentity = readMirrorIdentity(message);
-      const timestamp =
-        typeof message.timestamp === "number"
-          ? message.timestamp
-          : typeof message.timestamp === "string"
-            ? Date.parse(message.timestamp)
-            : Number.NaN;
-      return (
-        !(
-          "idempotencyKey" in message &&
-          typeof message.idempotencyKey === "string" &&
-          message.idempotencyKey.startsWith("codex-app-server:")
-        ) &&
-        !hasCodexMirrorOrigin(message) &&
-        !mirrorIdentity?.startsWith("codex-app-server:") &&
-        Number.isFinite(timestamp) &&
-        timestamp > (Number.isFinite(cutoff) ? cutoff : 0)
+    if (!binding.transcriptCoverage) {
+      return selectCodexHistoryAfterLegacyTimestamp(
+        historyState.messages,
+        binding.historyCoveredThrough,
       );
-    });
+    }
+    if (transcriptReadFence) {
+      const exact = await selectCodexHistoryAfterExactCoverage({
+        coverage: binding.transcriptCoverage,
+        currentAdmission: transcriptReadFence,
+        signal: connection.runAbortController.signal,
+      });
+      connection.runAbortController.signal.throwIfAborted();
+      connection.assertCurrent();
+      if (exact.kind === "ok") {
+        return exact.messages;
+      }
+      embeddedAgentLog.warn(
+        "codex exact transcript coverage is unavailable; replaying visible context",
+        {
+          threadId: binding.threadId,
+          reason: exact.kind,
+        },
+      );
+    }
+    return selectCodexHistoryAfterInvalidExactCoverage(historyState.messages);
   };
   const applyResumeStaleBindingContinuityProjection = async (
     binding: NonNullable<typeof mutable.startupBinding>,
   ) => {
-    const newerVisibleMessages = selectNewerVisibleHistoryAfterBinding(binding);
+    const newerVisibleMessages = await selectNewerVisibleHistoryAfterBinding(binding);
     if (newerVisibleMessages.length === 0) {
       return false;
     }
@@ -501,6 +503,8 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
   };
   const precomputeNoContextEngineStaleBindingProjection = async () => {
     promptState.precomputedStaleBindingContinuityProjectionApplied = false;
+    promptState.precomputedStaleBindingContinuityProjectionResolved = false;
+    promptState.precomputedStaleBindingContinuityProjectionThreadId = undefined;
     promptState.staleBindingContinuityForcedFreshStart = false;
     const binding = mutable.startupBinding;
     if (activeContextEngine || !binding?.threadId || binding.pendingSupervisionBranch) {
@@ -511,7 +515,9 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       return false;
     }
     const projected = await applyResumeStaleBindingContinuityProjection(binding);
+    promptState.precomputedStaleBindingContinuityProjectionResolved = true;
     promptState.precomputedStaleBindingContinuityProjectionApplied = projected;
+    promptState.precomputedStaleBindingContinuityProjectionThreadId = binding.threadId;
     return projected;
   };
   const applyNoContextEngineContinuityProjection = async (
@@ -534,8 +540,13 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     if (activeContextEngine || (!hasContinuity && !params.pluginRuntimeRefreshMessages?.length)) {
       return false;
     }
-    if (action === "resumed" && promptState.precomputedStaleBindingContinuityProjectionApplied) {
-      return true;
+    if (
+      action === "resumed" &&
+      binding &&
+      promptState.precomputedStaleBindingContinuityProjectionResolved &&
+      promptState.precomputedStaleBindingContinuityProjectionThreadId === binding.threadId
+    ) {
+      return promptState.precomputedStaleBindingContinuityProjectionApplied;
     }
     if (action === "started" && promptState.staleBindingContinuityForcedFreshStart) {
       return true;

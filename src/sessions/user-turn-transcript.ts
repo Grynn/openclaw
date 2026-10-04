@@ -200,7 +200,7 @@ async function confirmPersistedSteerTargetRunId(params: {
   if (!rewritten) {
     return undefined;
   }
-  const admission = { ...params.admission, generation: rewritten.generation };
+  const admission = { ...params.admission, ...rewritten.anchor };
   await publishTranscriptUpdate(admission, {
     message: rewritten.message,
     messageId: admission.entryId,

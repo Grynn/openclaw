@@ -77,6 +77,7 @@ it("reads active anchors and raw tail facts without caller SQL, including cold d
           effectiveParentId: null,
           activeMessagePosition: 0,
           idempotencyKey: "question-key",
+          messageFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
         },
         {
           agentId: scope.agentId,

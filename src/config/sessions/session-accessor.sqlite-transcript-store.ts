@@ -626,7 +626,7 @@ export function readSessionTranscriptMessageByEventId(
 }
 
 export function readTranscriptMessageByEventId(
-  database: OpenClawAgentDatabase,
+  database: Pick<OpenClawAgentDatabase, "db">,
   scope: ResolvedTranscriptScope,
   eventId: string,
 ): { messageId: string; message: unknown } | undefined {
@@ -670,6 +670,13 @@ function readTranscriptEventIdentity(event: unknown) {
     : undefined;
 }
 
+export function canonicalizeTranscriptMessageForStorage<TMessage>(message: TMessage): TMessage {
+  if (!message || typeof message !== "object" || Array.isArray(message)) {
+    return message;
+  }
+  return canonicalizePersistedUserMessageMedia(message).message;
+}
+
 export function canonicalizeTranscriptEventMedia(event: TranscriptEvent): TranscriptEvent {
   if (!isRecord(event)) {
     return event;
@@ -686,13 +693,14 @@ export function redactTranscriptMessageForStorage<TMessage>(
   message: TMessage,
   options: Pick<TranscriptMessageAppendOptions<TMessage>, "config">,
 ): TMessage {
-  return isTranscriptAgentMessage(message)
+  const redacted = isTranscriptAgentMessage(message)
     ? (redactTranscriptMessage(
         message,
         options.config,
         getCodeModeSourceAppend(options),
       ) as TMessage)
     : redactSecrets(message);
+  return canonicalizeTranscriptMessageForStorage(redacted);
 }
 
 function isTranscriptAgentMessage(value: unknown): value is AgentMessage {

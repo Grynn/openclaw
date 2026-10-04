@@ -1,7 +1,10 @@
 import path from "node:path";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
-import { createMockPluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
+import {
+  createMockPluginRegistry,
+  loadUserTurnTranscriptRecorderFactoryForTest,
+} from "openclaw/plugin-sdk/plugin-test-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { readMirroredSessionHistoryMessages } from "./attempt-context.js";
 import {
@@ -13,10 +16,18 @@ import {
   runCodexAppServerAttempt,
   setupRunAttemptTestHooks,
   tempDir,
+  threadStartResult,
+  turnStartResult,
   userMessage,
 } from "./run-attempt-test-harness.js";
-import { writeCodexAppServerBinding } from "./session-binding.test-helpers.js";
-import { attachSqliteSessionTarget } from "./sqlite-session.test-helpers.js";
+import {
+  readCodexAppServerBinding,
+  writeCodexAppServerBinding,
+} from "./session-binding.test-helpers.js";
+import {
+  appendSqliteHistoryMessage,
+  attachSqliteSessionTarget,
+} from "./sqlite-session.test-helpers.js";
 
 setupRunAttemptTestHooks();
 
@@ -256,3 +267,86 @@ describe("Codex bounded assistant continuity", () => {
     expect(llmInputPayload.historyMessages).toEqual([]);
   });
 });
+
+it.each([false, true])(
+  "replays an unsteered arrival during a completed native turn (recorder-free maintenance: %s)",
+  async (withMaintenance) => {
+    const params = createParams(path.join(tempDir, "exact.jsonl"), path.join(tempDir, "workspace"));
+    await attachSqliteSessionTarget(params, path.join(tempDir, "exact.sqlite"), params.sessionId);
+    const createRecorder = await loadUserTurnTranscriptRecorderFactoryForTest();
+    const target = {
+      agentId: "main",
+      sessionId: params.sessionId,
+      sessionKey: params.sessionKey!,
+      storePath: params.sessionTarget!.storePath!,
+      sessionEntry: undefined,
+    };
+    const firstRecorder = createRecorder({
+      input: { text: params.prompt, idempotencyKey: "first:user", timestamp: 100 },
+      target,
+    });
+    await firstRecorder.persistApproved();
+    params.userTurnTranscriptRecorder = firstRecorder;
+    let turnNumber = 0;
+    const harness = createStartedThreadHarness(
+      async (method) => {
+        if (method === "thread/resume") {
+          return threadStartResult("thread-1");
+        }
+        if (method === "turn/start") {
+          return turnStartResult(`turn-${++turnNumber}`);
+        }
+        return undefined;
+      },
+      { persistedThreads: ["thread-1"] },
+    );
+    const first = runCodexAppServerAttempt(params);
+    await first.waitForTurnAccepted();
+    const lateText = "Unsteered arrival while the first model request was running.";
+    await appendSqliteHistoryMessage(params, userMessage(lateText, 100));
+    await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+    await first;
+    const binding = await readCodexAppServerBinding(params.sessionFile);
+    expect(binding).toBeDefined();
+
+    if (withMaintenance) {
+      const maintenanceParams = createParams(params.sessionFile, params.workspaceDir, {
+        runId: "maintenance",
+        prompt: "Maintenance turn.",
+      });
+      maintenanceParams.sessionTarget = params.sessionTarget;
+      const maintenance = runCodexAppServerAttempt(maintenanceParams);
+      await maintenance.waitForTurnAccepted();
+      await harness.completeTurn({ threadId: "thread-1", turnId: "turn-2" });
+      await maintenance;
+      const afterMaintenance = await readCodexAppServerBinding(params.sessionFile);
+      expect(afterMaintenance?.transcriptCoverage).toEqual(binding?.transcriptCoverage);
+      expect(afterMaintenance?.historyCoveredThrough).toBeUndefined();
+    }
+
+    const nextParams = createParams(params.sessionFile, params.workspaceDir, {
+      runId: "run-2",
+      prompt: "Current request.",
+    });
+    nextParams.sessionTarget = params.sessionTarget;
+    const nextRecorder = createRecorder({
+      input: { text: nextParams.prompt, idempotencyKey: "next:user", timestamp: 100 },
+      target,
+    });
+    await nextRecorder.persistApproved();
+    nextParams.userTurnTranscriptRecorder = nextRecorder;
+    const second = runCodexAppServerAttempt(nextParams);
+    await second.waitForTurnAccepted();
+    const sent = JSON.stringify(
+      harness.requests.findLast(({ method }) => method === "turn/start")?.params,
+    );
+    expect(sent).toContain(lateText);
+    expect(sent.split(lateText)).toHaveLength(2);
+    expect(sent).toContain(nextParams.prompt);
+    await harness.completeTurn({ threadId: "thread-1", turnId: `turn-${turnNumber}` });
+    await second;
+    expect(binding?.transcriptCoverage?.turnStartAdmission.entryId).toBe(
+      firstRecorder.getAdmissionReceipt()?.entryId,
+    );
+  },
+);

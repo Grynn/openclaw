@@ -93,6 +93,81 @@ export async function readCodexSessionTranscriptEventsBeforeAdmission(
   );
 }
 
+export type CodexSessionTranscriptAdmissionDeltaResult =
+  | { kind: "ok"; messages: AgentMessage[] }
+  | {
+      kind: "non-descendant" | "projection-unavailable" | "session-rebound" | "stale" | "too-large";
+    };
+
+function admissionsShareTarget(
+  left: TranscriptTurnAdmission,
+  right: TranscriptTurnAdmission,
+): boolean {
+  return (
+    left.agentId === right.agentId &&
+    left.sessionId === right.sessionId &&
+    left.sessionKey === right.sessionKey &&
+    left.storePath === right.storePath
+  );
+}
+
+/** Read visible messages between two validated, admitted user rows. */
+export async function readCodexSessionTranscriptMessagesBetweenAdmissions(
+  covered: TranscriptTurnAdmission,
+  current: TranscriptTurnAdmission,
+): Promise<CodexSessionTranscriptAdmissionDeltaResult> {
+  const sameActiveMessagePosition = covered.activeMessagePosition === current.activeMessagePosition;
+  if (
+    !admissionsShareTarget(covered, current) ||
+    covered.generation !== current.generation ||
+    covered.activeMessagePosition > current.activeMessagePosition ||
+    (sameActiveMessagePosition && covered.entryId !== current.entryId)
+  ) {
+    return { kind: "stale" };
+  }
+  const { readClosedTranscriptTurn } =
+    await import("../config/sessions/session-accessor.transcript-range.js");
+  const closedRange = readClosedTranscriptTurn({
+    boundary: { admission: covered, terminal: current },
+    maxBytes: 64 * 1024 * 1024,
+    maxEvents: 10_000,
+  });
+  if (closedRange.kind !== "ok") {
+    return closedRange;
+  }
+  return { kind: "ok", messages: closedRange.messages.slice(1, -1) };
+}
+
+/** Refresh only when a rewrite preserved the exact persisted user row payload. */
+export async function refreshCodexSessionTranscriptAdmission(
+  admission: TranscriptTurnAdmission,
+): Promise<TranscriptTurnAdmission | undefined> {
+  const { readActiveTranscriptEntryAnchor } =
+    await import("../config/sessions/session-accessor.sqlite-transcript-anchor.js");
+  const anchor = readActiveTranscriptEntryAnchor({
+    agentId: admission.agentId,
+    sessionId: admission.sessionId,
+    sessionKey: admission.sessionKey,
+    storePath: admission.storePath,
+    entryId: admission.entryId,
+  });
+  if (
+    !anchor ||
+    anchor.agentId !== admission.agentId ||
+    anchor.sessionId !== admission.sessionId ||
+    anchor.sessionKey !== admission.sessionKey ||
+    anchor.storePath !== admission.storePath ||
+    anchor.rawSeq !== admission.rawSeq ||
+    anchor.effectiveParentId !== admission.effectiveParentId ||
+    anchor.activeMessagePosition !== admission.activeMessagePosition ||
+    !admission.messageFingerprint ||
+    anchor.messageFingerprint !== admission.messageFingerprint
+  ) {
+    return undefined;
+  }
+  return { ...anchor, logicalTurnId: admission.logicalTurnId, role: "user" };
+}
+
 export type CodexSessionTranscriptMirrorWriteLockContext =
   InternalSessionTranscriptWriteLockContext & {
     appendMessageWithMessageSequence: <TMessage>(

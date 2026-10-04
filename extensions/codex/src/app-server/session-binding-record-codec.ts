@@ -16,6 +16,35 @@ const optionalTimestampSchema = z
   .refine((value) => Number.isFinite(Date.parse(value)))
   .optional()
   .catch(undefined);
+const transcriptTurnAdmissionSchema = z
+  .object({
+    agentId: z.string().trim().min(1),
+    sessionId: z.string().trim().min(1),
+    sessionKey: z.string().trim().min(1),
+    storePath: z.string().trim().min(1),
+    generation: z.string().trim().min(1),
+    entryId: z.string().trim().min(1),
+    rawSeq: z.number().int().nonnegative(),
+    effectiveParentId: z.string().nullable(),
+    activeMessagePosition: z.number().int().nonnegative(),
+    idempotencyKey: z.string().optional(),
+    messageFingerprint: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .optional(),
+    logicalTurnId: z.string().trim().min(1),
+    role: z.literal("user"),
+  })
+  .strict();
+/** Exact OpenClaw inputs already admitted to this native thread, not wall-clock coverage. */
+export const codexTranscriptCoverageSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    turnStartAdmission: transcriptTurnAdmissionSchema,
+    steerTargetRunId: z.string().trim().min(1),
+  })
+  .strict();
+export type CodexTranscriptCoverage = z.infer<typeof codexTranscriptCoverageSchema>;
 const pendingSupervisionBranchSchema = z
   .object({
     sourceThreadId: z.string().trim().min(1),
@@ -167,6 +196,7 @@ const threadBindingSchema = z
     conversationStartId: optionalStringSchema,
     conversationSourceTransferComplete: z.literal(true).optional().catch(undefined),
     historyCoveredThrough: optionalTimestampSchema,
+    transcriptCoverage: codexTranscriptCoverageSchema.optional().catch(undefined),
     // Observed density of the last completed turn on this thread: prompt chars
     // actually sent vs provider-reported input tokens. Read by the no-engine
     // continuity cap so the next projection is sized from this session's real

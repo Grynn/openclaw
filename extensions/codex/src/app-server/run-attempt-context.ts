@@ -65,8 +65,8 @@ export async function prepareCodexAttemptContext(
     sessionKey: contextSessionKey,
     sessionTarget: params.sessionTarget,
   };
+  const transcriptReadFence = params.userTurnTranscriptRecorder?.getAdmissionReceipt();
   const readFencedHistory = async () => {
-    const transcriptReadFence = params.userTurnTranscriptRecorder?.getAdmissionReceipt();
     const messages = await readMirroredSessionHistoryMessages({
       ...activeTranscriptTarget,
       signal: connection.runAbortController.signal,
@@ -149,7 +149,7 @@ export async function prepareCodexAttemptContext(
       sessionFile: runtimeParams.sessionFile,
       sessionTarget: params.sessionTarget,
       runtimeContext: buildActiveContextEngineRuntimeContext(),
-      transcriptReadFence: params.userTurnTranscriptRecorder?.getAdmissionReceipt(),
+      transcriptReadFence,
       contextEngineHostSupport: CODEX_APP_SERVER_CONTEXT_ENGINE_HOST,
       providerId: effectiveRuntimeProviderId,
       requestedModelId: usesSupervisionConnection ? undefined : params.requestedModelId,
@@ -217,12 +217,25 @@ export async function prepareCodexAttemptContext(
         : undefined,
       watchedSessionsContext,
     });
-  const promptState = {
+  const promptState: {
+    promptText: string;
+    promptContextRange: CodexProjectedContextRange | undefined;
+    developerInstructions: string;
+    contextEngineProjection: CodexContextEngineThreadBootstrapProjection | undefined;
+    precomputedStaleBindingContinuityProjectionResolved: boolean;
+    precomputedStaleBindingContinuityProjectionApplied: boolean;
+    precomputedStaleBindingContinuityProjectionThreadId: string | undefined;
+    staleBindingContinuityForcedFreshStart: boolean;
+    noEngineContinuityProjectionApplied: boolean;
+    inactiveThreadBootstrapBindingForcedFreshStart: boolean;
+  } = {
     promptText: params.prompt,
-    promptContextRange: undefined as CodexProjectedContextRange | undefined,
+    promptContextRange: undefined,
     developerInstructions: baseDeveloperInstructions,
-    contextEngineProjection: undefined as CodexContextEngineThreadBootstrapProjection | undefined,
+    contextEngineProjection: undefined,
+    precomputedStaleBindingContinuityProjectionResolved: false,
     precomputedStaleBindingContinuityProjectionApplied: false,
+    precomputedStaleBindingContinuityProjectionThreadId: undefined,
     staleBindingContinuityForcedFreshStart: false,
     // Set by the no-engine continuity appliers; gates calibration recording so a
     // dense direct or active-engine prompt can never persist a density sample
@@ -242,6 +255,7 @@ export async function prepareCodexAttemptContext(
     runtime,
     attemptTools,
     activeTranscriptTarget,
+    transcriptReadFence,
     historyState,
     hookContext,
     hookContextWindowFields,

@@ -147,7 +147,11 @@ export function bindUserTurnTranscriptAnnotation(params: {
       throw new Error("native prompt admission disappeared before annotation");
     }
     if (rewritten) {
-      admission = { ...admission, generation: rewritten.generation };
+      admission = {
+        ...rewritten.anchor,
+        logicalTurnId: admission.logicalTurnId,
+        role: "user",
+      };
       // Recorder getters and update listeners must never expose the private validation snapshot.
       admittedMessage = structuredClone(rewritten.message);
       owner.refresh({ ...admission }, rewritten.message);

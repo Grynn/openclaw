@@ -158,6 +158,7 @@ describe("SQLite session handle lifecycle", () => {
               effectiveParentId: parentId,
               activeMessagePosition: index,
               idempotencyKey: message.idempotencyKey,
+              messageFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
             },
           ]),
         );

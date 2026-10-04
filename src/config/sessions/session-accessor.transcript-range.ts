@@ -10,7 +10,12 @@ import {
   SqliteJsonlReadBudgetExceededError,
 } from "../../infra/sqlite-jsonl-budget.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
-import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
+import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
+import {
+  getSessionKysely,
+  resolveSqliteTranscriptScope,
+  toDatabaseOptions,
+} from "./session-accessor.sqlite-scope.js";
 import type { TranscriptEntryAnchor, TranscriptTurnBoundary } from "./transcript-entry-anchor.js";
 import { transcriptEventJsonSql, transcriptEventNavigationSql } from "./transcript-payload.js";
 
@@ -288,4 +293,24 @@ export function readClosedTranscriptTurnInDatabase(
       operationLabel: "session transcript accepted turn read",
     },
   );
+}
+
+/** Opens the bounded range in the worker's read-only database scope. */
+export function readClosedTranscriptTurn(params: {
+  boundary: TranscriptTurnBoundary;
+  maxEvents: number;
+  maxBytes: number;
+}): ClosedTranscriptTurnReadResult {
+  const target = params.boundary.admission;
+  const resolved = resolveSqliteTranscriptScope({
+    agentId: target.agentId,
+    sessionId: target.sessionId,
+    sessionKey: target.sessionKey,
+    storePath: target.storePath,
+  });
+  const result = withOpenClawAgentDatabaseReadOnly(
+    (database) => readClosedTranscriptTurnInDatabase(database.db, params),
+    toDatabaseOptions(resolved),
+  );
+  return result.found ? result.value : { kind: "projection-unavailable" };
 }
