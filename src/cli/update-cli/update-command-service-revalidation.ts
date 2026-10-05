@@ -76,7 +76,11 @@ export async function assertManagedGatewayArtifactPublication(params: {
   updateInstallKind: "git" | "package" | "unknown";
   shouldRestart: boolean;
   phase?: "before-stop" | "publication";
-  inspectOverlap?: typeof gatewayServiceCommandOverlapsPhysicalInstallation;
+  inspectOverlap?: (
+    root: string,
+    command: GatewayServiceState["command"],
+    observation: { binding: ManagedGatewayBinding; state: GatewayServiceState },
+  ) => Promise<boolean | null>;
 }): Promise<void> {
   params.assertCurrent();
   const serving = params.selected;
@@ -205,7 +209,7 @@ export async function assertManagedGatewayArtifactPublication(params: {
     for (const root of params.roots) {
       const overlaps = await (
         params.inspectOverlap ?? gatewayServiceCommandOverlapsPhysicalInstallation
-      )(root, state.command);
+      )(root, state.command, { binding, state });
       params.assertCurrent();
       if (overlaps !== true || (await selectedConsumer(binding, state))) {
         continue;

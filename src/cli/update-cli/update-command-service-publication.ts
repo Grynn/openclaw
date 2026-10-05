@@ -4,7 +4,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { stableStringify } from "@openclaw/normalization-core/stable-stringify";
 import { resolveGatewayProfileSuffix } from "../../daemon/constants.js";
+import {
+  inspectVerifiedGatewayReleaseLauncher,
+  isGatewayReleaseLauncher,
+} from "../../daemon/immutable-release-launcher.js";
 import { resolveLaunchAgentLabel } from "../../daemon/launchd-label.js";
+import { readManagedGatewayBindingState } from "../../daemon/managed-gateway-bindings.js";
 import { resolveTaskName } from "../../daemon/schtasks-layout.js";
 import {
   isScheduledTaskDefinitelyNotRunning,
@@ -156,12 +161,14 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         outputPaths.map((output) => outputIdentity(path.join(params.root, output))),
       );
       assertCurrent();
-      const state = await readGatewayServiceState(service, {
-        env: params.env,
-        requireEffective: true,
-        requireLoadedCommand: true,
-        timeoutMs: params.timeoutMs,
-      });
+      const readState = () =>
+        readGatewayServiceState(service, {
+          env: params.env,
+          requireEffective: true,
+          requireLoadedCommand: true,
+          timeoutMs: params.timeoutMs,
+        });
+      const state = await readState();
       assertCurrent();
       const database = await outputIdentity(resolveOpenClawStateSqlitePath(state.env));
       assertCurrent();
@@ -177,7 +184,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         profile: resolveGatewayProfileSuffix(state.env.OPENCLAW_PROFILE),
         managerUid: observedSystemdManagerUid(state),
       });
-      const inspectServing = async (command: GatewayServiceState["command"]) => {
+      const inspectCommand = async (command: GatewayServiceState["command"]) => {
         const layout = await summarizeGatewayServiceLayout(command);
         assertCurrent();
         if (!layout?.packageRootReal || !layout.entrypointReal) {
@@ -205,9 +212,33 @@ export async function withGatewayRuntimeArtifactPublication<T>(
                   isPathInside(output.real, destination.real),
               ),
           );
-        return { serving: { root: installed, entrypoint }, disjoint };
+        const serving: { root: PathIdentity; entrypoint: PathIdentity; launcherIdentity?: string } =
+          {
+            root: installed,
+            entrypoint,
+          };
+        return { serving, disjoint };
       };
-      const inspected = await inspectServing(state.command);
+      const inspectServing = async (
+        observed: GatewayServiceState,
+        reread: () => Promise<GatewayServiceState>,
+      ) => {
+        if (!isGatewayReleaseLauncher(observed.command)) {
+          return await inspectCommand(observed.command);
+        }
+        const verified = await inspectVerifiedGatewayReleaseLauncher(
+          { state: observed, readState: reread, outputPaths, assertCurrent },
+          inspectCommand,
+        );
+        assertCurrent();
+        return verified?.value
+          ? {
+              ...verified.value,
+              serving: { ...verified.value.serving, launcherIdentity: verified.identity },
+            }
+          : undefined;
+      };
+      const inspected = await inspectServing(state, readState);
       const serving = inspected?.serving;
       const disjoint = inspected?.disjoint ?? false;
       if (
@@ -262,8 +293,14 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         assertCurrent,
         updateInstallKind: "git",
         shouldRestart: false,
-        inspectOverlap: async (_root, command) => {
-          const consumer = await inspectServing(command);
+        inspectOverlap: async (_root, command, observation) => {
+          const consumer = await inspectServing(observation.state, () =>
+            readManagedGatewayBindingState(observation.binding, { timeoutMs: params.timeoutMs }),
+          );
+          assertCurrent();
+          if (!consumer && isGatewayReleaseLauncher(command)) {
+            refuse();
+          }
           return consumer ? !consumer.disjoint : null;
         },
       });
@@ -297,6 +334,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         (before.serving &&
           (!current.serving ||
             changedIdentity(before.serving.root, current.serving.root) ||
+            before.serving.launcherIdentity !== current.serving.launcherIdentity ||
             before.serving.entrypoint.real !== current.serving.entrypoint.real ||
             (!before.destinations.some((destination) =>
               isPathInside(destination.real, current.serving!.entrypoint.real),
