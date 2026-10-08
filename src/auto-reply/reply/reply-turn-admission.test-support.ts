@@ -3,24 +3,21 @@ import { afterEach } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
+import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
 import { admitReplyTurn } from "./reply-turn-admission.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeOpenClawAgentDatabasesAsync();
+    cleanup();
+  }),
+);
 
 export function admitTestReplyTurn(
   overrides: Omit<Parameters<typeof admitReplyTurn>[0], "kind" | "resetTriggered"> &
     Partial<Pick<Parameters<typeof admitReplyTurn>[0], "kind" | "resetTriggered">>,
 ) {
   return admitReplyTurn({ kind: "visible", resetTriggered: false, ...overrides });
-}
-
-/** Admit a reply turn that the caller requires to own the run slot. */
-export async function admitTestReplyOperation(params: Parameters<typeof admitTestReplyTurn>[0]) {
-  const admission = await admitTestReplyTurn(params);
-  if (admission.status !== "owned") {
-    throw new Error("Fixture requires an admitted reply operation");
-  }
-  return admission.operation;
 }
 
 export function createSessionStore(entries: Record<string, SessionEntry>): string {
