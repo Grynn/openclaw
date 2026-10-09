@@ -1,11 +1,11 @@
 // Runtime launchers and the package build share these subprocess locations.
-function runtimeProcessEntrypoint(modulePath: string) {
+function runtimeProcessEntrypoint(modulePath: string, distModulePath = modulePath) {
   return {
     currentModuleUrl: import.meta.url,
     sourceWorkerName: modulePath.startsWith("infra/")
       ? modulePath.slice("infra/".length)
       : `../${modulePath}`,
-    distWorkerPath: `${modulePath}.js`,
+    distWorkerPath: `${distModulePath}.js`,
   } as const;
 }
 
@@ -34,10 +34,17 @@ export const runtimeProcessEntrypoints = {
   authProfileInlineUsage: runtimeProcessEntrypoint("agents/auth-profiles/inline-usage.worker"),
   pluginModelCatalogCredentials: runtimeProcessEntrypoint("agents/plugin-model-catalog.worker"),
   agentDatabaseExecution: runtimeProcessEntrypoint("state/openclaw-agent-execution.worker"),
-  workspaceMemory: runtimeProcessEntrypoint("worker/memory-worker-entry"),
+  // Host helpers are not part of the sealed remote-worker archive; npm omits dist/worker.
+  workspaceMemory: runtimeProcessEntrypoint(
+    "worker/memory-worker-entry",
+    "host-worker/memory-worker-entry",
+  ),
   localAgentAvatar: runtimeProcessEntrypoint("agents/identity-avatar-file.worker"),
   identityFile: runtimeProcessEntrypoint("agents/identity-file.worker"),
-  workspaceSkills: runtimeProcessEntrypoint("worker/skills-worker-entry"),
+  workspaceSkills: runtimeProcessEntrypoint(
+    "worker/skills-worker-entry",
+    "host-worker/skills-worker-entry",
+  ),
   boardStore: runtimeProcessEntrypoint("boards/sqlite-board-store.worker"),
   progressCardStore: runtimeProcessEntrypoint("session-cards/progress-card-store.worker"),
   sessionSharingStore: runtimeProcessEntrypoint("config/sessions/session-sharing-store.worker"),
