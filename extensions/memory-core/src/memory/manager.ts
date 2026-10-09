@@ -51,6 +51,7 @@ import {
   MemoryTargetedSessionSyncQueue,
   hasTargetedSessionSyncParams,
 } from "./manager-sync-control.js";
+import type { MemorySyncOutcome } from "./manager-sync-outcome.js";
 import { resolvePersistedMemoryVectorIndexState } from "./manager-vector-rebuild-state.js";
 import type { MemoryCoreRuntimeHost } from "./runtime-host.js";
 
@@ -411,8 +412,9 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
     // An intentional no-progress pass may remain dirty. Only newly accepted
     // watch facts can admit another pass; joined callers cannot spin on dirty.
     this.syncingMemoryWatchGeneration = this.memoryWatchGeneration;
-    const run = () =>
-      this.publishedDatabase.withPublicationGeneration(async () => {
+    const run = async () => {
+      let outcome: MemorySyncOutcome;
+      await this.publishedDatabase.withPublicationGeneration(async () => {
         const hadBootstrapFailure = this.embeddingBootstrapFailure !== undefined;
         let forceFtsOnly =
           this.embeddingBootstrapFailure !== undefined &&
@@ -469,7 +471,6 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
             await lock.release();
           }
         };
-        let outcome;
         try {
           outcome = await runGeneration(forceFtsOnly);
         } catch (err) {
@@ -498,8 +499,9 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
         ) {
           this.clearEmbeddingBootstrapFailureAfterRecovery();
         }
-        return outcome;
       });
+      return outcome;
+    };
     this.syncing = this.syncOutcomes.track(run, true).finally(() => {
       this.syncing = null;
     });

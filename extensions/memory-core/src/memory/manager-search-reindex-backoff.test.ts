@@ -3,16 +3,27 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { describe, expect, it, vi } from "vitest";
-import { createManagerIndexFixture, readPublishedSessionIndex } from "./manager-index.test-support.js";
+import {
+  createManagerIndexFixture,
+  readPublishedSessionIndex,
+} from "./manager-index.test-support.js";
 
 const { closeAllMemorySearchManagers, getMemorySearchManager } = await import("./index.js");
 
 describe("memory search reindex backoff", () => {
-  const fixture = createManagerIndexFixture({ getMemorySearchManager, closeAllMemorySearchManagers });
+  const fixture = createManagerIndexFixture({
+    getMemorySearchManager,
+    closeAllMemorySearchManagers,
+  });
 
   it("keeps failed rebuilds on one retry schedule across detached maintenance", async () => {
     const manager = await fixture.getPersistentManager(
-      fixture.createConfig({ provider: "openai", sources: ["memory"], minScore: 0 }),
+      fixture.createConfig({
+        provider: "openai",
+        sources: ["memory"],
+        minScore: 0,
+        cacheEnabled: false,
+      }),
     );
     await manager.sync({ reason: "baseline", force: true });
     let now = Date.now();
@@ -59,7 +70,12 @@ describe("memory search reindex backoff", () => {
     "cools down %s identity repair while preserving explicit CLI repair",
     async (identity) => {
       const manager = await fixture.getPersistentManager(
-        fixture.createConfig({ provider: "openai", sources: ["memory"], minScore: 0 }),
+        fixture.createConfig({
+          provider: "openai",
+          sources: ["memory"],
+          minScore: 0,
+          cacheEnabled: false,
+        }),
       );
       await manager.sync({ reason: "baseline", force: true });
       const fields = manager as unknown as { db: DatabaseSync };
@@ -93,7 +109,12 @@ describe("memory search reindex backoff", () => {
       const sessionId = "queued-cooldown";
       const sessionKey = `agent:main:chat:${sessionId}`;
       const manager = await fixture.getFreshManager(
-        fixture.createConfig({ provider: "openai", sources: ["sessions"], sessionMemory: true }),
+        fixture.createConfig({
+          provider: "openai",
+          sources: ["sessions"],
+          sessionMemory: true,
+          cacheEnabled: false,
+        }),
         "cli",
       );
       await manager.sync({ reason: "baseline", force: true });
@@ -102,6 +123,8 @@ describe("memory search reindex backoff", () => {
         sessionKey,
         messages: [{ role: "user", timestamp: 1, content: "Amethyst queue marker." }],
       });
+      let now = Date.now();
+      vi.spyOn(Date, "now").mockImplementation(() => now);
       const started = createDeferred<void>();
       const release = createDeferred<void>();
       fixture.provider.beforeEmbedBatch = async () => {
@@ -126,6 +149,14 @@ describe("memory search reindex backoff", () => {
         readPublishedSessionIndex(fields.db, `sessions/main/${sessionId}.jsonl`, "amethyst").chunks,
       ).toHaveLength(1);
       expect(manager.status().lastSyncError).toContain("queued rebuild failed");
+      const embedding = vi.fn(async () => {});
+      fixture.provider.beforeEmbedBatch = embedding;
+      await manager.sync({ reason: "search" });
+      expect(embedding).not.toHaveBeenCalled();
+      now += 30_000;
+      await manager.sync({ reason: "search" });
+      expect(embedding).toHaveBeenCalledTimes(1);
+      expect(manager.status().lastSyncError).toBeUndefined();
     },
   );
 });
