@@ -369,6 +369,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
         this.dirty ||= this.sources.has("memory");
         if (recoveringSessionFullRetry && !this.memoryFullRetryDirty) {
           this.markFailedFullReindexRetry({ memory: false, sessions: true });
+          this.recordFullReindexFailure();
         }
         const reason = formatErrorMessage(err);
         const shouldFallback = isMemoryEmbeddingOperationError(err);
@@ -663,6 +664,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
         memory: shouldRetryMemoryOnFailure,
         sessions: shouldRetrySessionsOnFailure,
       });
+      this.recordFullReindexFailure();
       throw err;
     } finally {
       try {

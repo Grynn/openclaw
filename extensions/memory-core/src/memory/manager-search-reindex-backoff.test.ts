@@ -84,6 +84,8 @@ describe("memory search reindex backoff", () => {
           ? "DELETE FROM memory_index_meta WHERE key = 'memory_index_meta_v1'"
           : "UPDATE memory_index_meta SET value = json_set(value, '$.chunkingVersion', 0) WHERE key = 'memory_index_meta_v1'",
       );
+      let now = Date.now();
+      vi.spyOn(Date, "now").mockImplementation(() => now);
       const embedding = vi.fn(async () => {});
       fixture.provider.beforeEmbedBatch = embedding;
       fixture.provider.embedBatchPermanentFailure = new Error("identity rebuild failed");
@@ -93,9 +95,16 @@ describe("memory search reindex backoff", () => {
       expect(embedding).toHaveBeenCalledTimes(1);
       expect(manager.status().lastSyncError).toContain("identity rebuild failed");
 
+      now += 29_000;
+      await expect(manager.sync({ reason: "cli" })).rejects.toThrow("identity rebuild failed");
+      expect(embedding).toHaveBeenCalledTimes(2);
+      now += 1_000;
+      await manager.search("zebra");
+      expect(embedding).toHaveBeenCalledTimes(2);
+
       fixture.provider.embedBatchPermanentFailure = null;
       await manager.sync({ reason: "cli" });
-      expect(embedding).toHaveBeenCalledTimes(2);
+      expect(embedding).toHaveBeenCalledTimes(3);
       expect(manager.status().lastSyncError).toBeUndefined();
       expect(await manager.search("zebra")).toEqual(
         expect.arrayContaining([expect.objectContaining({ path: "memory/2026-01-12.md" })]),

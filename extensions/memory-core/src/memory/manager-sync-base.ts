@@ -253,19 +253,16 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
       this.sessionsDirty = true;
       this.sessionsFullRetryDirty = true;
     }
-    const now = Date.now();
-    // One cooldown per failure round. Re-marking inside an active cooldown keeps
-    // the pending retry time instead of pushing it out on every search.
-    if (this.fullReindexRetryBackoff.retryAt > now) {
-      return;
-    }
+  }
+
+  protected recordFullReindexFailure(): void {
     this.fullReindexRetryBackoff.attempts += 1;
     const delay = Math.min(
       FULL_REINDEX_RETRY_INITIAL_DELAY_MS *
         2 ** Math.min(this.fullReindexRetryBackoff.attempts - 1, 30),
       FULL_REINDEX_RETRY_MAX_DELAY_MS,
     );
-    this.fullReindexRetryBackoff.retryAt = now + delay;
+    this.fullReindexRetryBackoff.retryAt = Date.now() + delay;
   }
 
   protected clearFullReindexRetryBackoff(): void {
