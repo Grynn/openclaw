@@ -292,7 +292,9 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
       const retryFullReindexRequested = this.memoryFullRetryDirty || this.sessionsFullRetryDirty;
       const fullRetryRemainsAfterTargetSync = hasTargetArchiveFiles && retryFullReindexRequested;
       const retryFullReindexBackedOff =
-        retryFullReindexRequested && !params?.force && Date.now() < this.fullReindexRetryBackoff.retryAt;
+        retryFullReindexRequested &&
+        !params?.force &&
+        Date.now() < this.fullReindexRetryBackoff.retryAt;
       const deferAutomaticFullReindex = retryFullReindexBackedOff && !needsExplicitIdentityReindex;
       if (deferAutomaticFullReindex && !hasTargetArchiveFiles) {
         // Automatic identity repair honors the failure cooldown. An explicit
