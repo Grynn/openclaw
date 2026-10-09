@@ -10,7 +10,6 @@ export class MemorySyncOutcomeLedger {
   private failureRevision = 0;
   private latestFailure?: { revision: number; reason: string };
   private active = false;
-  private deferred = false;
 
   async track(operation: () => Promise<MemorySyncOutcome>, active = false): Promise<void> {
     const failureAtStart = this.latestFailure?.revision;
@@ -19,12 +18,8 @@ export class MemorySyncOutcomeLedger {
     }
     try {
       const incompleteReason = await operation();
-      // A deferred pass skipped its work on purpose, so it must not clear the
-      // failure that deferred it. In-process sync ops mark it; detached search
-      // maintenance returns the sentinel from its own transient manager.
-      const deferred = this.deferred || incompleteReason === MEMORY_SYNC_DEFERRED;
-      this.deferred = false;
-      if (deferred) {
+      // A skipped pass cannot clear the failure that still owns pending work.
+      if (incompleteReason === MEMORY_SYNC_DEFERRED) {
         return;
       }
       if (incompleteReason) {
@@ -33,7 +28,6 @@ export class MemorySyncOutcomeLedger {
         this.latestFailure = undefined;
       }
     } catch (error) {
-      this.deferred = false;
       this.recordFailure(error);
       throw error;
     } finally {
@@ -41,10 +35,6 @@ export class MemorySyncOutcomeLedger {
         this.active = false;
       }
     }
-  }
-
-  markDeferredPass(): void {
-    this.deferred = true;
   }
 
   recordActiveFailure(error: unknown): void {
