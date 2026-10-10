@@ -83,6 +83,7 @@ export type MemoryReindexRetryState = {
 type MemoryFullReindexRetryBackoff = {
   attempts: number;
   retryAt: number;
+  failedWithEmbeddings: boolean;
 };
 
 const LEGACY_VECTOR_TABLE = "chunks_vec";
@@ -136,6 +137,7 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
   protected fullReindexRetryBackoff: MemoryFullReindexRetryBackoff = {
     attempts: 0,
     retryAt: 0,
+    failedWithEmbeddings: false,
   };
   protected sessionsDirty = false;
   // Failed full reindexes can start with no per-file dirty set. Keep a
@@ -255,8 +257,9 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
     }
   }
 
-  protected recordFullReindexFailure(): void {
+  protected recordFullReindexFailure(withEmbeddings: boolean): void {
     this.fullReindexRetryBackoff.attempts += 1;
+    this.fullReindexRetryBackoff.failedWithEmbeddings = withEmbeddings;
     const delay = Math.min(
       FULL_REINDEX_RETRY_INITIAL_DELAY_MS *
         2 ** Math.min(this.fullReindexRetryBackoff.attempts - 1, 30),
@@ -268,6 +271,7 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
   protected clearFullReindexRetryBackoff(): void {
     this.fullReindexRetryBackoff.attempts = 0;
     this.fullReindexRetryBackoff.retryAt = 0;
+    this.fullReindexRetryBackoff.failedWithEmbeddings = false;
   }
 
   protected clearSessionRetryState(): void {

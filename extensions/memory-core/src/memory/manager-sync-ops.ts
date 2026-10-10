@@ -294,6 +294,8 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
       const retryFullReindexBackedOff =
         retryFullReindexRequested &&
         !params?.force &&
+        // A semantic failure must still allow the distinct keyword-only publication.
+        !(this.fullReindexRetryBackoff.failedWithEmbeddings && !syncProvider) &&
         Date.now() < this.fullReindexRetryBackoff.retryAt;
       const deferAutomaticFullReindex = retryFullReindexBackedOff && !needsExplicitIdentityReindex;
       if (deferAutomaticFullReindex && !hasTargetArchiveFiles) {
@@ -369,7 +371,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
         this.dirty ||= this.sources.has("memory");
         if (recoveringSessionFullRetry && !this.memoryFullRetryDirty) {
           this.markFailedFullReindexRetry({ memory: false, sessions: true });
-          this.recordFullReindexFailure();
+          this.recordFullReindexFailure(syncProvider !== null);
         }
         const reason = formatErrorMessage(err);
         const shouldFallback = isMemoryEmbeddingOperationError(err);
@@ -550,6 +552,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
     const tempDbPath = `${dbPath}.memory-reindex-${randomUUID()}`;
     const originalDb = this.db;
     const originalRetryState = this.snapshotReindexRetryState();
+    const withEmbeddings = this.syncProviderGeneration?.kind === "semantic";
     const shouldRetryMemoryOnFailure = this.sources.has("memory");
     const shouldRetrySessionsOnFailure = this.shouldSyncSessions(undefined, true);
     let shadowCleanup: MemoryIndexDatabase | undefined;
@@ -664,7 +667,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
         memory: shouldRetryMemoryOnFailure,
         sessions: shouldRetrySessionsOnFailure,
       });
-      this.recordFullReindexFailure();
+      this.recordFullReindexFailure(withEmbeddings);
       throw err;
     } finally {
       try {

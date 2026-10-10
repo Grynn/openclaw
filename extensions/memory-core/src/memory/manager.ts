@@ -475,9 +475,7 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
           outcome = await runGeneration(forceFtsOnly);
         } catch (err) {
           const canDegrade =
-            this.providerRequirement.mode === "optional" &&
-            (options?.allowEmbeddingBootstrapFallback || hadBootstrapFailure) &&
-            isMemoryEmbeddingOperationError(err);
+            this.providerRequirement.mode === "optional" && isMemoryEmbeddingOperationError(err);
           if (!canDegrade) {
             throw err;
           }
@@ -486,6 +484,9 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
             retainProvider: this.provider !== null,
             provider: failedProvider,
           });
+          if (!options?.allowEmbeddingBootstrapFallback && !hadBootstrapFailure) {
+            throw err;
+          }
           forceFtsOnly = true;
           outcome = await runGeneration(true);
         }

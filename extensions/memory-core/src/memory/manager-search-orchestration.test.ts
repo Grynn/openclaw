@@ -867,7 +867,7 @@ describe("memory index", () => {
         expect(maintenance.adoptReindexRetryState).toHaveBeenCalledWith({
           dirty: true,
           memoryFullRetryDirty: true,
-          fullReindexRetryBackoff: { attempts: 0, retryAt: 0 },
+          fullReindexRetryBackoff: { attempts: 0, retryAt: 0, failedWithEmbeddings: false },
           sessionsDirty: true,
           sessionsFullRetryDirty: true,
           sessionsReconcileDirty: true,
