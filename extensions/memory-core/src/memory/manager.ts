@@ -446,9 +446,9 @@ export class MemoryIndexManager extends MemorySearchOrchestration implements Mem
             this.beginSyncProviderGeneration({ forceFtsOnly: keywordOnly });
             try {
               return await this.runSync(params).then(
-                async (outcome) => {
+                async (syncOutcome) => {
                   await this.publishedDatabase.closePublicationWorker();
-                  return outcome;
+                  return syncOutcome;
                 },
                 async (error: unknown) => {
                   const [cleanup] = await Promise.allSettled([
