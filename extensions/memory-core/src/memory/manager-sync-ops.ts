@@ -293,7 +293,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
       const fullRetryRemainsAfterTargetSync = hasTargetArchiveFiles && retryFullReindexRequested;
       const retryFullReindexBackedOff =
         retryFullReindexRequested &&
-        !params?.force &&
+        (!params?.force || params.reason === "embedding-bootstrap-recovery") &&
         // A semantic failure must still allow the distinct keyword-only publication.
         !(this.fullReindexRetryBackoff.failedWithEmbeddings && !syncProvider) &&
         Date.now() < this.fullReindexRetryBackoff.retryAt;

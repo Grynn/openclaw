@@ -14,55 +14,63 @@ describe("memory search reindex backoff", () => {
     closeAllMemorySearchManagers,
   });
 
-  it("keeps failed rebuilds on one retry schedule across detached maintenance", async () => {
-    const manager = await fixture.getPersistentManager(
-      fixture.createConfig({
-        provider: "openai",
-        sources: ["memory"],
-        minScore: 0,
-        cacheEnabled: false,
-      }),
-    );
-    await manager.sync({ reason: "baseline", force: true });
-    let now = Date.now();
-    vi.spyOn(Date, "now").mockImplementation(() => now);
-    const embedding = vi.fn(async () => {});
-    fixture.provider.beforeEmbedBatch = embedding;
-    fixture.provider.embedBatchPermanentFailure = new Error("full rebuild failed");
-    await expect(manager.sync({ force: true })).rejects.toThrow("full rebuild failed");
-    expect(embedding).toHaveBeenCalledTimes(1);
-    const fields = manager as unknown as { awaitManagerIdle(): Promise<void> };
-    const searchPublished = async () => {
-      const results = await manager.search("zebra", { minScore: 0 });
-      expect(results.some((entry) => entry.path === "memory/2026-01-12.md")).toBe(true);
-      await fields.awaitManagerIdle();
-    };
+  it.each(["openai", "auto"])(
+    "keeps failed rebuilds on one retry schedule (%s)",
+    async (provider) => {
+      const manager = await fixture.getPersistentManager(
+        fixture.createConfig({
+          provider,
+          sources: ["memory"],
+          minScore: 0,
+          cacheEnabled: false,
+        }),
+      );
+      await manager.sync({ reason: "baseline", force: true });
+      const fields = manager as unknown as { db: DatabaseSync; awaitManagerIdle(): Promise<void> };
+      fields.db.exec(
+        "UPDATE memory_index_meta SET value = json_set(value, '$.chunkingVersion', 0) WHERE key = 'memory_index_meta_v1'",
+      );
+      let now = Date.now();
+      vi.spyOn(Date, "now").mockImplementation(() => now);
+      const embedding = vi.fn(async () => {});
+      fixture.provider.beforeEmbedBatch = embedding;
+      fixture.provider.embedBatchPermanentFailure = new Error("full rebuild failed");
+      await expect(manager.sync({ force: true })).rejects.toThrow("full rebuild failed");
+      expect(embedding).toHaveBeenCalledTimes(1);
+      const searchPublished = async () => {
+        const results = await manager.search("zebra", { minScore: 0 });
+        expect(results.some((entry) => entry.path === "memory/2026-01-12.md")).toBe(true);
+        await fields.awaitManagerIdle();
+      };
 
-    // Searches cannot move the deadline. Each elapsed retry doubles the delay, capped at 30m.
-    for (const delay of [30_000, 60_000, 120_000, 240_000, 480_000, 960_000, 1_800_000]) {
+      // Searches cannot move the deadline. Each elapsed retry doubles the delay, capped at 30m.
+      for (const delay of [30_000, 60_000, 120_000, 240_000, 480_000, 960_000, 1_800_000]) {
+        const attempts = embedding.mock.calls.length;
+        await searchPublished();
+        expect(embedding).toHaveBeenCalledTimes(attempts);
+        expect(manager.status().lastSyncError).toContain(
+          provider === "auto" ? "Memory sync aborted" : "full rebuild failed",
+        );
+        now += delay - 1;
+        await searchPublished();
+        expect(embedding).toHaveBeenCalledTimes(attempts);
+        now += 1;
+        await searchPublished();
+        expect(embedding).toHaveBeenCalledTimes(attempts + 1);
+      }
+
+      fixture.provider.embedBatchPermanentFailure = null;
+      now += 1_800_000;
+      await searchPublished();
+      expect(manager.status().lastSyncError).toBeUndefined();
+      fixture.provider.embedBatchPermanentFailure = new Error("next rebuild failed");
+      await expect(manager.sync({ force: true })).rejects.toThrow("next rebuild failed");
       const attempts = embedding.mock.calls.length;
-      await searchPublished();
-      expect(embedding).toHaveBeenCalledTimes(attempts);
-      expect(manager.status().lastSyncError).toContain("full rebuild failed");
-      now += delay - 1;
-      await searchPublished();
-      expect(embedding).toHaveBeenCalledTimes(attempts);
-      now += 1;
+      now += 30_000;
       await searchPublished();
       expect(embedding).toHaveBeenCalledTimes(attempts + 1);
-    }
-
-    fixture.provider.embedBatchPermanentFailure = null;
-    now += 1_800_000;
-    await searchPublished();
-    expect(manager.status().lastSyncError).toBeUndefined();
-    fixture.provider.embedBatchPermanentFailure = new Error("next rebuild failed");
-    await expect(manager.sync({ force: true })).rejects.toThrow("next rebuild failed");
-    const attempts = embedding.mock.calls.length;
-    now += 30_000;
-    await searchPublished();
-    expect(embedding).toHaveBeenCalledTimes(attempts + 1);
-  });
+    },
+  );
 
   it.each(["missing", "older chunking"])(
     "cools down %s identity repair while preserving explicit CLI repair",
