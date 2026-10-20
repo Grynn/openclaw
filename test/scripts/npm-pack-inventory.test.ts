@@ -163,6 +163,38 @@ describe("npm pack inventory", () => {
     );
   });
 
+  it("keeps private QA companions out of the root package inventory", () => {
+    const { packageRoot } = createPackageFixture();
+    const rootManifest = JSON.parse(
+      readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+    ) as { files?: unknown };
+    if (
+      !Array.isArray(rootManifest.files) ||
+      !rootManifest.files.every((entry): entry is string => typeof entry === "string")
+    ) {
+      throw new Error("Root package.json files must be a string array");
+    }
+    writeFileSync(
+      join(packageRoot, "package.json"),
+      JSON.stringify({ name: "inventory-fixture", version: "1.0.0", files: rootManifest.files }),
+    );
+    mkdirSync(join(packageRoot, "dist", "plugin-sdk"), { recursive: true });
+    for (const relativePath of [
+      "dist/index.js",
+      "dist/plugin-sdk/test-env.js",
+      "dist/plugin-sdk/test-env.d.ts",
+      "dist/cli-process-tree.test-support.cjs",
+      "dist/cli-process-diagnostics.test-support.cjs",
+    ]) {
+      writeFileSync(join(packageRoot, relativePath), "fixture\n");
+    }
+
+    expect(collectNpmPackInventory(packageRoot, { timeoutMs: 10_000 }).files).toEqual([
+      "dist/index.js",
+      "package.json",
+    ]);
+  });
+
   it("reports missing and extra paths in normalized sorted order", () => {
     expect(
       compareNpmPackInventory(
