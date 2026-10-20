@@ -198,9 +198,13 @@ const isDirectModuleNotFoundError = (err, specifier) => {
 
 const installProcessWarningFilter = async () => {
   // Keep bootstrap warnings consistent with the TypeScript runtime.
-  for (const specifier of ["./dist/warning-filter.js", "./dist/warning-filter.mjs"]) {
+  // Literal import callbacks keep optional runtime edges visible to package closure checks.
+  for (const [specifier, importModule] of [
+    ["./dist/warning-filter.js", () => import("./dist/warning-filter.js")],
+    ["./dist/warning-filter.mjs", () => import("./dist/warning-filter.mjs")],
+  ]) {
     try {
-      const mod = await import(specifier);
+      const mod = await importModule();
       if (typeof mod.installProcessWarningFilter === "function") {
         mod.installProcessWarningFilter();
         return;
@@ -214,9 +218,9 @@ const installProcessWarningFilter = async () => {
   }
 };
 
-const tryImport = async (specifier) => {
+const tryImport = async (specifier, importModule) => {
   try {
-    await import(specifier);
+    await importModule();
     return true;
   } catch (err) {
     // Only swallow direct entry misses; rethrow transitive resolution failures.
@@ -574,9 +578,12 @@ const tryOutputBareRootHelp = async () => {
     process.stdout.write(precomputed);
     return true;
   }
-  for (const specifier of ["./dist/cli/program/root-help.js", "./dist/cli/program/root-help.mjs"]) {
+  for (const [specifier, importModule] of [
+    ["./dist/cli/program/root-help.js", () => import("./dist/cli/program/root-help.js")],
+    ["./dist/cli/program/root-help.mjs", () => import("./dist/cli/program/root-help.mjs")],
+  ]) {
     try {
-      const mod = await import(specifier);
+      const mod = await importModule();
       if (typeof mod.outputRootHelp === "function") {
         await mod.outputRootHelp();
         return true;
@@ -724,9 +731,9 @@ async function runLauncher() {
       // OK
     } else {
       await installProcessWarningFilter();
-      if (await tryImport("./dist/entry.js")) {
+      if (await tryImport("./dist/entry.js", () => import("./dist/entry.js"))) {
         // OK
-      } else if (await tryImport("./dist/entry.mjs")) {
+      } else if (await tryImport("./dist/entry.mjs", () => import("./dist/entry.mjs"))) {
         // OK
       } else {
         throw new Error(await buildMissingEntryErrorMessage());

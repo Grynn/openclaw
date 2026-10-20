@@ -13,6 +13,8 @@ const externalDependencies = [
   "@opentelemetry/sdk-trace-base",
   "@opentelemetry/semantic-conventions",
   "openai",
+  // The Bun WebSocket adapter loads this lazily without a browser-resolved import.
+  "proxy-from-env",
   "typebox",
   "zod",
   "zod-to-json-schema",
