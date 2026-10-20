@@ -24,6 +24,11 @@ type FastModeConfig = {
   };
 };
 
+/** Operator policy is a host control, not an authored provider request parameter. */
+export function isFastModeAllowedParam(key: string, value: unknown): boolean {
+  return (key === "fastModeAllowed" || key === "fast_mode_allowed") && typeof value === "boolean";
+}
+
 function normalizeFastModeAutoOnSeconds(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }

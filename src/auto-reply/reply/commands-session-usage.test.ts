@@ -20,6 +20,7 @@ const loadCostUsageSummaryMock = vi.hoisted(() => vi.fn<() => Promise<CostUsageS
 type FastModeStateMockResult = {
   mode: boolean | "auto" | undefined;
   enabled: boolean;
+  allowed: boolean;
   source: "session" | "agent" | "config" | "default";
   fastAutoOnSeconds?: number;
 };
@@ -207,6 +208,7 @@ describe("handleFastCommand", () => {
     resolveFastModeStateMock.mockReturnValue({
       mode: true,
       enabled: true,
+      allowed: true,
       source: "agent",
     });
   });
@@ -248,7 +250,7 @@ describe("handleFastCommand", () => {
         reply: { text: "⚙️ Ultrafast mode enabled." },
       });
       expect(params.sessionStore).toBeUndefined();
-      expect(resolveFastModeStateMock).not.toHaveBeenCalled();
+      expectArgs(resolveFastModeStateMock, { fastModeOverride: "ultrafast" });
     },
   );
 

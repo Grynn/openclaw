@@ -2,6 +2,7 @@ import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { stripSelfProviderModelPrefix } from "@openclaw/model-catalog-core/provider-model-id-normalization";
 import { asOptionalRecord as readRecord } from "@openclaw/normalization-core/record-coerce";
 import type { ProviderRouteOverridePresence } from "../plugin-sdk/provider-model-types.js";
+import { isFastModeAllowedParam } from "../shared/fast-mode.js";
 import type { ModelDefinitionConfig, ModelProviderConfig } from "./types.models.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
@@ -112,6 +113,13 @@ function hasNonEmptyRecord(value: unknown): boolean {
   return record !== undefined && Object.keys(record).length > 0;
 }
 
+function hasAuthoredRequestParams(value: unknown): boolean {
+  const record = readRecord(value);
+  return Boolean(
+    record && Object.entries(record).some(([key, param]) => !isFastModeAllowedParam(key, param)),
+  );
+}
+
 function hasRequestCompatOverrides(compat: ModelDefinitionConfig["compat"]): boolean {
   return Object.entries(compat ?? {}).some(([key, value]) => {
     // Native runtimes consume affirmative reasoning capabilities as turn controls.
@@ -156,7 +164,7 @@ export function createModelProviderRouteOverrideResolver(params: {
     readRecord(providerConfig.localService) !== undefined ||
     hasNonEmptyRecord(providerConfig.headers) ||
     hasNonEmptyRecord(providerConfig.request) ||
-    hasNonEmptyRecord(providerConfig.params) ||
+    hasAuthoredRequestParams(providerConfig.params) ||
     typeof providerConfig.authHeader === "boolean" ||
     typeof providerConfig.timeoutSeconds === "number"
   ) {
@@ -174,7 +182,7 @@ export function createModelProviderRouteOverrideResolver(params: {
     const configuredModel = findModel(modelId);
     return configuredModel &&
       (hasNonEmptyRecord(configuredModel.headers) ||
-        hasNonEmptyRecord(configuredModel.params) ||
+        hasAuthoredRequestParams(configuredModel.params) ||
         hasRequestCompatOverrides(configuredModel.compat))
       ? "present"
       : "none";

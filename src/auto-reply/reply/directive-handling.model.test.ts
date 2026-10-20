@@ -137,6 +137,7 @@ import {
   useSessionStoreTempDirs,
 } from "../../test-utils/session-state-cleanup.js";
 import type { ElevatedLevel } from "../thinking.js";
+import { registerFastDirectiveTests } from "./directive-handling.fast.test-support.js";
 import { registerModelStatusDirectiveTests } from "./directive-handling.model-status.test-support.js";
 import { createModelSelectionStateFixture } from "./model-selection.test-support.js";
 
@@ -1130,6 +1131,12 @@ describe("handleDirectiveOnly model persist behavior (fixes #1435)", () => {
       "Ultrafast mode enabled.",
       expect.objectContaining({ contextKey: "fast:ultrafast" }),
     );
+  });
+
+  registerFastDirectiveTests({
+    runHandleCommand,
+    createSessionEntry,
+    persistModelDirectiveForTest,
   });
 
   it("persists and reports elevated-mode directives when allowed", async () => {

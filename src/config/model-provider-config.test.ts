@@ -32,6 +32,36 @@ afterEach(() =>
   providerModelNormalization.setCurrentManifestModelIdNormalizationPolicies(undefined),
 );
 
+it.each(["fastModeAllowed", "fast_mode_allowed"])(
+  "keeps valid %s policy on its native route but preserves authored request overrides",
+  (key) => {
+    for (const [params, expected] of [
+      [{ [key]: false }, "none"],
+      [{ [key]: true }, "none"],
+      [{ [key]: "false" }, "present"],
+      [{ [key]: false, temperature: 0.5 }, "present"],
+    ] as const) {
+      for (const modelScoped of [false, true]) {
+        const resolve = createModelProviderRouteOverrideResolver({
+          provider: "anthropic",
+          authoredConfig: {
+            models: {
+              providers: {
+                anthropic: {
+                  baseUrl: "",
+                  models: [model("fixture-model", { params: modelScoped ? params : undefined })],
+                  params: modelScoped ? undefined : params,
+                },
+              },
+            },
+          },
+        });
+        expect(resolve("fixture-model")).toBe(expected);
+      }
+    }
+  },
+);
+
 function merged(models: ModelDefinitionConfig[], normalizeModelId: (id: string) => string) {
   return [...resolveMergedModelProviderModels({ models, normalizeModelId })];
 }

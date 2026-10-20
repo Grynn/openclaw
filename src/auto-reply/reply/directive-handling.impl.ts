@@ -236,10 +236,11 @@ export async function handleDirectiveOnly(
     agentId: activeAgentId,
     sessionEntry: directives.clearFastMode ? undefined : sessionEntry,
   });
-  const effectiveFastMode =
-    directives.fastMode ??
-    (directives.clearFastMode ? fastModeState.mode : currentFastMode) ??
-    fastModeState.mode;
+  const effectiveFastMode = fastModeState.allowed
+    ? (directives.fastMode ??
+      (directives.clearFastMode ? fastModeState.mode : currentFastMode) ??
+      fastModeState.mode)
+    : false;
 
   if (directives.hasThinkDirective && !directives.thinkLevel && !directives.clearThinkLevel) {
     if (!directives.rawThinkLevel) {
@@ -265,6 +266,17 @@ export async function handleDirectiveOnly(
   }
   if (directives.hasTraceDirective && !directives.traceLevel) {
     return acknowledgeLevel("Trace", sessionEntry.traceLevel);
+  }
+  if (
+    directives.hasFastDirective &&
+    directives.fastMode !== undefined &&
+    directives.fastMode !== false &&
+    !fastModeState.allowed
+  ) {
+    return acknowledgeIgnoredDirective(
+      "Fast mode is disabled by policy for the current model.",
+      "hasFastDirective",
+    );
   }
   if (
     directives.hasFastDirective &&
