@@ -45,6 +45,17 @@ using that generation through finalization, rollback, and CLI cleanup, even when
 the new build has different chunk filenames. The new Gateway starts from the
 activated build.
 
+On Linux, artifact preparation can recognize a custom release-local
+`.openclaw-release/launcher run-release <release> -- gateway` service without
+executing the wrapper. Admission requires a loaded service and a matching live
+Node process, including its argv, process identity, cgroup, executable inode,
+and the release artifacts visible through its mount namespace. Unreadable or
+changed evidence refuses preparation; physical output aliases still count as
+overlap. Runtime publication rechecks the current service before each effect,
+so a freshly verified, disjoint replacement generation is allowed while write
+destinations remain pinned. This does not adopt the service into the native
+immutable updater or authorize a service restart.
+
 Candidate pnpm installs use a project-local virtual dependency graph while
 reusing the configured package store. This also applies when pnpm uses hoisted
 links: pnpm 12 can otherwise materialize unpatched package bytes from a global

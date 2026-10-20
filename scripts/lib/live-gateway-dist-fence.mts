@@ -51,11 +51,12 @@ async function tryRealpath(value: string): Promise<string> {
 
 async function loadFenceRuntime() {
   try {
-    const [layout, bindings, pathGuards, serviceRuntime] = await Promise.all([
+    const [layout, bindings, pathGuards, serviceRuntime, launcher] = await Promise.all([
       import("../../src/daemon/service-layout.ts"),
       import("../../src/daemon/managed-gateway-bindings.ts"),
       import("../../src/infra/path-guards.ts"),
       import("../../src/daemon/service-runtime.ts"),
+      import("../../src/daemon/immutable-release-launcher.ts"),
     ]);
     return {
       summarizeGatewayServiceLayout: layout.summarizeGatewayServiceLayout,
@@ -64,6 +65,8 @@ async function loadFenceRuntime() {
       describeManagedGatewayBinding: bindings.describeManagedGatewayBinding,
       isPathInside: pathGuards.isPathInside,
       isGatewayServiceStateLive: serviceRuntime.isGatewayServiceStateLive,
+      isReleaseLauncher: launcher.isGatewayReleaseLauncher,
+      inspectReleaseLauncher: launcher.inspectVerifiedGatewayReleaseLauncher,
     };
   } catch {
     return null;
@@ -107,7 +110,9 @@ export async function gatewayServiceCommandOverlapsPhysicalCheckout(
   options: { requireVerified?: boolean; outputPaths?: readonly string[] } = {},
 ): Promise<boolean | null> {
   const runtime = await loadFenceRuntime();
-  if (!runtime) {
+  // The wrapper's release operand is not an entrypoint. The Linux command-only
+  // shortcut must defer it to the loaded-service and live-process proof below.
+  if (!runtime || runtime.isReleaseLauncher(command)) {
     return null;
   }
   const layout = await runtime.summarizeGatewayServiceLayout(command);
@@ -207,7 +212,9 @@ export async function resolveLiveManagedGatewayDistFence(
     state: LoadedLaunchAgentState;
   }> = [];
   let unverified = false;
+  let unverifiedLauncher = false;
   for (const binding of bindings) {
+    let launcher = false;
     try {
       const runtime = await loadFenceRuntime();
       if (!runtime) {
@@ -242,15 +249,25 @@ export async function resolveLiveManagedGatewayDistFence(
       }
       // A discovered sibling keeps its own selectors, rather than ambient profile overrides.
       const state = await runtime.readManagedGatewayBindingState(binding);
-      const matches = await gatewayServiceCommandOverlapsPhysicalCheckout(
-        root,
-        state.command,
-        options,
-      );
+      launcher = runtime.isReleaseLauncher(state.command);
+      const matches = launcher
+        ? ((
+            await runtime.inspectReleaseLauncher(
+              {
+                state,
+                readState: () => runtime.readManagedGatewayBindingState(binding),
+                outputPaths: options.outputPaths ?? ["dist"],
+              },
+              (command) => gatewayServiceCommandOverlapsPhysicalCheckout(root, command, options),
+            )
+          )?.value ?? null)
+        : await gatewayServiceCommandOverlapsPhysicalCheckout(root, state.command, options);
       if (matches === false) {
         continue;
       }
       if (matches === null) {
+        // Recognized but unverified wrappers cannot use best-effort admission.
+        unverifiedLauncher ||= launcher;
         // Native readers can prove absence without setting the optional missingUnit hint.
         unverified ||= Boolean(
           state.command ||
@@ -276,11 +293,14 @@ export async function resolveLiveManagedGatewayDistFence(
       if (hasCommandProcessCleanupError(error)) {
         throw error;
       }
+      unverifiedLauncher ||= launcher;
       unverified = true;
     }
   }
   if (holds.length === 0) {
-    return options.requireVerified && unverified ? unknown : { refuse: false };
+    return unverifiedLauncher || (options.requireVerified && unverified)
+      ? unknown
+      : { refuse: false };
   }
 
   const runtime = await loadFenceRuntime();
@@ -288,7 +308,9 @@ export async function resolveLiveManagedGatewayDistFence(
   let unit: string | undefined;
   for (const hold of holds) {
     if (!entrypoint && hold.state.command && runtime) {
-      entrypoint = runtime.resolveServiceEntrypoint(hold.state.command);
+      entrypoint = runtime.isReleaseLauncher(hold.state.command)
+        ? hold.state.command.programArguments[0]
+        : runtime.resolveServiceEntrypoint(hold.state.command);
     }
     if (!unit && hold.state.runtime?.systemd?.unit) {
       unit = hold.state.runtime.systemd.unit;

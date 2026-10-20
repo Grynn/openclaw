@@ -4,6 +4,7 @@ import {
   normalizeWindowsTaskIdentity,
   resolveGatewayProfileSuffix,
 } from "../../daemon/constants.js";
+import { isGatewayReleaseLauncher } from "../../daemon/immutable-release-launcher.js";
 import { resolveLaunchAgentLabel } from "../../daemon/launchd-label.js";
 import {
   discoverManagedGatewayBindings,
@@ -143,7 +144,11 @@ export async function assertManagedGatewayArtifactPublication(params: {
   updateInstallKind: "git" | "package" | "unknown";
   shouldRestart: boolean;
   phase?: "before-stop" | "publication";
-  inspectOverlap?: typeof gatewayServiceCommandOverlapsPhysicalInstallation;
+  inspectOverlap?: (
+    root: string,
+    command: GatewayServiceState["command"],
+    observation: { binding: ManagedGatewayBinding; state: GatewayServiceState },
+  ) => Promise<boolean | null>;
 }): Promise<void> {
   params.assertCurrent();
   const serving = params.selected;
@@ -269,13 +274,22 @@ export async function assertManagedGatewayArtifactPublication(params: {
   };
   for (const binding of bindings) {
     const state = await readBinding(binding);
-    if (!state || !isGatewayServiceStateLive(state)) {
+    if (!state) {
+      continue;
+    }
+    // Runtime publication must qualify a recognized wrapper with unknown native
+    // state. Positively stopped siblings keep the existing offline exemption.
+    const unverifiedLauncher =
+      params.inspectOverlap &&
+      isGatewayReleaseLauncher(state.command) &&
+      (state.runtime?.status !== "stopped" || state.loadState.status === "unknown");
+    if (!isGatewayServiceStateLive(state) && !unverifiedLauncher) {
       continue;
     }
     for (const root of params.roots) {
       const overlaps = await (
         params.inspectOverlap ?? gatewayServiceCommandOverlapsPhysicalInstallation
-      )(root, state.command);
+      )(root, state.command, { binding, state });
       params.assertCurrent();
       if (overlaps !== true || (await selectedConsumer(binding, state))) {
         continue;
