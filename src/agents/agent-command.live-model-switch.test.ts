@@ -55,6 +55,7 @@ import {
   registerAgentCommandRecoveryCases,
   withStoredAgentCommandRecoverySession,
 } from "./agent-command.restart-recovery.test-harness.js";
+import { registerAgentCommandRunOptionCases } from "./agent-command.run-options.test-support.js";
 import { createApiKeyCredential } from "./auth-profiles/credential-fixtures.test-support.js";
 import type { AgentAttemptParams } from "./command/attempt-execution.types.js";
 import { FailoverError } from "./failover/error.js";
@@ -1340,24 +1341,11 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     },
   );
 
-  it("applies the configured run cwd to ordinary (non-ACP) command sessions", async () => {
-    state.runtimeConfigMock = {
-      ...state.defaultRuntimeConfig,
-      agents: {
-        ...state.defaultRuntimeConfig.agents,
-        defaults: { ...state.defaultRuntimeConfig.agents.defaults, cwd: "/tmp/task-repo" },
-      },
-    };
-    // Ordinary sessions resolve to a truthy { kind: "none" }; only a real ACP
-    // placement may keep the configured cwd away from the run.
-    state.acpResolveSessionMock.mockReturnValue({ kind: "none" });
-    setupAdmittedSuccessfulAttempt();
-
-    await runBasicAgentCommand();
-
-    expect(state.runAgentAttemptMock).toHaveBeenCalledWith(
-      expect.objectContaining({ cwd: "/tmp/task-repo", workspaceDir: "/tmp/workspace" }),
-    );
+  registerAgentCommandRunOptionCases({
+    state,
+    setupSuccessfulAttempt,
+    setupAdmittedSuccessfulAttempt,
+    runBasicAgentCommand,
   });
 
   it.each(["completed", "failed"] as const)(

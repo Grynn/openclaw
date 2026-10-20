@@ -66,6 +66,19 @@ function prepared(utilityModelEntry?: {
 }
 
 describe("resolveUtilityCompletionRuntimeForAgent", () => {
+  it("keeps the selected native Claude subscription route when fast mode is prohibited", async () => {
+    const params = prepared({ agentRuntime: { id: "claude-cli" } });
+    params.cfg.models!.providers!.anthropic!.params = { fastModeAllowed: false };
+    params.cfg.agents!.defaults!.models!["anthropic/claude-haiku-4-5"]!.params = {
+      fastModeAllowed: false,
+    };
+    await expect(resolveUtilityCompletionRuntimeForAgent(params)).resolves.toEqual({
+      id: "claude-cli",
+      kind: "cli",
+      label: "Claude CLI",
+    });
+  });
+
   it.each([
     {
       pin: { agentRuntime: { id: "claude-cli" } },

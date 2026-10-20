@@ -4,11 +4,13 @@ import {
   detectOpenAICompletionsCompat,
   resolveOpenAICompletionsCompat,
 } from "@openclaw/ai/transports";
+import { normalizeFastMode } from "@openclaw/normalization-core/string-coerce";
 import {
   type NativeWebSearchToolPolicyParams,
   isNativeWebSearchAllowedByToolPolicy,
 } from "../../agents/codex-native-web-search-core.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { normalizeOpenAIServiceTier } from "../../llm/providers/openai-fast-mode.js";
 import { createGoogleThinkingPayloadWrapper } from "../../llm/providers/stream-wrappers/google.js";
 import { createMinimaxThinkingDisabledWrapper } from "../../llm/providers/stream-wrappers/minimax.js";
 import {
@@ -38,6 +40,7 @@ import {
 } from "../../plugins/provider-hook-runtime.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
 import type { ProviderPrepareExtraParamsContext } from "../../plugins/provider-runtime.types.js";
+import { resolveFastModeAllowed } from "../fast-mode.js";
 import {
   resolveAliasedParamValue,
   resolveModelExtraParamSources,
@@ -70,6 +73,32 @@ const GPT_PARALLEL_TOOL_CALLS_APIS = new Set([
   "openai-chatgpt-responses",
   "azure-openai-responses",
 ]);
+
+function constrainFastModeParams(
+  extraParams: Record<string, unknown>,
+  allowed: boolean,
+  provider: string,
+): Record<string, unknown> {
+  if (allowed) {
+    return extraParams;
+  }
+  const rawMode = extraParams.fastMode ?? extraParams.fast_mode;
+  if (
+    provider === "openai" &&
+    typeof rawMode !== "function" &&
+    normalizeFastMode(rawMode) === undefined
+  ) {
+    const tier = normalizeOpenAIServiceTier(extraParams.serviceTier ?? extraParams.service_tier);
+    // Unrelated/unspecified overrides must not manufacture Standard over an inherited tier.
+    if (tier !== "priority" && tier !== "ultrafast") {
+      return extraParams;
+    }
+  }
+  // Prepared params and queued preferences may be reused by unrestricted candidates.
+  const constrained: Record<string, unknown> = { ...extraParams, fastMode: false };
+  delete constrained.fast_mode;
+  return constrained;
+}
 
 export function resolveExtraParams(params: {
   cfg: OpenClawConfig | undefined;
@@ -202,7 +231,11 @@ export function resolvePreparedExtraParams(params: {
     merged: result,
     sources: [prepared, transportPatch ?? undefined],
   });
-  return result;
+  return constrainFastModeParams(
+    result,
+    resolveFastModeAllowed({ cfg: params.cfg, provider: params.provider, model: params.modelId }),
+    params.provider,
+  );
 }
 
 function sanitizeExtraParamsOverride(value: Record<string, unknown> | undefined) {
@@ -532,23 +565,26 @@ export function applyExtraParamsToAgent(
     workspaceDir,
     runtimeHandle: getModelProviderRuntimePluginHandle(model),
   });
-  const override = sanitizeExtraParamsOverride(extraParamsOverride);
-  const effectiveExtraParams =
-    options?.preparedExtraParams ??
-    resolvePreparedExtraParams({
-      cfg,
-      transportConfig: options?.transportConfig,
-      ...selectedModel,
-      extraParamsOverride,
-      thinkingLevel,
-      agentId,
-      agentDir,
-      workspaceDir,
-      model,
-      resolvedTransport,
-      providerRuntimeHandle,
-      auth: options?.auth,
-    });
+  const fastModeAllowed = resolveFastModeAllowed({ cfg, provider, model: modelId });
+  const authoredOverride = sanitizeExtraParamsOverride(extraParamsOverride);
+  const override =
+    authoredOverride && constrainFastModeParams(authoredOverride, fastModeAllowed, provider);
+  const effectiveExtraParams = options?.preparedExtraParams
+    ? constrainFastModeParams(options.preparedExtraParams, fastModeAllowed, provider)
+    : resolvePreparedExtraParams({
+        cfg,
+        transportConfig: options?.transportConfig,
+        ...selectedModel,
+        extraParamsOverride,
+        thinkingLevel,
+        agentId,
+        agentDir,
+        workspaceDir,
+        model,
+        resolvedTransport,
+        providerRuntimeHandle,
+        auth: options?.auth,
+      });
   const providerStreamBase = agent.streamFn;
   const nativeWebSearchAllowedByToolPolicy = options?.nativeWebSearchPolicyContext
     ? isNativeWebSearchAllowedByToolPolicy({
