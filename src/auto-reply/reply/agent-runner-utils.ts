@@ -230,9 +230,10 @@ export function resolveRunFastModeForFallbackCandidate(params: {
     model: params.model,
     agentId: params.run.agentId,
     sessionEntry: params.sessionEntry,
+    fastModeOverride: params.run.fastModeOverride ? params.run.fastMode : undefined,
   });
   return {
-    fastMode: params.run.fastModeOverride ? params.run.fastMode : state.requestMode,
+    fastMode: state.requestMode,
     fastModeAutoOnSeconds: params.run.fastModeAutoOnSecondsOverride
       ? params.run.fastModeAutoOnSeconds
       : state.fastAutoOnSeconds,

@@ -22,6 +22,83 @@ function modelConfig(
 }
 
 describe("resolveFastModeState", () => {
+  it("applies provider policy before session and run speed preferences without changing defaults", () => {
+    const cfg: OpenClawConfig = {
+      models: {
+        providers: {
+          anthropic: { baseUrl: "", models: [], params: { fastModeAllowed: false } },
+        },
+      },
+      agents: { defaults: { fastModeDefault: true } },
+    };
+    for (const model of ["fixture-current", "fixture-future"]) {
+      for (const fastMode of [true, "auto", "ultrafast"] as const) {
+        expect(
+          resolve({
+            cfg,
+            provider: "anthropic",
+            model,
+            sessionEntry: { fastMode },
+            fastModeOverride: fastMode,
+          }),
+        ).toMatchObject({ allowed: false, mode: false, requestMode: false, enabled: false });
+      }
+    }
+    expect(resolve({ cfg, fastModeOverride: "ultrafast" })).toMatchObject({
+      allowed: true,
+      mode: "ultrafast",
+      requestMode: "ultrafast",
+    });
+  });
+
+  it("uses the configured provider model before the global model and provider policies", () => {
+    const cfg: OpenClawConfig = {
+      models: {
+        providers: {
+          anthropic: {
+            baseUrl: "",
+            params: { fast_mode_allowed: false },
+            models: [
+              {
+                id: "fixture-model",
+                name: "Fixture",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                maxTokens: 4096,
+                params: { fastModeAllowed: true },
+              },
+            ],
+          },
+        },
+      },
+      agents: {
+        defaults: {
+          models: {
+            "anthropic/fixture-model": { params: { fastModeAllowed: false } },
+            "anthropic/other-model": { params: { fast_mode_allowed: true } },
+          },
+        },
+      },
+    };
+    for (const model of ["fixture-model", "other-model"]) {
+      expect(resolve({ cfg, provider: "anthropic", model, fastModeOverride: true })).toMatchObject({
+        allowed: true,
+        requestMode: true,
+      });
+    }
+    // The selected namespace is distinct under the current provider-model owner;
+    // an allow on an unprefixed model must not relax another selection's policy.
+    expect(
+      resolve({
+        cfg,
+        provider: "anthropic",
+        model: "anthropic/fixture-model",
+        fastModeOverride: true,
+      }),
+    ).toMatchObject({ allowed: false, requestMode: false });
+  });
+
   it.each(["serviceTier", "service_tier"])(
     "keeps %s inherited until a speed is selected",
     (key) => {

@@ -31,6 +31,13 @@ function classify(config: OpenClawConfig, native = true) {
   );
 }
 describe("native context management tuning", () => {
+  it("treats valid model fast policy as a host control without hiding other request parameters", () => {
+    for (const key of ["fastModeAllowed", "fast_mode_allowed"]) {
+      expect(classify(configuration("model", { [key]: false }))).toBe(false);
+      expect(classify(configuration("model", { [key]: "false" }))).toBe(true);
+      expect(classify(configuration("model", { [key]: false, temperature: 0.5 }))).toBe(true);
+    }
+  });
   it.each(sources)(
     "tolerates only compaction in %s parameters without changing shared config",
     (source) => {

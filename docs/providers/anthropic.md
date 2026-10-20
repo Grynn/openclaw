@@ -920,6 +920,34 @@ OpenClaw supports Anthropic's prompt caching feature for API-key auth.
     }
     ```
 
+    To prohibit OpenClaw Fast mode for every Anthropic model, including future
+    models, add this policy to your existing provider configuration:
+
+    ```json5
+    {
+      models: {
+        providers: {
+          anthropic: { params: { fastModeAllowed: false } },
+        },
+      },
+    }
+    ```
+
+    The policy overrides session preferences, `/fast on|auto|ultrafast`, and
+    explicit run preferences, including when Anthropic is a fallback. It does
+    not switch a native Claude CLI route to API billing. `/fast off` and
+    `/fast default` remain available to clear saved preferences.
+
+    An exact model policy in `models.providers.anthropic.models[].params`
+    takes precedence over
+    `agents.defaults.models["anthropic/<model>"].params.fastModeAllowed`, which
+    takes precedence over the provider policy. `fast_mode_allowed` is an alias.
+    Unset policies preserve the normal Fast-mode behavior. The policy is scoped
+    to the selected provider: configure `claude-cli` separately if you use that
+    explicit provider instead of `anthropic`. Explicit `serviceTier` /
+    `service_tier` settings remain separate controls; remove those separately
+    when you want to prohibit authored paid-tier requests too.
+
     <Note>
     - Native fast mode is a research preview with up to 2.5x higher output-token throughput. It is billed at `$8/$40` per million input/output tokens for Opus 5.5 and `$10/$50` for Opus 5 and Opus 4.8. OpenClaw applies the same 2x multiplier to cache pricing in its cost estimate.
     - Native fast mode only applies to direct `api.anthropic.com` requests made with an API key. OAuth/subscription-token requests, Claude CLI, proxies, Bedrock, Vertex, and Foundry never receive the beta or `speed` field.

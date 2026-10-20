@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
+import { configureAiTransportHost, getAiTransportHost } from "@openclaw/ai";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildEmbeddedRunExecutionParams,
   resolveRunFastModeForFallbackCandidate,
@@ -13,18 +14,26 @@ import { attachModelProviderRuntimePluginHandle } from "../plugins/provider-hook
 import { applyExtraParamsToAgent } from "./embedded-agent-runner/extra-params.js";
 import { resolveFastModeState } from "./fast-mode.js";
 import type { StreamFn } from "./runtime/index.js";
+import "./ai-transport-runtime-host.js";
 
-const requests = vi.hoisted(() => [] as unknown[]);
-vi.mock("openai", () => ({
-  default: class MockOpenAI {
-    responses = {
-      create: (request: unknown) => {
-        requests.push(request);
-        throw new Error("captured before sending");
-      },
-    };
-  },
-}));
+const previousHost = getAiTransportHost();
+const requests: unknown[] = [];
+beforeEach(() => {
+  requests.length = 0;
+  configureAiTransportHost({
+    ...previousHost,
+    buildModelFetch: () => async (input, init) => {
+      const request = new Request(input, init);
+      expect(request.url).toBe("https://api.openai.com/v1/responses");
+      requests.push(JSON.parse(await request.text()));
+      return new Response(
+        'data: {"type":"response.completed","response":{"id":"speed-policy-proof","status":"completed","output":[]}}\n\n',
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    },
+  });
+});
+afterEach(() => configureAiTransportHost(previousHost));
 
 const model: Model<"openai-responses"> = {
   id: "speed-fixture",
@@ -52,6 +61,7 @@ async function captureRequest(
   fastMode: false | true | "auto" | "ultrafast" | undefined,
   turnOverride?: Record<string, unknown>,
   prepared = false,
+  preparedExtraParams?: Record<string, unknown>,
 ) {
   const requestMode = prepared
     ? fastMode
@@ -85,14 +95,16 @@ async function captureRequest(
     preparedModel,
     undefined,
     undefined,
-    { nativeWebSearchPolicyContext: { runtimeToolAllowlist: [] } },
+    { nativeWebSearchPolicyContext: { runtimeToolAllowlist: [] }, preparedExtraParams },
   );
+  const previousRequests = requests.length;
   const output = await agent.streamFn(
     preparedModel,
     { messages: [{ role: "user", content: "hello", timestamp: 0 }] },
     { apiKey: "synthetic-test-key" },
   );
-  expect((await output.result()).errorMessage).toBe("captured before sending");
+  expect((await output.result()).errorMessage).toBeUndefined();
+  expect(requests).toHaveLength(previousRequests + 1);
   return requests.at(-1);
 }
 
@@ -113,6 +125,97 @@ async function checkSpeeds(cfg: OpenClawConfig, inherited?: string, key?: string
 }
 
 describe("fast-mode request assembly", () => {
+  it.each(["flex", "auto", "default"])(
+    "preserves inherited %s under denial while explicit speed selections still select Standard",
+    async (tier) => {
+      for (const key of ["serviceTier", "service_tier"]) {
+        const cfg = config({ models: models({ fastModeAllowed: false, [key]: tier }) });
+        expect(await captureRequest(cfg, undefined)).toMatchObject({ service_tier: tier });
+        // Maintenance/plugin callers may enter assembly without a resolved run control.
+        expect(await captureRequest(cfg, undefined, { temperature: 0.25 }, true)).toMatchObject({
+          service_tier: tier,
+          temperature: 0.25,
+        });
+        expect(
+          await captureRequest(cfg, undefined, undefined, true, {
+            [key]: tier,
+            fastMode: undefined,
+          }),
+        ).toMatchObject({ service_tier: tier });
+        for (const mode of [false, true, "auto", "ultrafast"] as const) {
+          expect(await captureRequest(cfg, mode)).toMatchObject({ service_tier: "default" });
+        }
+      }
+    },
+  );
+
+  it.each(["priority", "ultrafast"])("caps inherited %s under denial", async (tier) => {
+    const cfg = config({ models: models({ fastModeAllowed: false, serviceTier: tier }) });
+    expect(await captureRequest(cfg, undefined)).toMatchObject({ service_tier: "default" });
+    expect(await captureRequest(cfg, undefined, undefined, true)).toMatchObject({
+      service_tier: "default",
+    });
+  });
+
+  it("caps direct aliases and callbacks without evaluating a denied dynamic preference", async () => {
+    const cfg = config({ models: models({ fastModeAllowed: false, serviceTier: "flex" }) });
+    const autoMode = vi.fn(() => true);
+    for (const override of [{ fastMode: undefined, fast_mode: true }, { fastMode: autoMode }]) {
+      expect(await captureRequest(cfg, undefined, override, true)).toMatchObject({
+        service_tier: "default",
+      });
+    }
+    expect(autoMode).not.toHaveBeenCalled();
+  });
+
+  it("caps an explicit fallback speed at the selected model policy without erasing the run preference", async () => {
+    const cfg = config({ models: models({ fastModeAllowed: false, serviceTier: "priority" }) });
+    const run: FollowupRun["run"] = {
+      config: cfg,
+      provider: "anthropic",
+      model: "primary-fixture",
+      agentId: "main",
+      agentDir: "/tmp/speed-policy-proof/agent",
+      workspaceDir: "/tmp/speed-policy-proof/workspace",
+      sessionId: "fallback-policy",
+      sessionFile: "/tmp/speed-policy-proof/session.jsonl",
+      timeoutMs: 60_000,
+      blockReplyBreak: "text_end",
+      skipProviderRuntimeHints: true,
+      fastMode: "ultrafast",
+      fastModeOverride: true,
+      thinkingCatalog: [],
+    };
+    const candidate = resolveRunFastModeForFallbackCandidate({
+      run,
+      config: cfg,
+      provider: "openai",
+      model: model.id,
+    });
+    const invocation = await buildEmbeddedRunExecutionParams({
+      run: { ...run, ...candidate },
+      provider: "openai",
+      model: model.id,
+      runId: "fallback-policy-run",
+      sessionCtx: {},
+      hasRepliedRef: undefined,
+    });
+    expect(
+      await captureRequest(invocation.config, invocation.fastMode, undefined, true),
+    ).toMatchObject({
+      service_tier: "default",
+    });
+    expect(
+      resolveRunFastModeForFallbackCandidate({
+        run,
+        config: cfg,
+        provider: "openai",
+        model: "unrestricted-fixture",
+      }).fastMode,
+    ).toBe("ultrafast");
+    expect(run.fastMode).toBe("ultrafast");
+  });
+
   it.each(["serviceTier", "service_tier"])(
     "inherits %s without pinning it and honors session selections",
     async (key) => {
@@ -144,10 +247,15 @@ describe("fast-mode request assembly", () => {
     },
   );
 
-  it.each(["flex", "auto"])(
-    "inherits the candidate's %s tier without leaking the primary speed",
-    async (tier) => {
-      const cfg = config({ models: models({ serviceTier: tier }) });
+  it.each([
+    ["flex", undefined],
+    ["auto", undefined],
+    ["flex", false],
+    ["auto", false],
+  ])(
+    "inherits the candidate's %s tier with fastModeAllowed=%s without leaking the primary speed",
+    async (tier, fastModeAllowed) => {
+      const cfg = config({ models: models({ serviceTier: tier, fastModeAllowed }) });
       for (const explicit of [false, true]) {
         const run: FollowupRun["run"] = {
           config: cfg,

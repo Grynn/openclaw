@@ -3,6 +3,10 @@
  */
 import type { FastMode } from "@openclaw/normalization-core/string-coerce";
 import { normalizeFastMode } from "../auto-reply/thinking.shared.js";
+import {
+  findConfiguredProviderModel,
+  resolveMergedModelProviderConfig,
+} from "../config/model-provider-config.js";
 import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeOpenAIServiceTier } from "../llm/providers/openai-fast-mode.js";
@@ -29,9 +33,37 @@ type FastModeState = {
   /** Undefined preserves an inherited provider tier instead of manufacturing Standard. */
   requestMode: FastMode | undefined;
   enabled: boolean;
+  allowed: boolean;
   source: FastModeSource;
   fastAutoOnSeconds: number;
 };
+
+function readFastModeAllowed(params: Record<string, unknown> | undefined): boolean | undefined {
+  const value = params?.fastModeAllowed ?? params?.fast_mode_allowed;
+  return typeof value === "boolean" ? value : undefined;
+}
+
+/** Operator policy is independent of session, run, and transport speed preferences. */
+export function resolveFastModeAllowed(params: {
+  cfg: OpenClawConfig | undefined;
+  provider: string;
+  model: string;
+}): boolean {
+  const { modelParams } = resolveModelExtraParamSources({
+    config: params.cfg,
+    provider: params.provider,
+    modelId: params.model,
+  });
+  const providerConfig = resolveMergedModelProviderConfig(params.cfg, params.provider);
+  const providerModel = findConfiguredProviderModel(providerConfig, params.provider, params.model);
+  // Exact model policy can override the provider default; run/session preferences cannot.
+  return (
+    readFastModeAllowed(providerModel?.params) ??
+    readFastModeAllowed(modelParams) ??
+    readFastModeAllowed(providerConfig?.params) ??
+    true
+  );
+}
 
 /** Resolve the effective fast-mode setting and its source. */
 export function resolveFastModeState(params: {
@@ -40,6 +72,7 @@ export function resolveFastModeState(params: {
   model: string;
   agentId?: string;
   sessionEntry?: Pick<SessionEntry, "fastMode"> | undefined;
+  fastModeOverride?: FastMode;
 }): FastModeState {
   const { defaultParams, modelParams, agentModelParams, agentParams } =
     resolveModelExtraParamSources({
@@ -52,7 +85,8 @@ export function resolveFastModeState(params: {
     ...params,
     modelParamSources: [agentModelParams, modelParams],
   });
-  let mode = normalizeFastMode(params.sessionEntry?.fastMode);
+  const allowed = resolveFastModeAllowed(params);
+  let mode = normalizeFastMode(params.fastModeOverride ?? params.sessionEntry?.fastMode);
   let source: FastModeSource = "session";
   if (mode === undefined) {
     mode = normalizeFastMode(
@@ -80,6 +114,20 @@ export function resolveFastModeState(params: {
           ),
         )
       : undefined;
+  if (!allowed) {
+    return {
+      mode: false,
+      // A prohibition is not an explicit Standard selection for an inherited non-fast tier.
+      requestMode:
+        mode === undefined && tier && tier !== "priority" && tier !== "ultrafast"
+          ? undefined
+          : false,
+      enabled: false,
+      allowed,
+      source: "config",
+      fastAutoOnSeconds,
+    };
+  }
   const requestMode = mode ?? (tier ? undefined : false);
   if (mode === undefined && tier) {
     mode = tier === "ultrafast" ? "ultrafast" : tier === "priority";
@@ -90,6 +138,7 @@ export function resolveFastModeState(params: {
     mode: mode ?? false,
     requestMode,
     enabled: mode === "auto" || mode === true || mode === "ultrafast",
+    allowed,
     source: mode === undefined ? "default" : source,
     fastAutoOnSeconds,
   };
