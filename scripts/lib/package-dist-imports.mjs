@@ -2,6 +2,15 @@
 import path from "node:path";
 import { visitJavaScriptStatements } from "./javascript-statements.mjs";
 const JS_FILE_RE = /\.(?:cjs|js|mjs)$/u;
+const LAUNCHER_PATH = "openclaw.mjs";
+const LAUNCHER_ENTRY_ALTERNATES = ["dist/entry.js", "dist/entry.mjs"];
+const LAUNCHER_OPTIONAL_PROBES = new Set([
+  ...LAUNCHER_ENTRY_ALTERNATES,
+  "dist/warning-filter.js",
+  "dist/warning-filter.mjs",
+  "dist/cli/program/root-help.js",
+  "dist/cli/program/root-help.mjs",
+]);
 
 function normalizePackagePath(value) {
   return value.replace(/\\/gu, "/").replace(/^package\//u, "");
@@ -197,15 +206,24 @@ export function collectPackageDistImportErrors(params) {
       kind === "require"
         ? resolvesCommonJs(importedPath, fileSet, packageJsons)
         : fileSet.has(importedPath);
-    if (!found) {
+    // Only these root-launcher probes permit a direct miss. Present modules still
+    // contribute their own required edges, and at least one CLI entry must exist.
+    if (!found && !(importerPath === LAUNCHER_PATH && LAUNCHER_OPTIONAL_PROBES.has(importedPath))) {
       errors.push(`${importerPath} imports missing ${importedPath}`);
     }
+  }
+
+  if (
+    fileSet.has(LAUNCHER_PATH) &&
+    !LAUNCHER_ENTRY_ALTERNATES.some((entry) => fileSet.has(entry))
+  ) {
+    errors.push("openclaw.mjs has no CLI entry (dist/entry.js or dist/entry.mjs)");
   }
 
   return errors;
 }
 
-/** Collect relative dist import edges from package JavaScript files. */
+/** Collect relative import edges from package JavaScript files. */
 export function collectPackageDistImports(params) {
   const files =
     params.files.length === 1

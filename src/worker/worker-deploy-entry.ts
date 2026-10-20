@@ -1,5 +1,6 @@
 import { flushCompileCache } from "node:module";
 import "./worker-deploy-runtime.js";
+import { getFsSafeNativeConfig } from "@openclaw/fs-safe/config";
 import { formatCliOperatorError } from "../cli/failure-output.js";
 import { assertSupportedRuntime } from "../infra/runtime-guard.js";
 import workerDeployBrowserRuntime from "./worker-deploy-browser-runtime.js";
@@ -34,6 +35,10 @@ try {
   if (internalWorkerPrewarm) {
     await loadWorkerTurnRuntime();
     flushCompileCache();
+    // Report the effective sealed-bootstrap policy, not the caller's environment.
+    process.stdout.write(
+      `${JSON.stringify({ fsSafeNativeMode: getFsSafeNativeConfig().mode, protocol: 1 })}\n`,
+    );
   } else {
     await runWorkerProcess({
       internalWorkerIpc,
