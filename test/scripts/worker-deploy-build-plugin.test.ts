@@ -94,6 +94,10 @@ describe("worker deploy build plugin", () => {
   );
 
   describe("portable output", () => {
+    const expectedPrewarmAck = JSON.stringify({
+      fsSafeNativeMode: process.platform === "darwin" ? "require" : "off",
+      protocol: 1,
+    });
     const fixtureDirs = useAutoCleanupTempDirTracker(afterAll);
     const fixtureLifetime = createFixtureLifetime();
     const workerEntryNames = new Set(
@@ -277,9 +281,10 @@ try {
       );
       expect(result.error, result.stderr).toBeUndefined();
       expect(result.status, result.stderr).toBe(0);
-      expect(result.stdout.trim()).toBe(
+      expect(result.stdout.trim().split("\n")).toEqual([
+        expectedPrewarmAck,
         "relocated worker exec permission denied without Gateway storage",
-      );
+      ]);
     });
 
     it(
@@ -439,7 +444,10 @@ console.log("archive-owned native credentials refused " + fault);
           const diagnostics = `${result.stderr}\n${result.stdout}`;
           expect(result.error, diagnostics).toBeUndefined();
           expect(result.status, diagnostics).toBe(0);
-          expect(result.stdout.trim()).toBe(`archive-owned native credentials refused ${fault}`);
+          expect(result.stdout.trim().split("\n")).toEqual([
+            expectedPrewarmAck,
+            `archive-owned native credentials refused ${fault}`,
+          ]);
         }),
     );
 
@@ -582,9 +590,10 @@ console.log("relocated worker facade activation follows the shared config snapsh
           );
           expect(result.error, `${root}\n${result.stderr}`).toBeUndefined();
           expect(result.status, result.stderr).toBe(0);
-          expect(result.stdout.trim()).toBe(
+          expect(result.stdout.trim().split("\n")).toEqual([
+            expectedPrewarmAck,
             "relocated worker facade activation follows the shared config snapshot",
-          );
+          ]);
 
           // Check the deployed archive, not only the build directory: an emitted
           // auxiliary can exist locally but still be excluded by sealed staging.
@@ -786,7 +795,10 @@ console.log("portable worker highlighting and shell analysis passed");
           env: workerEnv(root),
         },
       );
-      expect(result.stdout.trim()).toBe("portable worker highlighting and shell analysis passed");
+      expect(result.stdout.trim().split("\n")).toEqual([
+        expectedPrewarmAck,
+        "portable worker highlighting and shell analysis passed",
+      ]);
       expect(result.stderr).toBe("");
     });
 
@@ -870,7 +882,10 @@ console.log("relocated worker WebSocket and transcription passed");
           { cwd: relocated },
         );
         expect(result.status, result.stderr).toBe(0);
-        expect(result.stdout.trim()).toBe("relocated worker WebSocket and transcription passed");
+        expect(result.stdout.trim().split("\n")).toEqual([
+          expectedPrewarmAck,
+          "relocated worker WebSocket and transcription passed",
+        ]);
         expect(requests).toEqual([
           { path: "/client", header: "client-header" },
           { path: "/transcription", header: "transcription-header" },

@@ -688,24 +688,16 @@ const buildOptions = {
                 parse(contents, { ecmaVersion: "latest", sourceType: "module" }),
               );
             }
-            // The launcher loops over legacy suffixes. Expose existing candidates to Bun's graph.
+            // The launcher probes legacy suffixes through literal import callbacks. Keep existing
+            // candidates in Bun's graph; Bun rejects literal imports of absent files, so those
+            // resolve at runtime and still reach the launcher's direct-miss fallback.
             if (relative === "openclaw.mjs") {
-              const candidates = [
-                ...new Set(
-                  [...contents.matchAll(/["'](\.\/dist\/[^"']+\.[cm]?js)["']/g)].map(
-                    (match) => match[1],
-                  ),
-                ),
-              ].filter((entry) => fs.existsSync(path.join(runtimeRoot, entry)));
-              const choices = candidates
-                .map(
-                  (entry) =>
-                    `specifier === ${JSON.stringify(entry)} ? import(${JSON.stringify(entry)}) : `,
-                )
-                .join("");
-              contents = contents.replaceAll(
-                "await import(specifier)",
-                `await (${choices}import(new URL(specifier, globalThis.__openclawStandaloneRootUrl).href))`,
+              contents = contents.replace(
+                /\bimport\((["'])(\.\/dist\/(?:entry|warning-filter|cli\/program\/root-help)\.m?js)\1\)/g,
+                (match, _quote, entry) =>
+                  fs.existsSync(path.join(runtimeRoot, entry))
+                    ? match
+                    : `import(new URL(${JSON.stringify(entry)}, globalThis.__openclawStandaloneRootUrl).href)`,
               );
             }
             contents = native.transform({ filename: nativeFilename(filename), contents }).contents;

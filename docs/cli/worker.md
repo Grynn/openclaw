@@ -84,6 +84,13 @@ the launch and names the command. A changed daemon identity remains a hard failu
 
 ## Runtime boundary
 
+The sealed worker bundle's internal `--internal-worker-prewarm` mode loads the
+turn runtime and flushes its compile cache without admitting a turn. Success
+writes one newline-terminated JSON acknowledgment with `protocol: 1` and
+`fsSafeNativeMode`: `require` on macOS, `off` elsewhere. This reports the effective
+sealed-bootstrap policy, not a requested environment override. Failed prewarming
+exits nonzero without an acknowledgment; input and IPC cleanup still run.
+
 The process runs the normal embedded agent loop with a restricted backend:
 
 - The `read`, `write`, `edit`, `apply_patch`, `exec`, and `process` coding tools
