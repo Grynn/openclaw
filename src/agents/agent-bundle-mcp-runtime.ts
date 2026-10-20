@@ -11,6 +11,7 @@ import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { withGuardedFetchRequestAuthority } from "../infra/net/fetch-request-authority.js";
 import { logWarn } from "../logger.js";
 import {
+  describeBundleMcpCatalogError,
   projectBundleMcpServerCatalog,
   projectBundleMcpCatalogFailure,
 } from "./agent-bundle-mcp-catalog-projection.js";
@@ -525,6 +526,7 @@ function createServerMcpRuntime(
                 }
               },
               BUNDLE_MCP_CATALOG_FAILURE_RETRY_MS,
+              resolved.transportType,
             );
           } finally {
             probe?.detach();
@@ -600,7 +602,7 @@ function createServerMcpRuntime(
         session.toolMetadata = projected.metadata;
         return projected.catalog;
       } catch (error) {
-        const message = redactMcpDiagnosticError(error);
+        const diagnostic = describeBundleMcpCatalogError(error, resolved.transportType);
         startupRetryAfterMs =
           error instanceof McpStartupBackoffError ? error.retryAfterMs : undefined;
         if (
@@ -609,7 +611,7 @@ function createServerMcpRuntime(
         ) {
           const action = reusedSession ? "refresh" : "start";
           logWarn(
-            `bundle-mcp: failed to ${action} server "${serverName}" (${launchDescription}): ${message}`,
+            `bundle-mcp: failed to ${action} server "${serverName}" (${launchDescription}): ${diagnostic.message}`,
           );
         }
         if (!session.connected || isMcpHttpSessionExpired(session, error) || !reusedSession) {
@@ -621,7 +623,7 @@ function createServerMcpRuntime(
           serverName,
           safeServerName,
           launchSummary: launchDescription,
-          message,
+          ...diagnostic,
         });
       }
     })();
@@ -660,6 +662,7 @@ function createServerMcpRuntime(
           safeServerName: params.safeServerNamesByServer?.get(serverName) ?? serverName,
           launchSummary: serverName,
           message: backoff.message,
+          ...(backoff.errorCode ? { errorCode: backoff.errorCode } : {}),
         });
         startupRetryAfterMs = backoff.retryAfterMs;
         catalogRetryAfterMs = backoff.retryAfterMs;
@@ -884,20 +887,12 @@ function createServerMcpRuntime(
     },
     dispose() {
       if (!disposal) {
-        retiredCatalog = {
-          version: 1,
-          generatedAt: Date.now(),
-          servers: {},
-          tools: [],
-          diagnostics: [
-            {
-              serverName,
-              safeServerName: params.safeServerNamesByServer?.get(serverName) ?? serverName,
-              launchSummary: serverName,
-              message: "MCP server runtime retired; retry discovery on the next turn.",
-            },
-          ],
-        };
+        retiredCatalog = projectBundleMcpCatalogFailure(undefined, {
+          serverName,
+          safeServerName: params.safeServerNamesByServer?.get(serverName) ?? serverName,
+          launchSummary: serverName,
+          message: "MCP server runtime retired; retry discovery on the next turn.",
+        });
         currentSession?.nativeBridge?.emit({ kind: "closed" });
         if (nativeContext) {
           resetMcpStartupBackoff(startupKey);
