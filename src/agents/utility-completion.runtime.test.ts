@@ -63,6 +63,19 @@ function prepared(runtimeId?: string): UtilityCompletionRuntimeParams {
   };
 }
 
+it("keeps the selected native Claude subscription route when fast mode is prohibited", async () => {
+  const params = prepared("claude-cli");
+  params.cfg.models!.providers!.anthropic!.params = { fastModeAllowed: false };
+  params.cfg.agents!.defaults!.models!["anthropic/claude-haiku-4-5"]!.params = {
+    fastModeAllowed: false,
+  };
+  await expect(resolveUtilityCompletionRuntimeForAgent(params)).resolves.toEqual({
+    id: "claude-cli",
+    kind: "cli",
+    label: "Claude CLI",
+  });
+});
+
 it.each([
   ["claude-cli", { id: "claude-cli", kind: "cli", label: "Claude CLI" }],
   [undefined, { id: "openclaw", kind: "api", label: "OpenClaw Default" }],

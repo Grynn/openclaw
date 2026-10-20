@@ -382,8 +382,9 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
             model: modelOverride,
             agentId: sessionAgentId,
             sessionEntry,
+            fastModeOverride: params.opts.fastMode,
           });
-          const fastMode = params.opts.fastMode ?? fastModeState.requestMode;
+          const fastMode = fastModeState.requestMode;
           const configuredAuthProfileId =
             providerOverride === defaultProvider && modelOverride === defaultModel
               ? configuredDefaultAuthProfileId
