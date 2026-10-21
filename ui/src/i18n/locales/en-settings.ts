@@ -1127,6 +1127,7 @@ const enSettings = {
       label: "Accounts for {agent}",
       oauth: "Signed-in accounts: {count}",
       tokenProfiles: "Access-token accounts: {count}",
+      runtimeManaged: "Managed by {runtime}",
       configKey: "API key set in config",
       envKey: "API key from environment",
       envKeyNamed: "API key from environment ({name})",

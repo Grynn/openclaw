@@ -3,6 +3,7 @@ import { InlineAlert } from "../../components/solid/inline-alert.tsx";
 import { providerUsageAttention } from "../../components/solid/provider-usage.tsx";
 import { SettingsStatus } from "../../components/solid/settings-ui.tsx";
 import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
+import { formatModelRuntimeLabel } from "../../lib/model-runtime-label.ts";
 import { registerEnglishCatalog, t } from "../../lib/reactive/i18n.ts";
 import type { ModelProviderRowMessage } from "./config-mutation.ts";
 import type { ModelProviderAuthKind, ModelProviderCard } from "./data.ts";
@@ -87,6 +88,28 @@ export function needsModelSetup(props: {
   );
 }
 
+/** A Gateway-confirmed native route alone holds no API credential a direct probe could test. */
+export function canProbeProvider(card: ModelProviderCard): boolean {
+  return (
+    isProviderUsable(card) &&
+    (card.availableAgentRuntimeIds.length === 0 ||
+      card.configApiKeys.length > 0 ||
+      Boolean(card.apiKey) ||
+      card.profiles.length > 0)
+  );
+}
+
+/** Names Gateway-confirmed native runtimes without implying direct API credentials. */
+export function runtimeManagedCredentialParts(card: ModelProviderCard): string[] {
+  if (card.availableAgentRuntimeIds.length === 0) {
+    return [];
+  }
+  const runtime = card.availableAgentRuntimeIds
+    .map((id) => formatModelRuntimeLabel(card.id, id, t)?.label ?? id)
+    .join(", ");
+  return [t("modelProviders.credentials.runtimeManaged", { runtime })];
+}
+
 export function needsAuthAttention(card: ModelProviderCard): boolean {
   if (card.auth?.kind === "missing") {
     return true;
@@ -108,12 +131,18 @@ export function providerStatusCoversAccount(card: ModelProviderCard): boolean {
     card.profiles.length === 1 &&
     !card.apiKey &&
     card.configApiKeys.length === 0 &&
-    (card.catalogStatus === "auth-rejected" || needsAuthAttention(card))
+    // A confirmed native route keeps the row Ready, so the status cannot speak for the account.
+    (card.catalogStatus === "auth-rejected" ||
+      (card.availableAgentRuntimeIds.length === 0 && needsAuthAttention(card)))
   );
 }
 
 export function hasVerifiedProvider(card: ModelProviderCard): boolean {
-  return card.catalogStatus === "ready" && !needsAuthAttention(card);
+  // The model catalog owns native-route availability; direct API auth is separate.
+  return (
+    card.catalogStatus === "ready" &&
+    (card.availableAgentRuntimeIds.length > 0 || !needsAuthAttention(card))
+  );
 }
 
 export function renderProviderStatus(card: ModelProviderCard) {
@@ -135,7 +164,7 @@ export function renderProviderStatus(card: ModelProviderCard) {
     // The card-wide outcome does not identify which saved credential was rejected.
     return <SettingsStatus kind="danger" label={t("modelProviders.status.denied")} />;
   }
-  if (needsAuthAttention(card)) {
+  if (card.availableAgentRuntimeIds.length === 0 && needsAuthAttention(card)) {
     return renderAuthStatus(card.auth);
   }
   if (card.catalogStatus === "unavailable") {

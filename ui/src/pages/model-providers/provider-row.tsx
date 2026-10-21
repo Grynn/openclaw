@@ -22,10 +22,12 @@ import {
 } from "./data.ts";
 import { apiKeySource, profileIdentity, ProviderProfiles } from "./profiles-view.tsx";
 import {
+  canProbeProvider,
   isProviderUsable,
   needsAuthAttention,
   renderMutationMessage,
   renderProviderStatus,
+  runtimeManagedCredentialParts,
 } from "./view-status.tsx";
 import type { ModelProvidersViewProps } from "./view-types.ts";
 
@@ -93,7 +95,7 @@ function CredentialRow(props: { title: string; detail?: string; action?: JSX.Ele
 function hiddenCredentialSummary(card: ModelProviderCard): string | undefined {
   const count = (type: ModelProviderCard["profiles"][number]["type"]) =>
     card.profiles.filter((profile) => profile.type === type).length;
-  const parts = [];
+  const parts = [...runtimeManagedCredentialParts(card)];
   if (count("oauth") > 0) {
     parts.push(t("modelProviders.credentials.oauth", { count: String(count("oauth")) }));
   }
@@ -415,7 +417,7 @@ function ProviderActions(props: ProviderRowProps) {
           {t("modelProviders.remove.action")}
         </button>
       </Show>
-      <Show when={isProviderUsable(props.card)}>
+      <Show when={canProbeProvider(props.card)}>
         <button
           class="btn btn--sm"
           disabled={
@@ -493,6 +495,7 @@ function credentialLine(card: ModelProviderCard): string | undefined {
   }
   return (
     apiKeySource(card) ??
+    runtimeManagedCredentialParts(card)[0] ??
     (isProviderUsable(card) ? t("modelProviders.row.managedOutside") : undefined)
   );
 }
