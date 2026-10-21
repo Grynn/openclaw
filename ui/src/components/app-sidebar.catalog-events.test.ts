@@ -220,17 +220,62 @@ describe("AppSidebar catalog event refresh", () => {
     },
   );
 
-  it("rechecks visibility after queued background admission", async () => {
-    const setVisibility = visibilityFixture();
-    const { request, sidebar } = await mountTab();
-    const context = sidebar.sessionData.context;
-    context?.connectionBootstrap.setForegroundRoute(undefined);
-    document.dispatchEvent(new Event("visibilitychange"));
-    await vi.advanceTimersByTimeAsync(5_000);
-    setVisibility("hidden");
-    context?.connectionBootstrap.setForegroundRoute(null);
-    await advance(request, 300_000, 1);
-    setVisibility("visible");
-    await advance(request, 5_000, 2);
-  });
+  it.each(["navigation", "collapsed", "view"] as const)(
+    "pauses discovery while the %s surface hides catalogs",
+    async (surface) => {
+      const { request, sidebar } = await mountTab();
+      if (surface === "navigation") {
+        sidebar.navigationVisible = false;
+      } else if (surface === "collapsed") {
+        sidebar.navigationCollapsed = true;
+      } else {
+        sidebar.navigationView = "online";
+      }
+      await settleLitElement(sidebar);
+      await advance(request, 125_000, 1);
+      expect(sidebar.sessionData.sessionCatalogs[0]?.hosts[0]?.sessions[0]?.name).toBe(
+        "Stable catalog",
+      );
+      sidebar.navigationVisible = true;
+      sidebar.navigationCollapsed = false;
+      sidebar.navigationView = "sessions";
+      await settleLitElement(sidebar);
+      await advance(request, 5_000, 2);
+      await advance(request, 5_000, 2);
+      if (surface === "navigation") {
+        sidebar.navigationVisible = false;
+        await settleLitElement(sidebar);
+        await sidebar.sessionData.refreshSessionCatalogs();
+        expect(request).toHaveBeenCalledTimes(3);
+        await advance(request, 125_000, 3);
+      }
+    },
+  );
+
+  it.each(["document", "navigation"] as const)(
+    "rechecks %s visibility after queued background admission",
+    async (surface) => {
+      const setVisibility = visibilityFixture();
+      const { request, sidebar } = await mountTab();
+      const context = sidebar.sessionData.context;
+      context?.connectionBootstrap.setForegroundRoute(undefined);
+      document.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(5_000);
+      if (surface === "document") {
+        setVisibility("hidden");
+      } else {
+        sidebar.navigationVisible = false;
+        await settleLitElement(sidebar);
+      }
+      context?.connectionBootstrap.setForegroundRoute(null);
+      await advance(request, 300_000, 1);
+      if (surface === "document") {
+        setVisibility("visible");
+      } else {
+        sidebar.navigationVisible = true;
+        await settleLitElement(sidebar);
+      }
+      await advance(request, 5_000, 2);
+    },
+  );
 });
