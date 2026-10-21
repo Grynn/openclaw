@@ -557,7 +557,7 @@ async function appendMemoryFlushContent(params: {
       params.assertCurrent();
       await root.append(params.relativePath, params.content, {
         mkdir: true,
-        prependNewlineIfNeeded: true,
+        prependNewlineIfNeeded: !params.content.startsWith("\r"),
         assertBeforeMutation: params.assertCurrent,
       });
     });
@@ -575,7 +575,7 @@ async function appendMemoryFlushContent(params: {
     return content;
   });
   const separator =
-    existing.length > 0 && !existing.endsWith("\n") && !params.content.startsWith("\n") ? "\n" : "";
+    existing.length > 0 && !existing.endsWith("\n") && !/^[\r\n]/u.test(params.content) ? "\n" : "";
   const next = `${existing}${separator}${params.content}`;
   const sandbox = params.sandbox;
   await runWithAgentToolSourceExecutionScope(params.assertCurrent, async () => {
@@ -643,7 +643,7 @@ export function wrapToolMemoryFlushAppendOnlyWrite(
       });
       assertNewMemoryFlushContent(contentBefore, content);
       const separator =
-        contentBefore.length > 0 && !contentBefore.endsWith("\n") && !content.startsWith("\n")
+        contentBefore.length > 0 && !contentBefore.endsWith("\n") && !/^[\r\n]/u.test(content)
           ? "\n"
           : "";
       const commit = () =>
