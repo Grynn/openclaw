@@ -211,37 +211,49 @@ describe("sessions.search gateway method", () => {
     });
   });
 
-  it("hides a retired session whose visibility changes while its transcript is searched", async () => {
-    await withOpenClawTestState(profileState, async () => {
-      const { viewer, other } = await useRestrictedSearchMetadata("view");
-      using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
-      const sessionKey = "agent:main:retained";
-      const entry = {
-        sessionId: "retained-session",
-        updatedAt: 1,
-        visibility: "shared" as const,
-        createdActor: { type: "human" as const, source: "profile" as const, id: other.id },
-      };
-      replaceSessionEntrySync({ agentId: "main", sessionKey }, entry);
-      cfg = { ...cfg, agents: { ownership: "explicit", entries: { research: {} } } };
-      setRuntimeConfigSnapshot(cfg);
-      searchSessionTranscriptsMock.mockImplementationOnce(() => {
-        replaceSessionEntrySync({ agentId: "main", sessionKey }, { ...entry, visibility: "draft" });
-        return {
-          hits: [{ sessionKey, sessionId: entry.sessionId, messageId: "private", score: 1 }],
-          indexing: false,
+  it.each([false, true])(
+    "hides a retired session whose visibility changes during search (batch=%s)",
+    async (batch) => {
+      await withOpenClawTestState(profileState, async () => {
+        const { viewer, other } = await useRestrictedSearchMetadata("view");
+        using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
+        const sessionKey = "agent:main:retained";
+        const entry = {
+          sessionId: "retained-session",
+          updatedAt: 1,
+          visibility: "shared" as const,
+          createdActor: { type: "human" as const, source: "profile" as const, id: other.id },
         };
+        replaceSessionEntrySync({ agentId: "main", sessionKey }, entry);
+        cfg = { ...cfg, agents: { ownership: "explicit", entries: { research: {} } } };
+        setRuntimeConfigSnapshot(cfg);
+        searchSessionTranscriptsMock.mockImplementation(({ query }: { query: string }) => {
+          // The first query can finish while still visible; the later query revokes sharing.
+          if (!batch || query === "later") {
+            replaceSessionEntrySync(
+              { agentId: "main", sessionKey },
+              { ...entry, visibility: "draft" },
+            );
+          }
+          return {
+            hits: [{ sessionKey, sessionId: entry.sessionId, messageId: "private", score: 1 }],
+            indexing: false,
+          };
+        });
+
+        const respond = await callSearch(
+          { agentId: "main", ...(batch ? { queries: ["needle", "later"] } : { query: "needle" }) },
+          ["operator.read"],
+          viewer.id,
+        );
+
+        expect(respond).toHaveBeenCalledWith(
+          true,
+          batch ? { states: [{ results: [] }, { results: [] }] } : { results: [] },
+        );
       });
-
-      const respond = await callSearch(
-        { agentId: "main", query: "needle" },
-        ["operator.read"],
-        viewer.id,
-      );
-
-      expect(respond).toHaveBeenCalledWith(true, { results: [] });
-    });
-  });
+    },
+  );
 
   it("validates params and rejects whitespace-only queries", async () => {
     const invalidLimit = await callSearch({ query: "needle", limit: 26 });

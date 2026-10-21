@@ -45,6 +45,22 @@ returns at most 25 hits. The tool trims each excerpt to 300 UTF-16 code units
 plus an ellipsis when needed, within a 32 KiB result budget. Query words are
 literal text; punctuation does not become database query syntax.
 
+Use `query` for one search, or `queries` for one to eight searches in one tool call.
+Batch mode shares visible-session discovery; each query keeps its own `limit`
+(default 10, maximum 25). Hits carry a zero-based `queryIndex`, alongside the
+usual session and message provenance. `indexingQueries` and `truncatedQueries`
+identify incomplete queries. An empty result for an incomplete query does not
+prove that no matching conversation exists.
+
+Batch discovery rotates active and archived pages, stopping after 16 metadata
+pages. Search rotates agent chunks, with a total budget of 48 query/chunk reads.
+The complete pretty-printed batch response, including status and link guidance,
+fits within 32 KiB; result selection rotates queries so one query cannot consume
+the entire envelope. Narrow an incomplete search with `sessionKey` or more
+specific keywords. These bounds apply to batch mode; scalar and Control UI scope
+searches retain their existing behavior. Batching avoids repeated discovery but
+does not imply lower latency than parallel scalar calls.
+
 Each transcript search request allows up to 90 seconds, leaving dispatch and
 authorization headroom around the reader's 60-second budget, including worker admission.
 If it times out, retry `sessions_search` with a `sessionKey` to search one session

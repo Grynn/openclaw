@@ -1818,6 +1818,11 @@ export function isSessionsSearchParams(
 ): value is import("typebox").Static<
   typeof import("../../schema-modules.js").SessionsSearchParamsSchema
 >;
+export function isSessionsSearchBatchResult(
+  value: unknown,
+): value is import("typebox").Static<
+  typeof import("../../schema-modules.js").SessionsSearchBatchResultSchema
+>;
 export function isSessionsCleanupParams(
   value: unknown,
 ): value is import("typebox").Static<

@@ -172,6 +172,7 @@ export {
   SessionsSearchHitSchema,
   SessionsSearchParamsSchema,
   SessionsSearchResultSchema,
+  SessionsSearchBatchResultSchema,
   SessionsCleanupParamsSchema,
   SessionsStorageParamsSchema,
   SessionsStorageStatusResultSchema,

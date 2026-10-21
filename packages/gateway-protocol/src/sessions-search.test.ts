@@ -9,6 +9,7 @@ describe("session transcript search protocol", () => {
     });
     for (const value of [
       search(),
+      { queries: ["deployment", "reliability"], sessionKeys: ["agent:work:main"] },
       search({ scope: {} }),
       search({
         scope: {
@@ -42,6 +43,13 @@ describe("session transcript search protocol", () => {
       search({ limit: 26 }),
       { query: "" },
       { query: "x".repeat(4097) },
+      {},
+      { query: "needle", queries: ["other"] },
+      { queries: [] },
+      { queries: ["needle"], scope: {} },
+      { queries: ["needle", ""] },
+      { queries: ["x".repeat(4097)] },
+      { queries: Array.from({ length: 9 }, () => "needle") },
     ]) {
       expect(validateSessionsSearchParams(value)).toBe(false);
     }

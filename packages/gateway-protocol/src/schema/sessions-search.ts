@@ -44,10 +44,20 @@ export const SessionsSearchParamsSchema = Object.assign(
         ]).properties,
       ),
     ),
-    query: Type.String({ minLength: 1, maxLength: 4096 }),
+    query: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+    queries: Type.Optional(
+      Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { minItems: 1, maxItems: 8 }),
+    ),
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 25 })),
   }),
   {
+    oneOf: [
+      { required: ["query"], not: { required: ["queries"] } },
+      {
+        required: ["queries"],
+        not: { anyOf: [{ required: ["query"] }, { required: ["scope"] }] },
+      },
+    ],
     not: {
       required: ["scope"],
       anyOf: [{ required: ["agentId"] }, { required: ["sessionKeys"] }],
@@ -76,6 +86,12 @@ export const SessionsSearchResultSchema = closedObject({
   truncated: Type.Optional(Type.Boolean()),
 });
 
+/** Query-order states share one final authorization check over the whole batch. */
+export const SessionsSearchBatchResultSchema = closedObject({
+  states: Type.Array(SessionsSearchResultSchema, { minItems: 1, maxItems: 8 }),
+});
+
 export type SessionsSearchParams = Static<typeof SessionsSearchParamsSchema>;
 export type SessionsSearchHit = Static<typeof SessionsSearchHitSchema>;
 export type SessionsSearchResult = Static<typeof SessionsSearchResultSchema>;
+export type SessionsSearchBatchResult = Static<typeof SessionsSearchBatchResultSchema>;

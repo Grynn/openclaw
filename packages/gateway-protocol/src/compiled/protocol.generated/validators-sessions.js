@@ -13,6 +13,7 @@ export {
   isSessionsCatalogArchiveParams,
   isSessionsCatalogStartTerminalParams,
   isSessionsSearchParams,
+  isSessionsSearchBatchResult,
   isSessionsCleanupParams,
   isSessionsStorageParams,
   isSessionsPreviewParams,

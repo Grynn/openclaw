@@ -71,6 +71,10 @@ export const validateSessionsSearchParams = createProtocolValidator(
   S.SessionsSearchParamsSchema,
   Checks.isSessionsSearchParams,
 );
+export const validateSessionsSearchBatchResult = createProtocolValidator(
+  S.SessionsSearchBatchResultSchema,
+  Checks.isSessionsSearchBatchResult,
+);
 export const validateSessionsCleanupParams = createProtocolValidator(
   S.SessionsCleanupParamsSchema,
   Checks.isSessionsCleanupParams,

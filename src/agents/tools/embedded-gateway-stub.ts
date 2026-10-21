@@ -2,6 +2,7 @@ import { normalizeFastMode } from "@openclaw/normalization-core/string-coerce";
 import type {
   SessionsListParams,
   SessionsResolveParams,
+  SessionsSearchResult,
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { CallGatewayOptions } from "../../gateway/call.js";
 import type { SessionRowProjection } from "../../gateway/session-row-projection.js";
@@ -12,10 +13,9 @@ import {
   readPositiveIntegerParam,
   readToolStringParam,
 } from "./common.js";
+import { readSearchQueries } from "./sessions-search-batch.js";
 
 type EmbeddedCallGateway = <T = Record<string, unknown>>(opts: CallGatewayOptions) => Promise<T>;
-
-const SESSIONS_SEARCH_MAX_QUERY_CHARS = 4096;
 
 const getRuntime = createLazyPromise(() => import("./embedded-gateway-stub.runtime.js"));
 let sessionProjection: Promise<SessionRowProjection> | undefined;
@@ -77,12 +77,9 @@ async function handleSessionsResolve(params: Record<string, unknown>) {
 async function handleSessionsSearch(params: Record<string, unknown>) {
   const rt = await getRuntime();
   const cfg = rt.getRuntimeConfig();
-  const query = typeof params.query === "string" ? params.query.trim() : "";
-  if (!query) {
-    throw new Error("query must not be empty");
-  }
-  if (query.length > SESSIONS_SEARCH_MAX_QUERY_CHARS) {
-    throw new Error(`query must not exceed ${SESSIONS_SEARCH_MAX_QUERY_CHARS} characters`);
+  const { queries, batch } = readSearchQueries(params);
+  if (batch && params.scope !== undefined) {
+    throw new Error("queries cannot be combined with scope");
   }
   if (params.agentId !== undefined && params.sessionKeys === undefined) {
     throw new Error("agentId requires sessionKeys");
@@ -123,21 +120,29 @@ async function handleSessionsSearch(params: Record<string, unknown>) {
     requestedAgentId ??
     agentIds.values().next().value ??
     rt.resolveSessionAgentId({ sessionKey: "main", config: cfg });
-  const result = await rt.searchSessionTranscripts({
-    agentId,
-    storePath: rt.resolveSessionStorePathCore(cfg.session?.store, { agentId }),
-    query,
-    limit: readPositiveIntegerParam(params, "limit"),
-    sessionKeys,
-  });
-  return {
-    results: result.hits,
-    ...(result.archivedTranscriptsExcluded
-      ? { archivedTranscriptsExcluded: result.archivedTranscriptsExcluded }
-      : {}),
-    ...(result.indexing ? { indexing: true } : {}),
-    ...(result.truncated ? { truncated: true } : {}),
-  };
+  const states = await Promise.all(
+    queries.map(async (query) => {
+      const result = await rt.searchSessionTranscripts({
+        agentId,
+        storePath: rt.resolveSessionStorePathCore(cfg.session?.store, { agentId }),
+        query,
+        limit: readPositiveIntegerParam(params, "limit"),
+        sessionKeys,
+      });
+      const state: SessionsSearchResult = { results: result.hits };
+      if (result.archivedTranscriptsExcluded) {
+        state.archivedTranscriptsExcluded = result.archivedTranscriptsExcluded;
+      }
+      if (result.indexing) {
+        state.indexing = true;
+      }
+      if (result.truncated) {
+        state.truncated = true;
+      }
+      return state;
+    }),
+  );
+  return batch ? { states } : states[0];
 }
 
 async function handleChatHistory(params: Record<string, unknown>) {
