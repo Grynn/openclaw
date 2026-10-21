@@ -60,10 +60,10 @@ function makeTool(manager: TerminalSessionManager, options: TerminalToolOptions 
   });
 }
 
-async function openAgentTerminal() {
+async function openAgentTerminal(scrollbackChars?: number) {
   const backend = makeFakePty();
   const spawn = vi.fn(async () => backend);
-  const manager = new TerminalSessionManager({ emit: vi.fn(), spawn });
+  const manager = new TerminalSessionManager({ emit: vi.fn(), spawn, scrollbackChars });
   const opened = await manager.open(baseOpenRequest({ owner: agentOwner }));
   if (!opened.ok) {
     throw new Error("expected operator-opened terminal");
@@ -123,6 +123,8 @@ describe("terminal tool", () => {
       "data",
       "cols",
       "rows",
+      "cursor",
+      "maxChars",
     ]);
     expect(schema.properties).not.toHaveProperty("command");
     expect(schema.properties).not.toHaveProperty("cwd");
@@ -224,7 +226,7 @@ describe("terminal tool", () => {
 
     expect(tool.outputSchema).toBeDefined();
     expect(compactToolOutputHint(tool.outputSchema)).toBe(
-      "{ sessions: Array<{ agentId: string; attached: boolean; createdAtMs: number; cwd: string; owner: string; sessionId: string; shell: string }> } | { sessionId: string; text: string } | { ok: true }",
+      "{ sessions: Array<{ agentId: string; attached: boolean; createdAtMs: number; cwd: string; owner: string; sessionId: string; shell: string }> } | { cursor: number; endCursor: number; hasMore: boolean; running: true; sessionId: string; startCursor: number; text: string; truncated: boolean } | { ok: true }",
     );
 
     const listed = await tool.execute("list", { action: "list" });
@@ -244,6 +246,12 @@ describe("terminal tool", () => {
     expect(read.details).toEqual({
       sessionId: opened.sessionId,
       text: expect.stringContaining("ready\n"),
+      startCursor: 0,
+      cursor: expect.any(Number),
+      endCursor: expect.any(Number),
+      truncated: false,
+      hasMore: false,
+      running: true,
     });
     expect((read.details as { text: string }).text).not.toContain("\u001b");
     expect(Value.Check(tool.outputSchema!, read.details)).toBe(true);
@@ -295,6 +303,110 @@ describe("terminal tool", () => {
       details: { sessions: [] },
     });
     expect(manager.size).toBe(2);
+  });
+
+  it("bounds the default read to the latest 32K raw UTF-16 units", async () => {
+    const { backend, manager, sessionId } = await openAgentTerminal();
+    backend.emitData(`stale${"x".repeat(32 * 1024)}`);
+
+    const result = await makeTool(manager).execute("read", { action: "read", sessionId });
+
+    expect(result.details).toEqual({
+      sessionId,
+      text: "x".repeat(32 * 1024),
+      startCursor: 5,
+      cursor: 32 * 1024 + 5,
+      endCursor: 32 * 1024 + 5,
+      truncated: true,
+      hasMore: false,
+      running: true,
+    });
+  });
+
+  it("pages new output from a prior read cursor without replaying its tail", async () => {
+    const { backend, manager, sessionId } = await openAgentTerminal();
+    const tool = makeTool(manager);
+    backend.emitData("abcdef");
+
+    const tail = await tool.execute("tail", { action: "read", sessionId, maxChars: 3 });
+    expect(tail.details).toEqual({
+      sessionId,
+      text: "def",
+      startCursor: 3,
+      cursor: 6,
+      endCursor: 6,
+      truncated: true,
+      hasMore: false,
+      running: true,
+    });
+    backend.emitData("ghi");
+    const page = await tool.execute("page", {
+      action: "read",
+      sessionId,
+      cursor: 6,
+      maxChars: 2,
+    });
+    expect(page.details).toMatchObject({
+      text: "gh",
+      startCursor: 6,
+      cursor: 8,
+      endCursor: 9,
+      truncated: false,
+      hasMore: true,
+    });
+    const last = await tool.execute("last", { action: "read", sessionId, cursor: 8 });
+    expect(last.details).toMatchObject({
+      text: "i",
+      startCursor: 8,
+      cursor: 9,
+      endCursor: 9,
+      truncated: false,
+      hasMore: false,
+    });
+  });
+
+  it("reports cursor eviction and rejects reads beyond the terminal end", async () => {
+    const { backend, manager, sessionId } = await openAgentTerminal(4);
+    const tool = makeTool(manager);
+    backend.emitData("abcdef");
+
+    const result = await tool.execute("evicted", { action: "read", sessionId, cursor: 0 });
+    expect(result.details).toMatchObject({
+      text: "cdef",
+      startCursor: 2,
+      cursor: 6,
+      endCursor: 6,
+      truncated: true,
+      hasMore: false,
+    });
+    await expect(tool.execute("future", { action: "read", sessionId, cursor: 7 })).rejects.toThrow(
+      "cursor 7 is beyond terminal end cursor 6",
+    );
+  });
+
+  it.each([
+    { raw: "🦞ok", cursor: 0, maxChars: 1, text: "🦞", start: 0, end: 2 },
+    { raw: "🦞ok", cursor: 1, maxChars: 2, text: "ok", start: 2, end: 4 },
+    { raw: "x🦞y", cursor: 0, maxChars: 2, text: "x", start: 0, end: 1 },
+    { raw: "x🦞", cursor: undefined, maxChars: 1, text: "", start: 3, end: 3 },
+  ])("keeps Unicode intact at cursor $cursor with budget $maxChars", async (testCase) => {
+    const { backend, manager, sessionId } = await openAgentTerminal();
+    backend.emitData(testCase.raw);
+
+    const result = await makeTool(manager).execute("unicode", {
+      action: "read",
+      sessionId,
+      cursor: testCase.cursor,
+      maxChars: testCase.maxChars,
+    });
+
+    expect(result.details).toMatchObject({
+      text: testCase.text,
+      startCursor: testCase.start,
+      cursor: testCase.end,
+      endCursor: testCase.raw.length,
+      hasMore: testCase.end < testCase.raw.length,
+    });
   });
 
   it.each([
