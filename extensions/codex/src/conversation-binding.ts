@@ -357,6 +357,7 @@ async function runBoundTurn(params: {
                     conversationStartId: binding.conversationStartId,
                     conversationSourceTransferComplete: binding.conversationSourceTransferComplete,
                     historyCoveredThrough: binding.historyCoveredThrough,
+                    transcriptCoverage: binding.transcriptCoverage,
                   },
                 }
               : { kind: "patch", threadId: binding.threadId, patch },

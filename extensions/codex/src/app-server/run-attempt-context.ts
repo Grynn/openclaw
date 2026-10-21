@@ -63,8 +63,10 @@ export async function prepareCodexAttemptContext(
     sessionKey: contextSessionKey,
     sessionTarget: params.sessionTarget,
   };
+  // Keep the row admitted before native prompt annotation. Annotation may
+  // rotate the transcript generation, but exact coverage must retain this owner.
+  const transcriptReadFence = params.userTurnTranscriptRecorder?.getAdmissionReceipt();
   const readFencedHistory = async () => {
-    const transcriptReadFence = params.userTurnTranscriptRecorder?.getAdmissionReceipt();
     const messages = await readMirroredSessionHistoryMessages({
       ...activeTranscriptTarget,
       signal: connection.runAbortController.signal,
@@ -151,7 +153,7 @@ export async function prepareCodexAttemptContext(
       sessionFile: runtimeParams.sessionFile,
       sessionTarget: params.sessionTarget,
       runtimeContext: buildActiveContextEngineRuntimeContext(),
-      transcriptReadFence: params.userTurnTranscriptRecorder?.getAdmissionReceipt(),
+      transcriptReadFence,
       contextEngineHostSupport: CODEX_APP_SERVER_CONTEXT_ENGINE_HOST,
       providerId: effectiveRuntimeProviderId,
       requestedModelId: usesSupervisionConnection ? undefined : params.requestedModelId,
@@ -256,6 +258,7 @@ export async function prepareCodexAttemptContext(
     runtime,
     attemptTools,
     activeTranscriptTarget,
+    transcriptReadFence,
     historyState,
     hookContext,
     hookContextWindowFields,

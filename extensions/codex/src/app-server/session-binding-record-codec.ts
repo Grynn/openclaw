@@ -55,6 +55,17 @@ const contextEngineSchema = z
     projection: contextEngineProjectionSchema.optional().catch(undefined),
   })
   .strict();
+const transcriptCoverageSchema = z
+  .object({
+    schemaVersion: z.literal(2),
+    threadId: z.string().trim().min(1),
+    runId: z.string().trim().min(1),
+    idempotencyKey: z.string().trim().min(1),
+    mirrorIdentity: z.string().trim().min(1),
+    mirrorSourceFingerprint: z.string().regex(/^[a-f0-9]{32}$/u),
+    messageFingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
+  })
+  .strict();
 const destructiveApprovalModeSchema = z.enum(["allow", "deny", "auto", "ask"]).optional();
 // Account-connected apps are admitted without a plugin package; both entry
 // shapes must round-trip or stored policy context silently drops on read.
@@ -175,6 +186,9 @@ const threadBindingSchema = z
     conversationIncognito: z.literal(true).optional(),
     conversationSourceTransferComplete: z.literal(true).optional().catch(undefined),
     historyCoveredThrough: optionalTimestampSchema,
+    // Exact host transcript row through which this native thread has already
+    // consumed history. Unknown/older receipt versions are ignored on read.
+    transcriptCoverage: transcriptCoverageSchema.optional().catch(undefined),
     // Observed density of the last completed turn on this thread: prompt chars
     // actually sent vs provider-reported input tokens. Read by the no-engine
     // continuity cap so the next projection is sized from this session's real
@@ -225,6 +239,8 @@ const threadBindingSchema = z
 
 /** Durable Codex thread facts. Storage identity and schema stay outside this domain value. */
 export type CodexAppServerThreadBinding = z.infer<typeof threadBindingSchema>;
+/** Exact admitted host row already represented by one completed native turn. */
+export type CodexTranscriptCoverage = z.infer<typeof transcriptCoverageSchema>;
 /** Persisted source snapshot and orphan-cleanup state for a supervised native branch. */
 export type CodexAppServerPendingSupervisionBranch = z.infer<typeof pendingSupervisionBranchSchema>;
 

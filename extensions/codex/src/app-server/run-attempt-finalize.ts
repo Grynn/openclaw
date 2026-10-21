@@ -39,6 +39,10 @@ import { clearCodexBindingForClient } from "./session-binding.js";
 import { captureCodexSettledTurnFinalizationContext } from "./settled-turn-context.js";
 import { normalizeCodexTrajectoryError, recordCodexTrajectoryCompletion } from "./trajectory.js";
 import {
+  buildCodexCompletedCoveragePatch,
+  buildCodexTranscriptCoverage,
+} from "./transcript-coverage.js";
+import {
   buildCodexMirrorDedupeIdentity,
   buildCodexMirrorIdempotencyKey,
 } from "./transcript-mirror-attestation.js";
@@ -80,6 +84,7 @@ export async function finalizeCodexAttempt(
     agentDir,
     attemptStartedAt,
     startupAuthProfileId,
+    mutable,
   } = connection;
   const { toolBridge, toolState } = attemptTools;
   const canClearBindingForRecovery = (operation: string) =>
@@ -533,6 +538,8 @@ export async function finalizeCodexAttempt(
       !resourceState.nativeSettlementExpired
     ) {
       try {
+        params.hostCapabilities.assertActive();
+        connection.assertCurrent();
         // Only no-engine continuity prompts may calibrate their measured history.
         // Billing spans every model call; density needs only the latest full prompt.
         const continuityCalibration = context.promptState.noEngineContinuityProjectionApplied
@@ -544,6 +551,21 @@ export async function finalizeCodexAttempt(
                   : 0,
             })
           : undefined;
+        const transcriptCoverage = buildCodexTranscriptCoverage({
+          admissionBeforeAnnotation: context.transcriptReadFence,
+          admissionAfterAnnotation: params.userTurnTranscriptRecorder?.getAdmissionReceipt(),
+          persistedMessage: params.userTurnTranscriptRecorder?.getPersistedMessage?.(),
+          threadId: resourceState.thread.threadId,
+          turnId: activeTurnId,
+          runId: params.runId,
+        });
+        const coveragePatch = buildCodexCompletedCoveragePatch({
+          hasRecorder: params.userTurnTranscriptRecorder !== undefined,
+          coverage: transcriptCoverage,
+          startupBinding: mutable.startupBinding,
+          threadId: resourceState.thread.threadId,
+          completedAt: new Date().toISOString(),
+        });
         await bindingStore.mutate(
           bindingIdentity,
           {
@@ -551,7 +573,7 @@ export async function finalizeCodexAttempt(
             threadId: resourceState.thread.threadId,
             clientId: resourceState.thread.clientId,
             patch: {
-              historyCoveredThrough: new Date().toISOString(),
+              ...coveragePatch,
               ...(continuityCalibration ? { continuityCalibration } : {}),
             },
           },
