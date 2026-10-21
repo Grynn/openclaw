@@ -21,6 +21,7 @@ import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 export type { PreparedSessionTranscriptHydration } from "./session-history-read.types.js";
 
 export type SessionTranscriptMaintenanceRead =
+  | { operation: "latest-active-control"; customType: string }
   | { operation: "previous"; beforeSeq: number }
   | { operation: "identity"; eventId: string }
   | { operation: "version" }
@@ -41,6 +42,7 @@ export type SessionTranscriptMaintenanceRead =
 
 export type SessionTranscriptMaintenanceFacts = {
   kind: "transcript-maintenance";
+  latestControl?: "custom" | "compaction" | "reset";
   previous?: TranscriptEvent;
   seq?: number;
   version?: SessionTranscriptContextVersion;

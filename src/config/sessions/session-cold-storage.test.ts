@@ -890,6 +890,29 @@ describe("cold transcript storage workers", () => {
     },
   );
 
+  it("restores archived control facts through the hydration reader", async () => {
+    const fixture = await createFixture();
+    const scope = { ...fixture.scope, sessionId: currentId };
+    const customType = "openclaw:bootstrap-context:full";
+    await appendTranscriptEvent(scope, {
+      type: "custom",
+      id: "bootstrap-completed",
+      parentId: null,
+      customType,
+      data: { context: "stable bootstrap ".repeat(1000) },
+    });
+    setTranscriptActivity(fixture.options, currentId);
+    await expectCounts(maintain(fixture), 2);
+    expect(readSessionColdTranscript(fixture.database(), currentId)).toBeDefined();
+
+    const reader = prepareSessionTranscriptHydration(scope);
+    await expect(
+      reader.readMaintenance({ operation: "latest-active-control", customType }),
+    ).resolves.toEqual({ kind: "transcript-maintenance", latestControl: "custom" });
+    reader.assertCurrent();
+    expect(readSessionColdTranscript(fixture.database(), currentId)).toBeUndefined();
+  });
+
   it("archives an inactive current transcript and restores its original bytes before appending", async () => {
     const fixture = await createFixture();
     const scope = { ...fixture.scope, sessionId: currentId };
