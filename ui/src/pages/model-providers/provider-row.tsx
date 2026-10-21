@@ -14,10 +14,12 @@ import { t } from "../../lib/reactive/i18n.ts";
 import type { ModelProviderCard, ModelProviderRemovalTarget } from "./data.ts";
 import { apiKeySource, profileIdentity, ProviderProfiles } from "./profiles-view.tsx";
 import {
+  canProbeProvider,
   isProviderUsable,
   needsAuthAttention,
   renderMutationMessage,
   renderProviderStatus,
+  runtimeManagedCredentialParts,
 } from "./view-status.tsx";
 import type { ModelProvidersViewProps } from "./view-types.ts";
 
@@ -45,7 +47,7 @@ function renderCredentialSummary(card: ModelProviderCard, agentLabel: string) {
   const oauthCount = card.profiles.filter((profile) => profile.type === "oauth").length;
   const tokenCount = card.profiles.filter((profile) => profile.type === "token").length;
   const apiProfileCount = card.profiles.filter((profile) => profile.type === "api_key").length;
-  const parts = [];
+  const parts = [...runtimeManagedCredentialParts(card)];
   if (oauthCount > 0) {
     parts.push(t("modelProviders.credentials.oauth", { count: String(oauthCount) }));
   }
@@ -274,7 +276,7 @@ function ProviderActions(props: ModelProvidersViewProps & { card: ModelProviderC
           {connectLabel()}
         </button>
       </Show>
-      <Show when={isProviderUsable(props.card)}>
+      <Show when={canProbeProvider(props.card)}>
         <button
           class="btn btn--sm"
           disabled={
@@ -346,6 +348,7 @@ function credentialLine(card: ModelProviderCard): string | undefined {
   }
   return (
     apiKeySource(card) ??
+    runtimeManagedCredentialParts(card)[0] ??
     (isProviderUsable(card) ? t("modelProviders.row.managedOutside") : undefined)
   );
 }
