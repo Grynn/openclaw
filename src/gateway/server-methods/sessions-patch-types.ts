@@ -28,6 +28,7 @@ export type MutationOutcome =
       applied: boolean;
       accessChanged: boolean;
       entry: SessionEntry;
+      modelSelectionSessionOnly?: boolean;
     }
   | { ok: false; error: ErrorShape };
 

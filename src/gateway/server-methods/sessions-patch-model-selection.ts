@@ -35,7 +35,10 @@ import type { SessionEntry } from "../../config/sessions.js";
 import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth-profile-override-provenance.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { isSessionStatusModelPatchOrigin } from "../session-model-patch-origin.js";
+import {
+  isAgentSessionModelPatchOrigin,
+  isSessionStatusModelPatchOrigin,
+} from "../session-model-patch-origin.js";
 import { SessionMutationAuthorizationChangedError } from "../session-sharing.js";
 import type { SessionWorkerPlacementContext } from "../worker-environments/session-placement-lifecycle.js";
 import { resolveGatewayModelSelectionPolicy } from "./session-model-selection-policy.js";
@@ -48,11 +51,14 @@ export function persistSessionPatchModelSelection(params: {
   patch: SessionsPatchParams;
   sessionKey: string;
   targetAgentId: string;
+  modelSelectionSessionOnly?: boolean;
 }): void {
-  // Combined execution-policy recovery is explicitly scoped to this chat, even
-  // when ordinary model selections normally update agent/global defaults.
+  // Agent/delegated selections and execution-policy recovery are scoped to this
+  // chat, even when operator model selections update agent/global defaults.
   if (
     isSessionStatusModelPatchOrigin() ||
+    isAgentSessionModelPatchOrigin() ||
+    params.modelSelectionSessionOnly ||
     typeof params.patch.model !== "string" ||
     params.patch.sandboxMode !== undefined ||
     params.patch.nativeRuntimeConsent !== undefined ||

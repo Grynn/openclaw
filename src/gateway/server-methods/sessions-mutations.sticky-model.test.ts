@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
+import { upsertAcpSessionMeta } from "../../acp/runtime/session-meta.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.js";
 import { enqueueFollowupRun } from "../../auto-reply/reply/queue/enqueue.js";
 import { clearFollowupQueue } from "../../auto-reply/reply/queue/state.js";
@@ -66,6 +67,7 @@ vi.mock("../../config/config.js", async () => {
 
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { createGatewaySession } from "../session-create-service.js";
+import { withAgentSessionModelPatchOrigin } from "../session-model-patch-origin.js";
 import { TerminalSessionManager } from "../terminal/session-manager.js";
 import { flushPendingSessionsChangedEvents } from "./session-change-event.js";
 import { sessionMutationHandlers } from "./sessions-mutations.js";
@@ -164,10 +166,11 @@ async function patchSession(
   scopes = ["operator.admin"],
   requestContext: GatewayRequestContext = context(),
   requestClient: GatewayClient = client(scopes),
+  method: "sessions.patch" | "sessions.patchMany" = "sessions.patch",
 ) {
   const responses: Parameters<RespondFn>[] = [];
-  await sessionMutationHandlers["sessions.patch"]?.({
-    req: { type: "req", id: "sticky-model-patch", method: "sessions.patch", params },
+  await sessionMutationHandlers[method]?.({
+    req: { type: "req", id: "sticky-model-patch", method, params },
     params,
     client: requestClient,
     context: requestContext,
@@ -313,6 +316,90 @@ describe("sessions.patch sticky model persistence", () => {
     patchSession,
     configMutationRequested: () => effects.mutateConfigFileWithRetry.mock.calls.length > 0,
     getPersistedConfig: () => persistedConfig,
+  });
+  it.each<{
+    name: string;
+    entry: Partial<SessionEntry>;
+    agentOrigin?: boolean;
+    acp?: boolean;
+    persists: boolean;
+  }>([
+    { name: "agent-origin", entry: {}, agentOrigin: true, persists: false },
+    { name: "depth-child", entry: { spawnDepth: 1 }, persists: false },
+    { name: "legacy-child", entry: { spawnedBy: "agent:main:main" }, persists: false },
+    { name: "subagent:key-child", entry: {}, persists: false },
+    {
+      name: "acp-child",
+      entry: { parentSessionKey: "agent:main:main" },
+      acp: true,
+      persists: false,
+    },
+    { name: "acp-root", entry: {}, acp: true, persists: true },
+    { name: "navigation-child", entry: { parentSessionKey: "agent:main:main" }, persists: true },
+    {
+      name: "explicit-root-depth",
+      entry: { spawnDepth: 0, spawnedBy: "agent:main:main" },
+      persists: true,
+    },
+  ])(
+    "keeps delegated selections local without restricting operator roots: $name",
+    async ({ name, entry, agentOrigin, acp, persists }) => {
+      cfg.agents!.defaults!.modelSelectionScope = "global";
+      const sessionKey = `agent:main:${name}`;
+      await seedSession(sessionKey, entry);
+      if (acp) {
+        await upsertAcpSessionMeta({
+          cfg,
+          agentId: "main",
+          sessionKey,
+          mutate: () => ({
+            backend: "acpx",
+            agent: "main",
+            runtimeSessionName: name,
+            mode: "persistent",
+            state: "idle",
+            lastActivityAt: 1,
+          }),
+        });
+      }
+      const patch = () => patchSession({ key: sessionKey, model: "openai/gpt-5.6-sol" });
+      const response = await (agentOrigin ? withAgentSessionModelPatchOrigin(patch) : patch());
+      expect(response[0]).toBe(true);
+      expect(readSession(sessionKey)).toMatchObject(selectedModel);
+      if (persists) {
+        await vi.waitFor(() =>
+          expect(persistedConfig?.agents?.defaults?.model).toBe("openai/gpt-5.6-sol"),
+        );
+      } else {
+        expect(effects.mutateConfigFileWithRetry).not.toHaveBeenCalled();
+      }
+      if (agentOrigin) {
+        expect(readSession(sessionKey)?.modelFallback).toMatchObject({ source: "agent-patch" });
+      }
+    },
+  );
+
+  it("keeps delegated selections local in patchMany without suppressing an operator root", async () => {
+    cfg.agents!.defaults!.modelSelectionScope = "agent";
+    const rootKey = "agent:main:bulk-root";
+    const childKey = "agent:main:bulk-child";
+    await seedSession(rootKey);
+    await seedSession(childKey, { spawnDepth: 1 });
+    const response = await patchSession(
+      { targets: [{ key: rootKey }, { key: childKey }], patch: { model: "openai/gpt-5.6-sol" } },
+      ["operator.admin"],
+      context(),
+      client(["operator.admin"]),
+      "sessions.patchMany",
+    );
+    expect(response[0]).toBe(true);
+    expect(readSession(rootKey)).toMatchObject(selectedModel);
+    expect(readSession(childKey)).toMatchObject(selectedModel);
+    expect(effects.mutateConfigFileWithRetry).toHaveBeenCalledOnce();
+    await vi.waitFor(() =>
+      expect(persistedConfig?.agents?.entries?.main?.model).toBe("openai/gpt-5.6-sol"),
+    );
+    expect(persistedConfig?.agents?.defaults?.model).toBe(defaultConfig.agents.defaults.model);
   });
   it.each([
     { scope: "agent", agentId: "main", model: "anthropic/claude-opus-4-6" },
