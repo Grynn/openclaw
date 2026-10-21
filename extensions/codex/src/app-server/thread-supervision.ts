@@ -340,6 +340,7 @@ export async function materializePendingSupervisionBranch(
             model: nativeModel,
             modelProvider: bindingModelProvider,
             historyCoveredThrough,
+            transcriptCoverage: undefined,
           },
         },
         params.throwIfAborted,
@@ -364,7 +365,8 @@ export async function materializePendingSupervisionBranch(
         current.pendingSupervisionBranch === undefined &&
         current.model === nativeModel &&
         current.modelProvider === bindingModelProvider &&
-        current.historyCoveredThrough === historyCoveredThrough
+        current.historyCoveredThrough === historyCoveredThrough &&
+        current.transcriptCoverage === undefined
       ) {
         committed = true;
       } else {
@@ -404,6 +406,7 @@ export async function materializePendingSupervisionBranch(
       modelProvider: bindingModelProvider,
       historyCoveredThrough,
       preparedOpenClawBaseInstructions: openClawBaseInstructions,
+      transcriptCoverage: undefined,
       lifecycle: { action: "forked" },
     };
   } catch (error) {

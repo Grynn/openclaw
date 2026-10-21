@@ -29,16 +29,14 @@ import { joinPresentSections, renderCodexThreadPolicy } from "./developer-instru
 import { flattenCodexDynamicToolFunctions } from "./protocol.js";
 import type { CodexAttemptContext } from "./run-attempt-context.js";
 import { estimateCodexAppServerProjectedTurnTokens } from "./run-attempt-lifecycle.js";
-import {
-  resolveCodexPromptContinuity,
-  selectCodexStaleBindingDelta,
-} from "./run-attempt-prompt-continuity.js";
+import { resolveCodexPromptContinuity } from "./run-attempt-prompt-continuity.js";
 import { resolveCodexShiftedPromptRanges } from "./run-attempt-prompt-ranges.js";
 import { prependCurrentInboundContext } from "./run-attempt-state.js";
 import { rotateOversizedCodexAppServerStartupBinding } from "./startup-binding.js";
 import type { CodexAppServerThreadLifecycleBinding } from "./thread-lifecycle-types.js";
 import { hasAuthoredCodexBaseInstructions } from "./thread-prompt.js";
 import { resolveCodexProjectionStartupBinding } from "./thread-restricted-resume.js";
+import { selectCodexUncoveredTranscriptMessages } from "./transcript-coverage.js";
 import { buildCodexHistoryProvenancePrefix, buildTurnCollaborationMode } from "./turn-params.js";
 
 export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
@@ -517,7 +515,17 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
   const applyResumeStaleBindingContinuityProjection = async (
     binding: NonNullable<typeof mutable.startupBinding>,
   ) => {
-    const newerVisibleMessages = selectCodexStaleBindingDelta(historyState.messages, binding);
+    const selection = selectCodexUncoveredTranscriptMessages({
+      messages: historyState.messages,
+      binding,
+    });
+    if (selection.mode === "conservative") {
+      embeddedAgentLog.warn(
+        "codex exact transcript coverage is unavailable; replaying visible context",
+        { threadId: binding.threadId },
+      );
+    }
+    const newerVisibleMessages = selection.messages;
     if (newerVisibleMessages.length === 0) {
       return false;
     }

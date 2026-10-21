@@ -40,6 +40,7 @@ import type { CodexAttemptTurnState } from "./run-attempt-turn-state.js";
 import { clearCodexBindingForClient } from "./session-binding.js";
 import { captureCodexSettledTurnFinalizationContext } from "./settled-turn-context.js";
 import { normalizeCodexTrajectoryError, recordCodexTrajectoryCompletion } from "./trajectory.js";
+import { codexAttemptCoveragePatch } from "./transcript-coverage.js";
 import {
   buildCodexMirrorDedupeIdentity,
   buildCodexMirrorIdempotencyKey,
@@ -536,6 +537,8 @@ export async function finalizeCodexAttempt(
       !resourceState.nativeSettlementExpired
     ) {
       try {
+        params.hostCapabilities.assertActive();
+        connection.assertCurrent();
         // Only no-engine continuity prompts may calibrate their measured history.
         // Billing spans every model call; density needs only the latest full prompt.
         const continuityCalibration = context.promptState.noEngineContinuityProjectionApplied
@@ -554,7 +557,7 @@ export async function finalizeCodexAttempt(
             threadId: resourceState.thread.threadId,
             clientId: resourceState.thread.clientId,
             patch: {
-              historyCoveredThrough: new Date().toISOString(),
+              ...codexAttemptCoveragePatch({ resources, connection, activeTurnId }),
               ...(continuityCalibration ? { continuityCalibration } : {}),
             },
           },
