@@ -587,7 +587,10 @@ export async function executeSessionPatchMutations(params: {
                           });
                         }
                       }
-                      projectedOutcomes.push(replacement.outcome);
+                      projectedOutcomes.push({
+                        ...replacement.outcome,
+                        modelSelectionSessionOnly: projected.modelSelectionSessionOnly,
+                      });
                     } catch (error) {
                       projectedOutcomes.push({
                         ok: false,
@@ -703,9 +706,7 @@ export async function executeSessionPatchMutations(params: {
     diagnostics: params.diagnostics,
     targets: activePrepared.flatMap((target) => {
       const outcome = outcomes[target.index];
-      return outcome?.ok && outcome.applied
-        ? [{ target, entry: outcome.entry, accessChanged: outcome.accessChanged }]
-        : [];
+      return outcome?.ok && outcome.applied ? [{ target, ...outcome }] : [];
     }),
   });
   timing?.finish();

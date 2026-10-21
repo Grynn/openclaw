@@ -23,6 +23,7 @@ export async function publishSessionPatchEffects(params: {
   targets: Array<{
     accessChanged: boolean;
     entry: SessionEntry;
+    modelSelectionSessionOnly?: boolean;
     target: {
       canonicalKey: string;
       fullPatch: SessionsPatchParams;
@@ -32,7 +33,7 @@ export async function publishSessionPatchEffects(params: {
   }>;
 }): Promise<boolean> {
   const archivedSessionKeys = new Set<string>();
-  for (const { target, entry, accessChanged } of params.targets) {
+  for (const { target, entry, accessChanged, modelSelectionSessionOnly } of params.targets) {
     triggerSessionPatchHook({
       cfg: params.cfg,
       sessionEntry: entry,
@@ -46,6 +47,7 @@ export async function publishSessionPatchEffects(params: {
       patch: target.fullPatch,
       sessionKey: target.canonicalKey,
       targetAgentId: target.targetAgentId,
+      modelSelectionSessionOnly,
     });
     emitSessionsChanged(
       params.context,
