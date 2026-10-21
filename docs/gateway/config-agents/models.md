@@ -172,6 +172,10 @@ Without owner/admin authority, bare commands remain session-only and explicit
 session-only even when this setting is configured. There are no per-agent or
 per-channel overrides of this setting.
 
+Agent-tool model patches and Gateway model updates to delegated subagent or
+parent-owned ACP sessions remain session-only. Independent ACP roots and ordinary
+navigation child sessions still follow the configured scope and operator authority.
+
 Agent and global updates can affect new and existing unpinned sessions and cron
 jobs that inherit the changed default on their next run. They do not rewrite
 other sessions' explicit model selections. `/model default -s` clears only the

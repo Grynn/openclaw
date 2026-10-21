@@ -32,6 +32,7 @@ import {
   resolveSubagentConfiguredModelSelection,
 } from "../agents/model-selection.js";
 import { resolveSessionModelRef } from "../agents/session-model-ref.js";
+import { isSubagentSessionFromEntry } from "../agents/subagents/spawn/subagent-depth-policy.js";
 import { resolveEffectiveAgentRuntime } from "../agents/thinking-runtime.js";
 import { normalizeGroupActivation } from "../auto-reply/group-activation.js";
 import {
@@ -122,7 +123,12 @@ type SessionPatchProjectionParams = {
 };
 
 type SessionPatchProjectionResult =
-  | { ok: true; entry: SessionEntry; validateModelSelection?: () => ErrorShape | undefined }
+  | {
+      ok: true;
+      entry: SessionEntry;
+      modelSelectionSessionOnly?: boolean;
+      validateModelSelection?: () => ErrorShape | undefined;
+    }
   | { ok: false; error: ErrorShape };
 
 type SessionPatchPreparation =
@@ -726,5 +732,13 @@ function* projectSessionPatchSteps(
     delete next.liveModelSwitchPending;
   }
 
-  return { ok: true, entry: next, ...(validateModelSelection ? { validateModelSelection } : {}) };
+  return {
+    ok: true,
+    entry: next,
+    // Reuse the canonical ACP join that admitted this selection; do not reload it after commit.
+    ...(typeof patch.model === "string" && isSubagentSessionFromEntry(storeKey, next, acpMeta)
+      ? { modelSelectionSessionOnly: true }
+      : {}),
+    ...(validateModelSelection ? { validateModelSelection } : {}),
+  };
 }
