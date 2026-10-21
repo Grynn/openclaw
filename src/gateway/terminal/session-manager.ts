@@ -37,7 +37,9 @@ import type {
 import {
   terminalAttachSummary,
   terminalSessionRecipientIds,
+  terminalSnapshotRange,
   terminalSessionSummary,
+  type TerminalSnapshotRange,
 } from "./session-projection.js";
 import {
   TERMINAL_EVENT_DATA,
@@ -453,6 +455,15 @@ export class TerminalSessionManager {
   /** Raw buffer for an agent-owned session, guarded by the caller session key. */
   snapshotAgent(owner: AgentTerminalOwner, sessionId: string): string | undefined {
     return this.ownedSession(owner, sessionId)?.buffer.snapshot();
+  }
+
+  /** Raw agent-owned scrollback with cursors from the existing output owner. */
+  snapshotAgentRange(
+    owner: AgentTerminalOwner,
+    sessionId: string,
+  ): TerminalSnapshotRange | undefined {
+    const session = this.ownedSession(owner, sessionId);
+    return session ? terminalSnapshotRange(session) : undefined;
   }
 
   listAgent(owner: AgentTerminalOwner): TerminalSessionSummary[] {
