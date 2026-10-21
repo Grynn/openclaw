@@ -44,6 +44,7 @@ export {
   type CodexAppServerContextEngineProjectionBinding,
   type CodexAppServerPendingSupervisionBranch,
   type CodexAppServerThreadBinding,
+  type CodexTranscriptCoverage,
   type StoredCodexAppServerBinding,
 } from "./session-binding-record-codec.js";
 
