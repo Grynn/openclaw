@@ -5,6 +5,7 @@ import {
 } from "../../../packages/tool-call-repair/src/payload.js";
 import { escapeRegExp } from "../regexp.js";
 import {
+  stripDeepSeekDsmlToolCallBlocks,
   stripMinimaxToolCallXml,
   stripRelevantMemoriesTags,
   stripAssistantInternalTraceLines,
@@ -100,6 +101,7 @@ export function assistantVisibleTextFilters(
   if (preserve) {
     const filters = orderInternalScaffoldingStages<TextFilter>({
       reasoning,
+      dsml: deepSeekDsmlToolCallTextFilter,
       modelTokens: modelSpecialTokensTextFilter,
       memories: {
         transform: stripRelevantMemoriesTags,
@@ -117,6 +119,7 @@ export function assistantVisibleTextFilters(
   }
   const filters: TextFilter[] = [
     minimaxToolCallTextFilter(streaming),
+    deepSeekDsmlToolCallTextFilter,
     modelSpecialTokensTextFilter,
     {
       transform: stripRelevantMemoriesTags,
@@ -149,6 +152,12 @@ export function minimaxToolCallTextFilter(streaming = false): TextFilter {
     activationTokens: ["minimax:tool_call", "<]minimax[>[<tool_call>"],
   };
 }
+
+// Leaked envelopes fail closed in batch and streaming alike; activation only gates the scan.
+const deepSeekDsmlToolCallTextFilter: TextFilter = {
+  transform: stripDeepSeekDsmlToolCallBlocks,
+  activationTokens: ["DSML"],
+};
 
 export const legacyBracketToolCallTextFilter: TextFilter = {
   transform: stripLegacyBracketToolCallBlocks,
