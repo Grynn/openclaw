@@ -276,7 +276,7 @@ describe("sessions_search tool", () => {
     expect(error.details).toMatchObject({ status: "error", error: expect.any(String) });
     expect(Value.Check(tool.outputSchema!, error.details)).toBe(true);
     expect(compactToolOutputHint(tool.outputSchema)).toBe(
-      '{ results: Array<{ role: "assistant" | "user"; score: number; sessionKey: string; snippet: string; timestamp: number; messageId?: string; sessionId?: string }>; archivedTranscriptsExcluded?: number; indexing?: true; sessionLinkRule?: string; truncated?: true; warning?: string } | { error: string; status: "error" | "forbidden" }',
+      '{ results: Array<{ role: "assistant" | "user"; score: number; sessionKey: string; snippet: string; timestamp: number; messageId?: string; queryIndex?: number; sessionId?: string }>; archivedTranscriptsExcluded?: number; batch?: true; indexing?: true; indexingQueries?: Array<number>; queryCount?: number; sessionLinkRule?: string; truncated?: true; truncatedQueries?: Array<number>; warning?: string } | { error: string; status: "error" | "forbidden" }',
     );
   });
 

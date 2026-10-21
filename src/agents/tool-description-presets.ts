@@ -96,6 +96,7 @@ export function describeSessionsHistoryTool(options?: SessionLinkDescriptionOpti
 export function describeSessionsSearchTool(options?: SessionLinkDescriptionOptions): string {
   return [
     "Search visible past sessions for matching user and assistant text.",
+    "Use query or 1–8 queries; batch hits carry queryIndex and limit applies per query. indexingQueries/truncatedQueries mark incomplete work; narrow with sessionKey when needed.",
     ...(options?.sessionLinkBase ? [describeSessionLinkRule(options.sessionLinkBase)] : []),
   ].join(" ");
 }

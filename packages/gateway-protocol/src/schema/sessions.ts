@@ -411,9 +411,11 @@ export {
   SessionsSearchParamsSchema,
   SessionsSearchHitSchema,
   SessionsSearchResultSchema,
+  SessionsSearchBatchResultSchema,
   type SessionsSearchParams,
   type SessionsSearchHit,
   type SessionsSearchResult,
+  type SessionsSearchBatchResult,
 } from "./sessions-search.js";
 
 /** Repairs or removes invalid session records from the selected agent scope. */

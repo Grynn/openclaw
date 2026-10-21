@@ -52,7 +52,7 @@ const SESSION_DESCRIPTIONS = [
   [
     "sessions_search",
     describeSessionsSearchTool,
-    "Search visible past sessions for matching user and assistant text.",
+    "Search visible past sessions for matching user and assistant text. Use query or 1–8 queries; batch hits carry queryIndex and limit applies per query. indexingQueries/truncatedQueries mark incomplete work; narrow with sessionKey when needed.",
   ],
 ] as const;
 
