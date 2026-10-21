@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -34,6 +34,59 @@ function parseImports(source: string, file = "dist/index.js") {
 }
 
 describe("collectPackageDistImportErrors", () => {
+  it("includes the real root launcher's optional runtime probes in the package graph", () => {
+    const imports = parseImports(readFileSync("openclaw.mjs", "utf8"), "openclaw.mjs");
+    expect(imports).toEqual(
+      expect.arrayContaining(
+        [
+          "dist/entry.js",
+          "dist/entry.mjs",
+          "dist/warning-filter.js",
+          "dist/warning-filter.mjs",
+          "dist/cli/program/root-help.js",
+          "dist/cli/program/root-help.mjs",
+        ].map((importedPath) => ({ importerPath: "openclaw.mjs", importedPath })),
+      ),
+    );
+  });
+
+  it.each([undefined, "js", "mjs"])(
+    "requires a CLI entry while accepting the %s launcher alternative",
+    (extension) => {
+      const launcher = readFileSync("openclaw.mjs", "utf8");
+      const sources: Record<string, string> = {
+        "openclaw.mjs": launcher,
+      };
+      // Other root imports have their own closure checks. Keep their presence fixed
+      // here so only the CLI's independently specified entry alternatives vary.
+      for (const { importedPath } of parseImports(launcher, "openclaw.mjs")) {
+        if (
+          !/^dist\/(?:entry|warning-filter|cli\/program\/root-help)\.(?:m?js)$/.test(importedPath)
+        ) {
+          sources[importedPath] = "export {};";
+        }
+      }
+      if (extension) {
+        sources[`dist/entry.${extension}`] = "export {};";
+      }
+      expect(checkImports(sources)).toEqual(
+        extension ? [] : ["openclaw.mjs has no CLI entry (dist/entry.js or dist/entry.mjs)"],
+      );
+      if (extension) {
+        sources[`dist/entry.${extension}`] = 'import "./missing-runtime.mjs";';
+        expect(checkImports(sources)).toEqual([
+          `dist/entry.${extension} imports missing dist/missing-runtime.mjs`,
+        ]);
+      }
+    },
+  );
+
+  it("does not make launcher optional paths optional for other importers", () => {
+    expect(checkImports({ "dist/other.mjs": 'import "./warning-filter.js";' })).toEqual([
+      "dist/other.mjs imports missing dist/warning-filter.js",
+    ]);
+  });
+
   it("requires executable helpers resolved beside bundled JavaScript", () => {
     const sources: Record<string, string> = {
       "dist/worker/worker.mjs":

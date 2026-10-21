@@ -6,6 +6,7 @@ const runtime = vi.hoisted(() => ({
   runWorkerProcess: vi.fn<() => Promise<void>>(),
   loadWorkerTurnRuntime: vi.fn<() => Promise<void>>(),
   flushCompileCache: vi.fn<() => void>(),
+  getFsSafeNativeConfig: vi.fn(() => ({ mode: "off" })),
 }));
 
 vi.mock("node:module", async (importOriginal) => ({
@@ -13,6 +14,10 @@ vi.mock("node:module", async (importOriginal) => ({
   flushCompileCache: runtime.flushCompileCache,
 }));
 vi.mock("./worker-deploy-runtime.js", () => ({}));
+// The real sealed bootstrap owns this effective policy; the entry only reports it.
+vi.mock("@openclaw/fs-safe/config", () => ({
+  getFsSafeNativeConfig: runtime.getFsSafeNativeConfig,
+}));
 vi.mock("./worker.runtime.js", () => ({ loadWorkerTurnRuntime: runtime.loadWorkerTurnRuntime }));
 vi.mock("../infra/runtime-guard.js", () => ({
   assertSupportedRuntime: runtime.assertSupportedRuntime,
@@ -33,6 +38,7 @@ beforeEach(() => {
   runtime.runWorkerProcess.mockReset().mockResolvedValue();
   runtime.loadWorkerTurnRuntime.mockReset().mockResolvedValue();
   runtime.flushCompileCache.mockReset();
+  runtime.getFsSafeNativeConfig.mockReset().mockReturnValue({ mode: "off" });
   process.exitCode = undefined;
   Object.defineProperty(process, "connected", { configurable: true, value: true, writable: true });
   process.disconnect = disconnect.mockReset();
@@ -95,6 +101,7 @@ it.each([
       runtime.runWorkerProcess.mockRejectedValue(failure);
     }
     const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 
     await expect(import("./worker-deploy-entry.js")).resolves.toBeDefined();
 
@@ -103,6 +110,7 @@ it.each([
     expect(disconnect).toHaveBeenCalledOnce();
     expect(runtime.flushCompileCache).not.toHaveBeenCalled();
     expect(stderr).toHaveBeenCalledOnce();
+    expect(stdout).not.toHaveBeenCalled();
     const diagnostic = String(stderr.mock.calls[0]?.[0]);
     expect(diagnostic).toContain(message);
     expect(diagnostic.endsWith("\n")).toBe(true);
@@ -115,26 +123,44 @@ it.each([
   },
 );
 
-it("prewarms the turn runtime before flushing its compile cache", async () => {
-  const loading = createDeferred();
-  const loaded = createDeferred();
-  runtime.loadWorkerTurnRuntime.mockImplementation(() => {
-    loading.resolve();
-    return loaded.promise;
-  });
-  process.argv = [process.execPath, "worker.mjs", "--internal-worker-prewarm"];
-  const entry = import("./worker-deploy-entry.js");
-  await loading.promise;
-  expect(runtime.flushCompileCache).not.toHaveBeenCalled();
-  loaded.resolve();
-  await entry;
+it.each(["off", "require"])(
+  "acknowledges effective %s policy only after prewarm and flush",
+  async (mode) => {
+    runtime.getFsSafeNativeConfig.mockReturnValue({ mode });
+    const events: string[] = [];
+    runtime.flushCompileCache.mockImplementation(() => {
+      events.push("flush");
+    });
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      events.push(String(chunk));
+      return true;
+    });
+    const loading = createDeferred();
+    const loaded = createDeferred();
+    runtime.loadWorkerTurnRuntime.mockImplementation(() => {
+      loading.resolve();
+      return loaded.promise;
+    });
+    process.argv = [process.execPath, "worker.mjs", "--internal-worker-prewarm"];
+    const entry = import("./worker-deploy-entry.js");
+    await loading.promise;
+    expect(runtime.flushCompileCache).not.toHaveBeenCalled();
+    expect(stdout).not.toHaveBeenCalled();
+    loaded.resolve();
+    await entry;
 
-  expect(runtime.loadWorkerTurnRuntime).toHaveBeenCalledOnce();
-  expect(runtime.flushCompileCache).toHaveBeenCalledOnce();
-  expect(runtime.runWorkerProcess).not.toHaveBeenCalled();
-  expect(process.exitCode).toBeUndefined();
-  expect(disconnect).toHaveBeenCalledOnce();
-});
+    expect(runtime.loadWorkerTurnRuntime).toHaveBeenCalledOnce();
+    expect(runtime.flushCompileCache).toHaveBeenCalledOnce();
+    expect(stdout).toHaveBeenCalledOnce();
+    expect(events).toEqual([
+      "flush",
+      `${JSON.stringify({ fsSafeNativeMode: mode, protocol: 1 })}\n`,
+    ]);
+    expect(runtime.runWorkerProcess).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
+    expect(disconnect).toHaveBeenCalledOnce();
+  },
+);
 
 it("keeps the transport until worker execution has settled", async () => {
   const started = createDeferred();

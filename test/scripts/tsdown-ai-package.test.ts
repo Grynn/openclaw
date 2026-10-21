@@ -22,7 +22,7 @@ function linkDependencies(root: string, dependencies: Record<string, string>) {
   }
 }
 
-it("streams Mistral from the built AI package without installing the SDK", async () => {
+it("streams Mistral and resolves lazy proxy support from the built AI package", async () => {
   const root = createTempDir("openclaw-ai-package-");
   const outDir = path.join(root, "dist");
   const { bundles } = await build({
@@ -43,7 +43,13 @@ it("streams Mistral from the built AI package without installing the SDK", async
     );
     const script = `
       import assert from "node:assert/strict";
-      import { registerHooks } from "node:module";
+      import { createRequire, registerHooks } from "node:module";
+      import { pathToFileURL } from "node:url";
+      // The lazy Bun proxy branch must resolve from the installed provider artifact,
+      // with only the package's declared dependencies available beside it.
+      const requireProvider = createRequire(new URL("./dist/providers.mjs", import.meta.url));
+      const { getProxyForUrl } = await import(pathToFileURL(requireProvider.resolve("proxy-from-env")));
+      assert.equal(typeof getProxyForUrl, "function");
       const loadedDependencies = new Set();
       registerHooks({ resolve(specifier, context, next) {
         assert(!specifier.startsWith("@mistralai/"), "Mistral SDK must be bundled");
