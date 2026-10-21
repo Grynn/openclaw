@@ -137,7 +137,7 @@ export function areSessionCatalogsSettled(
 }
 
 function visibleSessionCatalogClient(owner: SessionCatalogDataOwner): GatewayBrowserClient | null {
-  if (document.visibilityState === "hidden") {
+  if (document.visibilityState === "hidden" || !owner.sessionCatalogRowsVisible) {
     return null;
   }
   return owner.sessionCatalogGatewayClient();
@@ -145,7 +145,7 @@ function visibleSessionCatalogClient(owner: SessionCatalogDataOwner): GatewayBro
 
 function refreshSessionCatalogsInBackground(owner: SessionCatalogDataOwner): Promise<void> {
   const context = owner.context;
-  if (!context) {
+  if (!context || !visibleSessionCatalogClient(owner)) {
     return Promise.resolve();
   }
   const scope = owner.sessionCatalogLive.refreshScope;
@@ -155,7 +155,8 @@ function refreshSessionCatalogsInBackground(owner: SessionCatalogDataOwner): Pro
       if (
         owner.context === context &&
         owner.sessionCatalogLive.refreshScope === scope &&
-        owner.isSessionDataHostConnected
+        owner.isSessionDataHostConnected &&
+        visibleSessionCatalogClient(owner)
       ) {
         await owner.refreshSessionCatalogs();
       }
@@ -204,8 +205,9 @@ export function resolveSessionCatalogAgentId(owner: SessionCatalogDataOwner): st
 }
 
 export function scheduleSessionCatalogRefresh(owner: SessionCatalogDataOwner): void {
-  if (!visibleSessionCatalogClient(owner)) {
-    owner.sessionCatalogLive.cancelScheduledRefreshes();
+  const visible = Boolean(visibleSessionCatalogClient(owner));
+  owner.sessionCatalogLive.setVisible(visible);
+  if (!visible) {
     return;
   }
   owner.sessionCatalogLive.scheduleActivation(() => requestSessionCatalogRefresh(owner));
@@ -213,7 +215,7 @@ export function scheduleSessionCatalogRefresh(owner: SessionCatalogDataOwner): v
 
 function requestSessionCatalogRefresh(owner: SessionCatalogDataOwner): Promise<void> {
   return owner.sessionCatalogLive.requestRefresh({
-    visible: document.visibilityState !== "hidden",
+    visible: Boolean(visibleSessionCatalogClient(owner)),
     connected:
       owner.isSessionDataHostConnected &&
       owner.sessionCatalogAgentId !== null &&
@@ -227,8 +229,16 @@ export function updateSessionCatalogData(owner: SessionCatalogDataOwner): void {
   if (owner.context) {
     owner.synchronizeSessionScope();
   }
+  const visible = Boolean(visibleSessionCatalogClient(owner));
+  const reopened = owner.sessionCatalogLive.setVisible(visible);
+  if (!visible) {
+    return;
+  }
+  if (reopened && owner.sessionCatalogLive.hasRequested) {
+    scheduleSessionCatalogRefresh(owner);
+    return;
+  }
   if (
-    !visibleSessionCatalogClient(owner) ||
     owner.sessionCatalogLive.hasRequested ||
     owner.sessionCatalogLive.requestGeneration === owner.sessionScopeGeneration
   ) {
@@ -277,7 +287,9 @@ export async function refreshSessionCatalogs(owner: SessionCatalogDataOwner): Pr
   // Hidden pages resume through the coalesced visibility handler.
   owner.synchronizeSessionScope();
   const agentId = owner.sessionCatalogAgentId;
-  const client = visibleSessionCatalogClient(owner);
+  // Explicit refreshes may read a collapsed sidebar; automatic work uses the
+  // background admission above and must still see a presented catalog surface.
+  const client = document.visibilityState === "hidden" ? null : owner.sessionCatalogGatewayClient();
   if (!client || !agentId) {
     return;
   }
@@ -294,6 +306,7 @@ export async function refreshSessionCatalogs(owner: SessionCatalogDataOwner): Pr
     catalogs: () => owner.sessionCatalogs,
     pageDepths: owner.sessionCatalogPageDepths,
     connected: () => owner.isSessionDataHostConnected,
+    visible: () => Boolean(visibleSessionCatalogClient(owner)),
     applyFinal: (catalogs) => {
       owner.sessionCatalogs = owner.sessionCatalogLive.resumeDiscovery(catalogs);
       owner.sessionCatalogRefreshStatus = completePanelRefresh();

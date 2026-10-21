@@ -88,7 +88,19 @@ export class SessionCatalogLiveState {
   private readonly warnedRequestErrors = new Set<string>();
   private retryAttempts = 0;
   private retryAt = 0;
+  private visible = true;
   startupPending = false;
+
+  /** Retain cached rows while hidden, and admit one catch-up when presented again. */
+  setVisible(visible: boolean): boolean {
+    const reopened = visible && !this.visible;
+    this.visible = visible;
+    if (!visible) {
+      this.cancelScheduledRefreshes();
+      this.refreshPending = false;
+    }
+    return reopened;
+  }
 
   get retryDelayMs() {
     return Math.max(0, this.retryAt - Date.now());
@@ -354,6 +366,7 @@ export async function refreshSessionCatalogsLive(params: {
   catalogs: () => SessionCatalog[];
   pageDepths: ReadonlyMap<string, number>;
   connected: () => boolean;
+  visible: () => boolean;
   applyFinal: (catalogs: SessionCatalog[]) => void;
   /** Finish the finite cursor sweep without repeating the root catalog request. */
   continueRefresh: () => Promise<void>;
@@ -366,7 +379,11 @@ export async function refreshSessionCatalogsLive(params: {
   }
   // Events and returning tabs share the same cooldown as the scheduled retry.
   if (live.retryDelayMs > 0) {
-    live.schedule(live.retryDelayMs, params.connected(), () => void params.refresh());
+    live.schedule(
+      live.retryDelayMs,
+      params.connected() && params.visible(),
+      () => void params.refresh(),
+    );
     return;
   }
   const { progressId } = live.beginRequest(generation);
@@ -391,7 +408,7 @@ export async function refreshSessionCatalogsLive(params: {
       agentId: params.agentId,
       pageDepths: params.pageDepths,
       isCurrent: requestIsCurrent,
-      canRequestPage: () => requestIsCurrent() && document.visibilityState !== "hidden",
+      canRequestPage: () => requestIsCurrent() && params.visible(),
     });
     if (!requestIsCurrent()) {
       return;
@@ -414,7 +431,7 @@ export async function refreshSessionCatalogsLive(params: {
     if (requestIsCurrent()) {
       live.requestGeneration = null;
     }
-    if (requestIsCurrent() && params.connected()) {
+    if (requestIsCurrent() && params.connected() && params.visible()) {
       const pending = live.refreshPending;
       live.refreshPending = false;
       live.schedule(retryDelayMs ?? SESSION_CATALOG_REFRESH_MS, params.connected(), () => {
