@@ -35,7 +35,7 @@ function renderAuthStatus(card: ModelProviderCard) {
   );
 }
 
-export function hasProviderCredentials(card: ModelProviderCard): boolean {
+export function hasDirectProviderCredentials(card: ModelProviderCard): boolean {
   return card.hasConfigApiKey || Boolean(card.apiKey) || card.profiles.length > 0;
 }
 
@@ -46,7 +46,11 @@ function needsAuthAttention(card: ModelProviderCard): boolean {
 }
 
 export function hasVerifiedProvider(card: ModelProviderCard): boolean {
-  return card.catalogStatus === "ready" && !needsAuthAttention(card);
+  // The model catalog owns native-route availability; direct API auth is separate.
+  return (
+    card.catalogStatus === "ready" &&
+    (card.availableAgentRuntimeIds.length > 0 || !needsAuthAttention(card))
+  );
 }
 
 export function renderProviderStatus(card: ModelProviderCard) {
@@ -64,7 +68,7 @@ export function renderProviderStatus(card: ModelProviderCard) {
       />
     );
   }
-  if (needsAuthAttention(card)) {
+  if (card.availableAgentRuntimeIds.length === 0 && needsAuthAttention(card)) {
     return renderAuthStatus(card);
   }
   if (card.catalogStatus === "auth-rejected") {
@@ -73,7 +77,7 @@ export function renderProviderStatus(card: ModelProviderCard) {
   if (card.catalogStatus === "unavailable") {
     return <SettingsStatus kind={"warn"} label={t("modelProviders.status.modelsUnavailable")} />;
   }
-  if (!hasProviderCredentials(card)) {
+  if (!hasDirectProviderCredentials(card) && card.availableAgentRuntimeIds.length === 0) {
     return renderAuthStatus(card);
   }
   const verified = hasVerifiedProvider(card);

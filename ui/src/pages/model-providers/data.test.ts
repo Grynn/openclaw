@@ -116,6 +116,30 @@ it("retains model-service environment auth but excludes tool-only credentials", 
   ]);
 });
 
+it("derives native credential readiness only from available selected runtime routes", () => {
+  const cards = build([], {
+    models: [
+      model("native", { available: true, agentRuntime: { id: "claude-cli", source: "model" } }),
+      model("native-sibling", {
+        available: true,
+        agentRuntime: { id: "claude-cli", source: "model" },
+      }),
+      model("unavailable", { available: false, agentRuntime: { id: "codex", source: "model" } }),
+      model("unknown", {
+        available: undefined,
+        agentRuntime: { id: "unknown-runtime", source: "model" },
+      }),
+      ...["openclaw", "auto", "default"].map((id) =>
+        model(id, { available: true, agentRuntime: { id, source: "model" } }),
+      ),
+      model("alternative-only", {
+        runtimeChoices: [{ available: true, agentRuntime: { id: "gemini-cli", source: "model" } }],
+      }),
+    ],
+  });
+  expect(cards).toMatchObject([{ availableAgentRuntimeIds: ["claude-cli"] }]);
+});
+
 it.each<[string, ModelCatalogProviderOutcome[], ModelCatalogProviderOutcome["status"]]>([
   [
     "ready profile beats rejected sibling",
