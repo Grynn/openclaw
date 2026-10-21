@@ -20,6 +20,7 @@ import { SettingsWorkspace } from "../../components/solid/settings-workspace.tsx
 import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
 import { formatUiError, formatUiExternalText } from "../../lib/format-error.ts";
 import { formatCompactTokenCount, formatCost, formatTimeMs } from "../../lib/format.ts";
+import { formatModelRuntimeLabel } from "../../lib/model-runtime-label.ts";
 import { registerEnglishCatalog, t } from "../../lib/reactive/i18n.ts";
 import type { JSX } from "../../types/solid-elements.js";
 import { MODEL_SETTINGS_TARGET_IDS } from "../config/route-data.ts";
@@ -37,7 +38,7 @@ import {
 } from "./profiles-view.tsx";
 import {
   hasVerifiedProvider,
-  hasProviderCredentials,
+  hasDirectProviderCredentials,
   renderProviderStatus,
   renderMutationMessage,
   ModelProviderConnectAction,
@@ -120,6 +121,15 @@ function renderCredentialSummary(card: ModelProviderCard, agentLabel: string) {
   const tokenCount = card.profiles.filter((profile) => profile.type === "token").length;
   const apiProfileCount = card.profiles.filter((profile) => profile.type === "api_key").length;
   const parts = [];
+  if (card.availableAgentRuntimeIds.length > 0) {
+    parts.push(
+      t("modelProviders.credentials.runtimeManaged", {
+        runtime: card.availableAgentRuntimeIds
+          .map((id) => formatModelRuntimeLabel(card.id, id)?.label)
+          .join(", "),
+      }),
+    );
+  }
   if (oauthCount > 0) {
     parts.push(t("modelProviders.credentials.oauth", { count: String(oauthCount) }));
   }
@@ -258,7 +268,7 @@ function ProviderActions(props: ModelProvidersViewProps & { card: ModelProviderC
           {t("modelProviders.login.action")}
         </button>
       </Show>
-      <Show when={hasProviderCredentials(props.card)}>
+      <Show when={hasDirectProviderCredentials(props.card)}>
         <button
           class="btn btn--sm"
           disabled={

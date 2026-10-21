@@ -1015,6 +1015,7 @@ const enSettings = {
     configUnavailable: "Configuration is unavailable. Refresh and try again.",
     credentials: {
       label: "Credentials for {agent}",
+      runtimeManaged: "Managed by {runtime}",
       oauth: "OAuth profiles: {count}",
       tokenProfiles: "Token profiles: {count}",
       configKey: "API key set in config",

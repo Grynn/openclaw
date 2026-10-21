@@ -87,6 +87,8 @@ export type ModelProviderCard = {
   hasConfigApiKey: boolean;
   modelCount: number;
   availableModelCount: number;
+  /** Non-default runtimes with a Gateway-confirmed available model route. */
+  availableAgentRuntimeIds: string[];
   catalogStatus?: ModelCatalogProviderOutcome["status"];
   checkingModels?: boolean;
   /** Live provider-reported usage (quota windows, billing, cost history). */
@@ -144,6 +146,7 @@ function ensureDraft(drafts: CardDraft[], id: string, displayName: string): Card
       hasConfigApiKey: false,
       modelCount: 0,
       availableModelCount: 0,
+      availableAgentRuntimeIds: [],
     },
     hasModelAuth: false,
   };
@@ -253,6 +256,12 @@ export function buildModelProviderCards(input: ModelProviderCardsInput): ModelPr
     draft.card.modelCount += 1;
     if (entry.available === true) {
       draft.card.availableModelCount += 1;
+      const runtimeId = entry.agentRuntime?.id;
+      if (runtimeId && !["openclaw", "auto", "default"].includes(runtimeId)) {
+        if (!draft.card.availableAgentRuntimeIds.includes(runtimeId)) {
+          draft.card.availableAgentRuntimeIds.push(runtimeId);
+        }
+      }
     }
   }
 

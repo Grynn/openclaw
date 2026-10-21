@@ -76,6 +76,67 @@ function createCatalogHarness(lastAcceptedCatalog?: ModelCatalogResult) {
 }
 
 describe("Models page catalog publication", () => {
+  it.each(["missing", "expired"] as const)(
+    "keeps a verified native Claude route ready when direct auth is %s",
+    async (status) => {
+      const { context, request } = createHarness("main");
+      const originalRequest = request.getMockImplementation()!;
+      request.mockImplementation((method: string) => {
+        if (method === "models.list") {
+          return Promise.resolve<ModelCatalogResult>({
+            models: [
+              {
+                id: "native-model",
+                name: "Native model",
+                provider: "anthropic",
+                available: true,
+                agentRuntime: { id: "claude-cli", source: "model" },
+              },
+            ],
+            providerOutcomes: [{ provider: "anthropic", status: "ready" }],
+          });
+        }
+        if (method === "models.authStatus") {
+          return Promise.resolve(
+            createAuthStatus([
+              {
+                provider: "anthropic",
+                displayName: "Anthropic",
+                status,
+                profiles:
+                  status === "expired"
+                    ? [{ profileId: "anthropic:direct", type: "token", status: "expired" }]
+                    : [],
+              },
+            ]),
+          );
+        }
+        return originalRequest(method);
+      });
+      const page = appendPage(context);
+      await waitForProviders(page);
+      const provider = page.querySelector('[data-provider-id="anthropic"]');
+      expect(provider?.querySelector(".model-providers__head .settings-status")?.textContent).toBe(
+        "Ready",
+      );
+      if (status === "expired") {
+        expect(provider?.querySelector(".model-providers__profile-status")?.textContent).toContain(
+          "Expired",
+        );
+      } else {
+        expect(provider?.querySelector(".model-providers__credentials")?.textContent).toContain(
+          "Managed by Claude CLI · native",
+        );
+      }
+      expect(
+        [...(provider?.querySelectorAll("button") ?? [])].some((button) =>
+          button.textContent?.includes("Test connection"),
+        ),
+      ).toBe(status === "expired");
+      expect(requestCount(request, "models.probe")).toBe(0);
+    },
+  );
+
   it("adopts a ready catalog published while the initial auth read is pending", async () => {
     const { context, request, readPublished, publishEvent, catalogRequest } =
       createCatalogHarness();
