@@ -33,13 +33,12 @@ import { estimateCodexAppServerProjectedTurnTokens } from "./run-attempt-lifecyc
 import { prependCurrentInboundContext } from "./run-attempt-state.js";
 import { rotateOversizedCodexAppServerStartupBinding } from "./startup-binding.js";
 import { resolveCodexProjectionStartupBinding } from "./thread-restricted-resume.js";
-import { hasCodexMirrorOrigin } from "./transcript-mirror-attestation.js";
+import { selectCodexUncoveredTranscriptMessages } from "./transcript-coverage.js";
 import {
   buildCodexHistoryProvenancePrefix,
   buildCodexParentLocalInstructions,
   buildTurnCollaborationMode,
 } from "./turn-params.js";
-import { readMirrorIdentity } from "./upstream-prompt-provenance.js";
 
 export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
   const {
@@ -493,34 +492,17 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
   const applyResumeStaleBindingContinuityProjection = async (
     binding: NonNullable<typeof mutable.startupBinding>,
   ) => {
-    const cutoff = Date.parse(binding.historyCoveredThrough ?? "");
-    const newerVisibleMessages = historyState.messages.filter((message) => {
-      if (
-        message.role !== "user" &&
-        message.role !== "assistant" &&
-        !isCodexDurableCustomMessage(message)
-      ) {
-        return false;
-      }
-      const mirrorIdentity = readMirrorIdentity(message);
-      const timestamp =
-        typeof message.timestamp === "number"
-          ? message.timestamp
-          : typeof message.timestamp === "string"
-            ? Date.parse(message.timestamp)
-            : Number.NaN;
-      return (
-        !(
-          "idempotencyKey" in message &&
-          typeof message.idempotencyKey === "string" &&
-          message.idempotencyKey.startsWith("codex-app-server:")
-        ) &&
-        !hasCodexMirrorOrigin(message) &&
-        !mirrorIdentity?.startsWith("codex-app-server:") &&
-        Number.isFinite(timestamp) &&
-        timestamp > (Number.isFinite(cutoff) ? cutoff : 0)
-      );
+    const selection = selectCodexUncoveredTranscriptMessages({
+      messages: historyState.messages,
+      binding,
     });
+    if (selection.mode === "conservative") {
+      embeddedAgentLog.warn(
+        "codex exact transcript coverage is unavailable; replaying visible context",
+        { threadId: binding.threadId },
+      );
+    }
+    const newerVisibleMessages = selection.messages;
     if (newerVisibleMessages.length === 0) {
       return false;
     }

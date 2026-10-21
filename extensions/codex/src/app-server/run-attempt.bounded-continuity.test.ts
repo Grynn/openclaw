@@ -1,21 +1,34 @@
 import path from "node:path";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
-import { createMockPluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
-import { describe, expect, it, vi } from "vitest";
+import {
+  createMockPluginRegistry,
+  loadUserTurnTranscriptRecorderFactoryForTest,
+} from "openclaw/plugin-sdk/plugin-test-runtime";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { readMirroredSessionHistoryMessages } from "./attempt-context.js";
 import {
   assistantMessage,
+  bindProductionHarnessHostCapabilitiesForTest,
   createParams,
   createStartedThreadHarness,
   mockCall,
   runCodexAppServerAttempt,
   setupRunAttemptTestHooks,
   tempDir,
+  threadStartResult,
+  turnStartResult,
   userMessage,
 } from "./run-attempt-test-harness.js";
-import { writeCodexAppServerBinding } from "./session-binding.test-helpers.js";
-import { attachSqliteSessionTarget } from "./sqlite-session.test-helpers.js";
+import {
+  readCodexAppServerBinding,
+  writeCodexAppServerBinding,
+} from "./session-binding.test-helpers.js";
+import {
+  appendSqliteHistoryMessage,
+  attachSqliteSessionTarget,
+} from "./sqlite-session.test-helpers.js";
 
 setupRunAttemptTestHooks();
 
@@ -238,4 +251,165 @@ describe("Codex bounded assistant continuity", () => {
     expect(llmInputPayload.prompt).toBe(expectedInput);
     expect(llmInputPayload.historyMessages).toEqual([]);
   });
+
+  it.each([false, true])(
+    "replays a host row that arrived without steering while the native turn was active (maintenance: %s)",
+    async (withMaintenance) => {
+      const params = createParams(
+        path.join(tempDir, "exact-coverage.jsonl"),
+        path.join(tempDir, "exact-coverage-workspace"),
+      );
+      await attachSqliteSessionTarget(
+        params,
+        path.join(tempDir, "exact-coverage.sqlite"),
+        params.sessionId,
+      );
+      const alreadyCoveredText = "Host context already present before the admitted prompt.";
+      await appendSqliteHistoryMessage(params, userMessage(alreadyCoveredText, 50));
+      const createRecorder = await loadUserTurnTranscriptRecorderFactoryForTest();
+      const target = {
+        agentId: "main",
+        sessionId: params.sessionId,
+        sessionKey: params.sessionKey!,
+        storePath: params.sessionTarget!.storePath!,
+        sessionEntry: undefined,
+      };
+      const firstRecorder = createRecorder({
+        input: { text: params.prompt, idempotencyKey: "first:user", timestamp: 100 },
+        target,
+      });
+      await firstRecorder.persistApproved();
+      params.userTurnTranscriptRecorder = firstRecorder;
+      const promptAnnotated = createDeferred<void>();
+      params.onUserMessagePersisted = () => promptAnnotated.resolve();
+      const closeFirstHost = await bindProductionHarnessHostCapabilitiesForTest(params);
+      onTestFinished(closeFirstHost);
+      expect(params.hostCapabilities.prepareBoundedSeed).toBeUndefined();
+
+      let turnNumber = 0;
+      const harness = createStartedThreadHarness(
+        async (method) => {
+          if (method === "thread/resume") {
+            return threadStartResult("thread-1");
+          }
+          if (method === "turn/start") {
+            return turnStartResult(`turn-${++turnNumber}`);
+          }
+          return undefined;
+        },
+        { persistedThreads: ["thread-1"] },
+      );
+      const first = runCodexAppServerAttempt(params);
+      await first.waitForTurnAccepted();
+      expect(
+        JSON.stringify(harness.requests.findLast(({ method }) => method === "turn/start")?.params),
+      ).toContain(alreadyCoveredText);
+      await promptAnnotated.promise;
+      expect(firstRecorder.getPersistedMessage?.()).toMatchObject({
+        __openclaw: {
+          mirrorIdentity: "turn-1:prompt",
+          mirrorOrigin: "codex-app-server",
+          runId: params.runId,
+        },
+      });
+
+      const lateText = "Unsteered arrival while the first model request was running.";
+      await appendSqliteHistoryMessage(params, userMessage(lateText, 100));
+      expect(harness.requests.some(({ method }) => method === "turn/steer")).toBe(false);
+      await harness.notify({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: { id: "first-final", type: "agentMessage", text: "First turn completed." },
+        },
+      });
+      await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+      await first;
+      expect(() => params.hostCapabilities.assertActive()).not.toThrow();
+      closeFirstHost();
+      const completedBinding = await readCodexAppServerBinding(params.sessionFile);
+      expect(completedBinding).toMatchObject({
+        threadId: "thread-1",
+        transcriptCoverage: {
+          schemaVersion: 2,
+          threadId: "thread-1",
+          runId: "run-1",
+          idempotencyKey: "first:user",
+          mirrorIdentity: "turn-1:prompt",
+          mirrorSourceFingerprint: expect.stringMatching(/^[a-f0-9]{32}$/u),
+          messageFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        },
+      });
+      expect(completedBinding?.historyCoveredThrough).toBeUndefined();
+
+      if (withMaintenance) {
+        params.runId = "maintenance";
+        params.prompt = "Maintenance turn.";
+        params.userTurnTranscriptRecorder = undefined;
+        params.onUserMessagePersisted = undefined;
+        const closeMaintenanceHost = await bindProductionHarnessHostCapabilitiesForTest(params);
+        onTestFinished(closeMaintenanceHost);
+        const maintenance = runCodexAppServerAttempt(params);
+        await maintenance.waitForTurnAccepted();
+        const maintenanceSent = JSON.stringify(
+          harness.requests.findLast(({ method }) => method === "turn/start")?.params,
+        );
+        expect(maintenanceSent).not.toContain(alreadyCoveredText);
+        expect(maintenanceSent).toContain(lateText);
+        expect(maintenanceSent.split(lateText)).toHaveLength(2);
+        await harness.notify({
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            turnId: `turn-${turnNumber}`,
+            item: { id: "maintenance-final", type: "agentMessage", text: "Maintenance completed." },
+          },
+        });
+        await harness.completeTurn({ threadId: "thread-1", turnId: `turn-${turnNumber}` });
+        await maintenance;
+        closeMaintenanceHost();
+        const afterMaintenance = await readCodexAppServerBinding(params.sessionFile);
+        expect(afterMaintenance?.transcriptCoverage).toEqual(completedBinding?.transcriptCoverage);
+        expect(afterMaintenance?.historyCoveredThrough).toBeUndefined();
+      }
+
+      const currentPrompt = "Current request.";
+      params.runId = "run-2";
+      params.prompt = currentPrompt;
+      const nextRecorder = createRecorder({
+        input: { text: currentPrompt, idempotencyKey: "next:user", timestamp: 100 },
+        target,
+      });
+      await nextRecorder.persistApproved();
+      params.userTurnTranscriptRecorder = nextRecorder;
+      params.onUserMessagePersisted = undefined;
+      const closeSecondHost = await bindProductionHarnessHostCapabilitiesForTest(params);
+      onTestFinished(closeSecondHost);
+      expect(params.hostCapabilities.prepareBoundedSeed).toBeUndefined();
+      expect(() => params.hostCapabilities.assertActive()).not.toThrow();
+
+      const second = runCodexAppServerAttempt(params);
+      await second.waitForTurnAccepted();
+      const sent = JSON.stringify(
+        harness.requests.findLast(({ method }) => method === "turn/start")?.params,
+      );
+      await harness.notify({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          turnId: `turn-${turnNumber}`,
+          item: { id: "second-final", type: "agentMessage", text: "Second turn completed." },
+        },
+      });
+      await harness.completeTurn({ threadId: "thread-1", turnId: `turn-${turnNumber}` });
+      await second;
+      closeSecondHost();
+      closeFirstHost();
+      expect(sent).not.toContain(alreadyCoveredText);
+      expect(sent).toContain(lateText);
+      expect(sent.split(lateText)).toHaveLength(2);
+      expect(sent).toContain(currentPrompt);
+    },
+  );
 });
