@@ -210,6 +210,34 @@ it.each([undefined, "/stores/{agentId}.sqlite"])(
   },
 );
 
+it("keeps embedded batch queries ordered and shares canonical target resolution", async () => {
+  const result = await request("sessions.search", {
+    agentId: "main",
+    queries: ["alpha", "beta"],
+    sessionKeys: ["main"],
+    limit: 3,
+  });
+  expect(runtime.resolveStoredSessionKeyForAgentStore).toHaveBeenCalledOnce();
+  expect(runtime.searchSessionTranscripts.mock.calls).toHaveLength(2);
+  expect(runtime.searchSessionTranscripts).toHaveBeenNthCalledWith(
+    1,
+    expect.objectContaining({ query: "alpha", sessionKeys: ["agent:main:main"], limit: 3 }),
+  );
+  expect(runtime.searchSessionTranscripts).toHaveBeenNthCalledWith(
+    2,
+    expect.objectContaining({ query: "beta", sessionKeys: ["agent:main:main"], limit: 3 }),
+  );
+  expect(result).toEqual({ states: [{ results: [] }, { results: [] }] });
+});
+
+it.each([{ queries: [] }, { query: "alpha", queries: ["beta"] }, { queries: ["beta"], scope: {} }])(
+  "rejects invalid embedded batch inputs: %j",
+  async (params) => {
+    await expect(request("sessions.search", params)).rejects.toThrow();
+    expect(runtime.searchSessionTranscripts).not.toHaveBeenCalled();
+  },
+);
+
 it("resolves omitted search filters through the fixed-store owner", async () => {
   const agentId = "ops";
   const cfg: OpenClawConfig = {

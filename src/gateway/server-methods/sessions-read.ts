@@ -3,6 +3,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import {
   ErrorCodes,
   errorShape,
+  type SessionsSearchResult,
   validateSessionsListParams,
   validateSessionsPreviewParams,
   validateSessionsResolveParams,
@@ -63,15 +64,16 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validateSessionsSearchParams, "sessions.search", respond)) {
       return;
     }
-    const query = params.query.trim();
-    if (!query) {
+    const queries = params.queries?.map((query) => query.trim()) ?? [params.query?.trim() ?? ""];
+    const firstQuery = queries[0];
+    if (!firstQuery || queries.some((query) => !query)) {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "query must not be empty"));
       return;
     }
     if (params.scope !== undefined) {
       try {
         await searchProjectedSessionTranscripts({
-          query,
+          query: firstQuery,
           limit: params.limit,
           scope: params.scope,
           context,
@@ -152,8 +154,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         ? [{ agentId, storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId }) }]
         : await discovery!;
       if (!configured && (searchTargets.length === 0 || scopedSessionKeys?.length === 0)) {
-        respond(true, { results: [] }, undefined);
-        return undefined;
+        return [];
       }
       const entriesByTarget = restrictVisibility
         ? await Promise.all(
@@ -207,7 +208,6 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         return [
           {
             ...target,
-            query,
             // Over-fetch retired multi-store searches so deduplication can still fill the caller's
             // requested page when the same transcript was copied during a store migration.
             limit: configured ? params.limit : 25,
@@ -222,8 +222,10 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         if (!requests) {
           return;
         }
-        const targetResults = await Promise.all(
-          requests.map((request) => searchSessionTranscripts(request)),
+        const queryResults = await Promise.all(
+          queries.map((query) =>
+            Promise.all(requests.map((request) => searchSessionTranscripts({ ...request, query }))),
+          ),
         );
         // Current configuration, identity, and sharing must authorize the whole result page.
         const current = await prepareSearch();
@@ -233,37 +235,43 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         if (JSON.stringify(current) !== JSON.stringify(requests)) {
           continue;
         }
-        const archivedTranscriptsExcluded = targetResults.reduce(
-          (count, result) => count + (result.archivedTranscriptsExcluded ?? 0),
-          0,
-        );
-        const limit = params.limit ?? 10;
-        const sortedHits = targetResults
-          .flatMap((result) => result.hits)
-          .toSorted(
-            (left, right) =>
-              right.score - left.score ||
-              right.timestamp - left.timestamp ||
-              left.messageId.localeCompare(right.messageId),
+        const states = queryResults.map((targetResults) => {
+          const archivedTranscriptsExcluded = targetResults.reduce(
+            (count, result) => count + (result.archivedTranscriptsExcluded ?? 0),
+            0,
           );
-        const seenHits = new Set<string>();
-        const hits = sortedHits.filter((hit) => {
-          const identity = `${hit.sessionKey}\u0000${hit.sessionId}\u0000${hit.messageId}`;
-          if (seenHits.has(identity)) {
-            return false;
+          const limit = params.limit ?? 10;
+          const sortedHits = targetResults
+            .flatMap((result) => result.hits)
+            .toSorted(
+              (left, right) =>
+                right.score - left.score ||
+                right.timestamp - left.timestamp ||
+                left.messageId.localeCompare(right.messageId),
+            );
+          const seenHits = new Set<string>();
+          const hits = sortedHits.filter((hit) => {
+            const identity = `${hit.sessionKey}\u0000${hit.sessionId}\u0000${hit.messageId}`;
+            if (seenHits.has(identity)) {
+              return false;
+            }
+            seenHits.add(identity);
+            return true;
+          });
+          const state: SessionsSearchResult = { results: hits.slice(0, limit) };
+          if (archivedTranscriptsExcluded) {
+            state.archivedTranscriptsExcluded = archivedTranscriptsExcluded;
           }
-          seenHits.add(identity);
-          return true;
+          if (targetResults.some((result) => result.indexing)) {
+            state.indexing = true;
+          }
+          if (targetResults.some((result) => result.truncated) || hits.length > limit) {
+            state.truncated = true;
+          }
+          return state;
         });
         sessionMutationAuthorization?.assertCurrent();
-        respond(true, {
-          results: hits.slice(0, limit),
-          ...(archivedTranscriptsExcluded ? { archivedTranscriptsExcluded } : {}),
-          ...(targetResults.some((result) => result.indexing) ? { indexing: true } : {}),
-          ...(targetResults.some((result) => result.truncated) || hits.length > limit
-            ? { truncated: true }
-            : {}),
-        });
+        respond(true, params.queries ? { states } : states[0]);
         return;
       }
       throw new Error("Session search scope changed while reading; retry the request");
