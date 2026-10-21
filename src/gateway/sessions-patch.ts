@@ -95,6 +95,7 @@ import {
   isSessionIconColorOnlyPatch,
 } from "./sessions-patch-display-metadata.js";
 import { applySessionPatchLifecycleFlags } from "./sessions-patch-lifecycle-flags.js";
+import { sessionPatchSuccess, type SessionPatchProjectionResult } from "./sessions-patch-result.js";
 import { applySessionsPatchSubagentPolicy } from "./sessions-patch-subagent-policy.js";
 
 type SessionPatchProjectionParams = {
@@ -117,10 +118,6 @@ type SessionPatchProjectionParams = {
   /** Resolved spawn identity supplied only by the trusted creation owner. */
   preparedModelSelection?: ModelRef;
 };
-
-type SessionPatchProjectionResult =
-  | { ok: true; entry: SessionEntry; validateModelSelection?: () => ErrorShape | undefined }
-  | { ok: false; error: ErrorShape };
 
 type SessionPatchPreparation =
   | { kind: "complete"; result: SessionPatchProjectionResult }
@@ -743,5 +740,5 @@ function* projectSessionPatchSteps(
       return { ok: false, error };
     }
   }
-  return { ok: true, entry: next, ...(validateModelSelection ? { validateModelSelection } : {}) };
+  return sessionPatchSuccess({ storeKey, entry: next, patch, acpMeta, validateModelSelection });
 }
