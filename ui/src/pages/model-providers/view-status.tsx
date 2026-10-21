@@ -1,5 +1,6 @@
 import { SettingsStatus } from "../../components/solid/settings-ui.tsx";
 import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
+import { formatModelRuntimeLabel } from "../../lib/model-runtime-label.ts";
 import { registerEnglishCatalog, t } from "../../lib/reactive/i18n.ts";
 import type { ModelProviderRowMessage } from "./config-mutation.ts";
 import type { ModelProviderAuthKind, ModelProviderCard } from "./data.ts";
@@ -43,6 +44,17 @@ function needsAuthAttention(card: ModelProviderCard): boolean {
   return (
     card.auth?.kind === "expired" || card.auth?.kind === "missing" || card.auth?.kind === "expiring"
   );
+}
+
+/** Names Gateway-confirmed native runtimes without implying direct API credentials. */
+export function runtimeManagedCredentialParts(card: ModelProviderCard): string[] {
+  if (card.availableAgentRuntimeIds.length === 0) {
+    return [];
+  }
+  const runtime = card.availableAgentRuntimeIds
+    .map((id) => formatModelRuntimeLabel(card.id, id)?.label)
+    .join(", ");
+  return [t("modelProviders.credentials.runtimeManaged", { runtime })];
 }
 
 export function hasVerifiedProvider(card: ModelProviderCard): boolean {
